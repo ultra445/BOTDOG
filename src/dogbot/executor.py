@@ -3,13 +3,29 @@ from __future__ import annotations
 
 import time
 import logging
-from dataclasses import asdict
-from typing import List, Sequence, Optional
+from dataclasses import asdict, is_dataclass
+from typing import Any, Dict, List, Optional, Sequence
 
 from .betfair_client import BetfairClient
-# ta/tes stratégies doivent exposer .decide_all(...)
 
 logger = logging.getLogger(__name__)
+
+
+def _to_dict(obj: Any) -> Dict[str, Any]:
+    """Convertit un dataclass/objet quelconque en dict, sinon {}."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    try:
+        if is_dataclass(obj):
+            return asdict(obj)
+    except Exception:
+        pass
+    try:
+        return dict(obj.__dict__)
+    except Exception:
+        return {}
 
 
 class Executor:
@@ -19,71 +35,107 @@ class Executor:
         strategy,
         dry_run: bool = True,
         poll_interval: float = 1.5,
-        **kwargs,  # pour tolérer des kwargs passés par run.py dans d'autres versions
+        **kwargs,  # tolère d'anciens kwargs (snapshot_enabled, features, …)
     ) -> None:
         self.client = client
         self.strategy = strategy
         self.dry_run = dry_run
         self.poll_interval = poll_interval
 
-    # --- tiny helper pour log/placer
-    def _place_or_log(self, market_id: str, instructions: List[dict]) -> None:
-        total_stake = 0.0
+    # ---------- Helpers ----------
+    def _calc_t_to_off(self, market_id: str, book) -> Optional[int]:
+        """Essaie différentes signatures pour rester compatible."""
         try:
-            for ins in instructions or []:
-                size = float(ins.get("size", 0) or 0)
-                total_stake += size
-        except Exception:
-            pass
+            # signature moderne: (market_id, book)
+            return self.client.get_time_to_off(market_id, book)
+        except TypeError:
+            # ancienne signature: (market_id)
+            try:
+                return self.client.get_time_to_off(market_id)
+            except Exception:
+                return None
+        except AttributeError:
+            # aucun helper dispo -> on tente un fallback facultatif
+            try:
+                derive = getattr(self.client, "derive_time_to_off_from_book")
+                return derive(book)
+            except Exception as e:
+                logger.debug(f"[poll] {market_id}: no time_to_off helper ({e!r})")
+                return None
+        except Exception as e:
+            logger.debug(f"[poll] {market_id}: get_time_to_off error: {e!r}")
+            return None
 
+    def _place_or_log(self, market_id: str, instructions: Optional[List[dict]]) -> None:
         if not instructions:
             return
+        total = 0.0
+        for ins in instructions:
+            try:
+                total += float(ins.get("size", 0) or 0)
+            except Exception:
+                pass
 
         if self.dry_run:
             logger.info(
-                f"DRY-RUN: would place {len(instructions)} instruction(s) on {market_id} with total stake ~{total_stake:.2f}"
+                f"DRY-RUN: would place {len(instructions)} instruction(s) on {market_id} with total stake ~{total:.2f}"
             )
-        else:
-            # ici tu brancheras ton placeOrders réel si nécessaire
-            logger.info(
-                f"PLACE: {len(instructions)} instruction(s) on {market_id} stake ~{total_stake:.2f}"
-            )
-            # TODO: self.client.place_orders(...)
+            return
 
+        # Ici tu brancheras ton appel réel à placeOrders si besoin
+        try:
+            logger.info(
+                f"PLACE: {len(instructions)} instruction(s) on {market_id} stake ~{total:.2f}"
+            )
+            # TODO: self.client.place_orders(market_id, instructions)
+        except Exception as e:
+            logger.error(f"place_orders failed on {market_id}: {e}")
+
+    # ---------- Boucle principale ----------
     def run(self, market_ids: Sequence[str]) -> None:
         logger.info("Starting polling loop…")
         while True:
             try:
-                books = self.client.poll_market_books(market_ids)
-                for mb in books or []:
-                    mid = mb.market_id
+                books = self.client.poll_market_books(market_ids) or []
+                for mb in books:
+                    mid = getattr(mb, "market_id", None) or getattr(mb, "marketId", None) or "?"
 
-                    # t_to_off robuste (utilise MarketBook ou fallback index)
+                    # t_to_off robuste
+                    t_to_off = self._calc_t_to_off(mid, mb)
+
+                    inplay = bool(getattr(mb, "inplay", False))
+                    runners_count = len(getattr(mb, "runners", []) or [])
+                    logger.debug(
+                        f"[poll] {mid} t_to_off={t_to_off}s inplay={inplay} runners={runners_count}"
+                    )
+
+                    # Index marché/événement (facultatif si helpers absents)
+                    idx_dc = None
                     try:
-                        t_to_off = self.client.get_time_to_off(mid, mb)
+                        idx_dc = self.client.get_market_index_entry(mid)
+                    except AttributeError as e:
+                        logger.debug(f"[poll] {mid}: no index entry helper ({e!r})")
                     except Exception as e:
-                        logger.debug(f"[poll] {mid}: get_time_to_off error: {e!r}")
-                        t_to_off = None
+                        logger.debug(f"[poll] {mid}: get_market_index_entry error: {e!r}")
 
-                    inplay = getattr(mb, "inplay", False)
-                    runners = len(getattr(mb, "runners", []) or [])
-                    logger.debug(f"[poll] {mid} t_to_off={t_to_off}s inplay={inplay} runners={runners}")
+                    ev_dc = None
+                    try:
+                        ev_id = getattr(idx_dc, "event_id", None)
+                        if ev_id:
+                            ev_dc = self.client.get_event_index_entry(ev_id)
+                    except Exception as e:
+                        logger.debug(f"[poll] {mid}: get_event_index_entry error: {e!r}")
 
-                    # --- récupérer index / event (dataclasses) ---
-                    idx_dc = self.client.get_market_index_entry(mid)
-                    ev_dc = self.client.get_event_index_entry(idx_dc.event_id) if idx_dc else None
+                    idx_ctx = _to_dict(idx_dc)
+                    ev_ctx = _to_dict(ev_dc)
 
-                    # convertir en dicts pour la stratégie (qui utilise .get)
-                    idx_ctx = asdict(idx_dc) if idx_dc else {}
-                    ev_ctx  = asdict(ev_dc)  if ev_dc  else {}
-
-                    # --- APPEL STRATÉGIE ---
+                    # Appel stratégie (reçoit des dicts -> .get() OK)
                     try:
                         instructions = self.strategy.decide_all(
                             market_id=mid,
                             book=mb,
-                            index=idx_ctx,     # dict (safe pour .get)
-                            event=ev_ctx,      # dict (safe pour .get)
+                            index=idx_ctx,
+                            event=ev_ctx,
                             t_to_off=t_to_off,
                             inplay=inplay,
                         )
@@ -91,7 +143,6 @@ class Executor:
                         logger.warning(f"[strategy] decide_all error on {mid}: {e}")
                         instructions = []
 
-                    # --- Exécuter ou log ---
                     self._place_or_log(mid, instructions)
 
                 time.sleep(self.poll_interval)
