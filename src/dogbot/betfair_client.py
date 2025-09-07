@@ -1,4 +1,6 @@
-﻿from __future__ import annotations
+﻿# src/dogbot/betfair_client.py
+
+from __future__ import annotations
 
 import os
 import time
@@ -36,6 +38,10 @@ class MarketIndexEntry:
     course_uuid: str                   # = event_id
 
 
+def _norm_path(p: str) -> str:
+    return os.path.normpath(os.path.expandvars(os.path.expanduser(p)))
+
+
 class BetfairClient:
     """
     Wrapper léger autour de betfairlightweight avec :
@@ -56,19 +62,44 @@ class BetfairClient:
         **kwargs,
     ) -> None:
         """
-        Rend le client compatible avec les anciens appels comme:
+        Compatible avec les anciens appels comme:
           BetfairClient(user=..., password=..., app_key=..., certs=..., books_chunk=8)
         Tout est optionnel : si absent, on lit l'environnement.
         """
-        # aliases possibles depuis run.py
+        # -- Aliases/ENV
         if username is None:
             username = kwargs.get("user") or os.getenv("BETFAIR_USERNAME", "")
         if password is None:
             password = os.getenv("BETFAIR_PASSWORD", "")
         if app_key is None:
             app_key = kwargs.get("appKey") or os.getenv("BETFAIR_APP_KEY", "")
-        if cert_dir is None:
-            cert_dir = kwargs.get("certs") or os.getenv("BETFAIR_CERT_DIR", "")
+
+        # Chemin certs: argument > env > defaults
+        candidates: List[str] = []
+        # argument / alias
+        if cert_dir:
+            candidates.append(cert_dir)
+        alias = kwargs.get("certs")
+        if alias:
+            candidates.append(alias)
+        # env vars fréquentes
+        for env_name in ("BETFAIR_CERT_DIR", "BETFAIR_CERTS", "BETFAIR_CERTS_DIR", "BETFAIR_CERT_PATH"):
+            v = os.getenv(env_name)
+            if v:
+                candidates.append(v)
+        # emplacements par défaut
+        candidates.append(os.path.join(os.getcwd(), "certs"))   # .\certs dans le projet
+        candidates.append(r"C:\betfair-certs")                  # ton dossier standard Windows
+
+        chosen_certs: Optional[str] = None
+        for cand in candidates:
+            try:
+                candn = _norm_path(cand)
+                if os.path.isdir(candn):
+                    chosen_certs = candn
+                    break
+            except Exception:
+                pass
 
         # limites requêtes
         if books_chunk is None:
@@ -85,7 +116,7 @@ class BetfairClient:
         self.username = username or ""
         self.password = password or ""
         self.app_key = app_key or ""
-        self.cert_dir = cert_dir or ""
+        self.cert_dir = chosen_certs or ""  # vide si rien trouvé
         self.books_chunk = max(1, int(books_chunk))
         self.best_price_depth = max(1, int(best_price_depth))
 
@@ -95,6 +126,7 @@ class BetfairClient:
 
         # Client BFLW
         if self.cert_dir:
+            logger.debug(f"[BetfairClient] Using certs dir: {self.cert_dir}")
             self.client = betfairlightweight.APIClient(
                 username=self.username,
                 password=self.password,
@@ -102,6 +134,11 @@ class BetfairClient:
                 certs=self.cert_dir,
             )
         else:
+            logger.warning(
+                "[BetfairClient] Aucun dossier de certificats détecté. "
+                "Le client tentera d'utiliser le défaut de betfairlightweight ('/certs/'), "
+                "ce qui échouera probablement. Fixe BETFAIR_CERT_DIR ou passe cert_dir."
+            )
             self.client = betfairlightweight.APIClient(
                 username=self.username,
                 password=self.password,
@@ -111,7 +148,7 @@ class BetfairClient:
     # ---------- Auth ----------
     def login(self) -> None:
         self.client.login()
-        logger.info("Logged in to Betfair API")
+        logger.info("Logged in to Betfair API (cert_dir=%s)", self.cert_dir or "<none>")
 
     # ---------- Utilitaires datetime ----------
     @staticmethod
