@@ -1,335 +1,272 @@
-﻿# src/dogbot/betfair_client.py
-
-from __future__ import annotations
-
-import os
-import time
+﻿import os
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 import betfairlightweight
-from betfairlightweight import filters as bf_filters
-from betfairlightweight.resources.bettingresources import MarketBook, MarketCatalogue
+from betfairlightweight import filters
+from betfairlightweight.exceptions import APIError
 
-logger = logging.getLogger(__name__)
+LOG = logging.getLogger(__name__)
+
+# EventTypeId officiel pour greyhounds
+GREYHOUND_EVENT_TYPE_ID = "4339"
 
 
-# ---------- Dataclasses d'index ----------
-@dataclass
-class EventIndexEntry:
-    event_id: str
-    venue: Optional[str]
-    country_code: Optional[str]
-    open_date: Optional[datetime]      # UTC
-    course_uuid: str                   # = event_id
+def _env_list(name: str, default_csv: str) -> List[str]:
+    raw = os.getenv(name, default_csv)
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso_utc(dt: datetime) -> str:
+    # Format attendu par Betfair "YYYY-MM-DDTHH:MM:SSZ"
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
 class MarketIndexEntry:
     market_id: str
-    market_type: Optional[str]         # "WIN", "PLACE", etc.
-    event_id: str
-    start_time: Optional[datetime]     # UTC
-    venue: Optional[str]
-    country_code: Optional[str]
-    runner_count: Optional[int]
-    course_uuid: str                   # = event_id
-
-
-def _norm_path(p: str) -> str:
-    return os.path.normpath(os.path.expandvars(os.path.expanduser(p)))
+    event_id: Optional[str]
+    market_type: Optional[str]
+    start_time: Optional[datetime]
+    is_place: bool
 
 
 class BetfairClient:
     """
-    Wrapper léger autour de betfairlightweight avec :
-      - login
-      - scan du catalogue (et construction d'index marché/événement)
-      - polling de MarketBook en chunks
-      - utilitaires : t_to_off, accès aux index
+    Client Betfair :
+      - login via certificats
+      - scan des catalogues WIN/PLACE (+ index marché)
+      - polling MarketBook (chunking + retry)
+      - calcul t_to_off depuis MarketBook ou index
+
+    Paramètres acceptés (alias inclus pour compatibilité avec run.py) :
+      - app_key (ou env BETFAIR_APP_KEY)
+      - username | user (ou env BETFAIR_USERNAME)
+      - password | pwd (ou env BETFAIR_PASSWORD)
+      - certs_dir | certs_path (ou env BETFAIR_CERTS_DIR, défaut C:\\betfair-certs)
+      - lookahead_minutes (ou env BETFAIR_LOOKAHEAD_MINUTES, défaut 120)
+      - countries (ou env BETFAIR_COUNTRIES, défaut "GB,IE")
+      - market_book_chunk (ou env BETFAIR_MARKET_BOOK_CHUNK, défaut 5)
     """
 
     def __init__(
         self,
+        app_key: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
-        app_key: Optional[str] = None,
-        cert_dir: Optional[str] = None,
-        books_chunk: Optional[int] = None,
-        best_price_depth: Optional[int] = None,
-        **kwargs,
-    ) -> None:
-        """
-        Compatible avec les anciens appels comme:
-          BetfairClient(user=..., password=..., app_key=..., certs=..., books_chunk=8)
-        Tout est optionnel : si absent, on lit l'environnement.
-        """
-        # -- Aliases/ENV
-        if username is None:
-            username = kwargs.get("user") or os.getenv("BETFAIR_USERNAME", "")
-        if password is None:
-            password = os.getenv("BETFAIR_PASSWORD", "")
-        if app_key is None:
-            app_key = kwargs.get("appKey") or os.getenv("BETFAIR_APP_KEY", "")
+        # Aliases de compat
+        user: Optional[str] = None,
+        pwd: Optional[str] = None,
+        certs_dir: Optional[str] = None,
+        certs_path: Optional[str] = None,  # alias accepté pour run.py existant
+        lookahead_minutes: Optional[int] = None,
+        countries: Optional[List[str]] = None,
+        market_book_chunk: Optional[int] = None,
+        **_ignore,  # avale tout autre kwarg inattendu pour éviter les plantages
+    ):
+        self.app_key = app_key or os.getenv("BETFAIR_APP_KEY")
+        self.username = username or user or os.getenv("BETFAIR_USERNAME")
+        self.password = password or pwd or os.getenv("BETFAIR_PASSWORD")
 
-        # Chemin certs: argument > env > defaults
-        candidates: List[str] = []
-        # argument / alias
-        if cert_dir:
-            candidates.append(cert_dir)
-        alias = kwargs.get("certs")
-        if alias:
-            candidates.append(alias)
-        # env vars fréquentes
-        for env_name in ("BETFAIR_CERT_DIR", "BETFAIR_CERTS", "BETFAIR_CERTS_DIR", "BETFAIR_CERT_PATH"):
-            v = os.getenv(env_name)
-            if v:
-                candidates.append(v)
-        # emplacements par défaut
-        candidates.append(os.path.join(os.getcwd(), "certs"))   # .\certs dans le projet
-        candidates.append(r"C:\betfair-certs")                  # ton dossier standard Windows
+        # Choix du dossier certificats : priorité à certs_path si fourni par run.py
+        self.certs_dir = (
+            certs_path
+            or certs_dir
+            or os.getenv("BETFAIR_CERTS_DIR")
+            or r"C:\betfair-certs"
+        )
 
-        chosen_certs: Optional[str] = None
-        for cand in candidates:
-            try:
-                candn = _norm_path(cand)
-                if os.path.isdir(candn):
-                    chosen_certs = candn
-                    break
-            except Exception:
-                pass
+        if not (self.app_key and self.username and self.password):
+            raise RuntimeError(
+                "Identifiants Betfair manquants : fournissez app_key / username / password "
+                "(ou variables BETFAIR_APP_KEY / BETFAIR_USERNAME / BETFAIR_PASSWORD)."
+            )
 
-        # limites requêtes
-        if books_chunk is None:
-            try:
-                books_chunk = int(os.getenv("BETFAIR_BOOKS_CHUNK", "8"))
-            except Exception:
-                books_chunk = 8
-        if best_price_depth is None:
-            try:
-                best_price_depth = int(os.getenv("BETFAIR_PRICE_DEPTH", "3"))
-            except Exception:
-                best_price_depth = 3
+        self.lookahead_minutes = int(lookahead_minutes or os.getenv("BETFAIR_LOOKAHEAD_MINUTES", "120"))
+        self.countries = countries or _env_list("BETFAIR_COUNTRIES", "GB,IE")
 
-        self.username = username or ""
-        self.password = password or ""
-        self.app_key = app_key or ""
-        self.cert_dir = chosen_certs or ""  # vide si rien trouvé
-        self.books_chunk = max(1, int(books_chunk))
-        self.best_price_depth = max(1, int(best_price_depth))
+        self.market_book_chunk = int(market_book_chunk or os.getenv("BETFAIR_MARKET_BOOK_CHUNK", "5"))
+        self.market_book_chunk = max(1, self.market_book_chunk)
 
-        # Index internes
+        # betfairlightweight client
+        self.client = betfairlightweight.APIClient(
+            username=self.username,
+            password=self.password,
+            app_key=self.app_key,
+            certs=self.certs_dir,
+        )
+
+        # Index des marchés scannés
         self.market_index: Dict[str, MarketIndexEntry] = {}
-        self.event_index: Dict[str, EventIndexEntry] = {}
 
-        # Client BFLW
-        if self.cert_dir:
-            logger.debug(f"[BetfairClient] Using certs dir: {self.cert_dir}")
-            self.client = betfairlightweight.APIClient(
-                username=self.username,
-                password=self.password,
-                app_key=self.app_key,
-                certs=self.cert_dir,
-            )
-        else:
-            logger.warning(
-                "[BetfairClient] Aucun dossier de certificats détecté. "
-                "Le client tentera d'utiliser le défaut de betfairlightweight ('/certs/'), "
-                "ce qui échouera probablement. Fixe BETFAIR_CERT_DIR ou passe cert_dir."
-            )
-            self.client = betfairlightweight.APIClient(
-                username=self.username,
-                password=self.password,
-                app_key=self.app_key,
-            )
-
-    # ---------- Auth ----------
+    # ------------------------- Auth ------------------------- #
     def login(self) -> None:
+        LOG.debug("Login Betfair (certs_dir=%s)", self.certs_dir)
         self.client.login()
-        logger.info("Logged in to Betfair API (cert_dir=%s)", self.cert_dir or "<none>")
+        LOG.info("Logged in to Betfair API")
 
-    # ---------- Utilitaires datetime ----------
-    @staticmethod
-    def _to_utc(dt: Optional[datetime]) -> Optional[datetime]:
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            # on assume UTC si naïf
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-
-    @staticmethod
-    def _now_utc() -> datetime:
-        return datetime.now(timezone.utc)
-
-    # ---------- Scan catalogue ----------
+    # -------------------- Catalogue & index ----------------- #
     def scan_catalogue(
         self,
-        countries: Optional[Sequence[str]] = None,
-        market_types: Optional[Sequence[str]] = None,
-        lookahead_minutes: int = 10,
-        event_type_ids: Optional[Sequence[str]] = None,  # 4339 greyhounds, 7 horse racing
+        lookahead_minutes: Optional[int] = None,
+        market_types: Optional[List[str]] = None,
+        countries: Optional[List[str]] = None,
         max_results: int = 200,
     ) -> List[str]:
-        """
-        Récupère les marchés à venir et construit les index.
-        Retourne la liste des market_ids.
-        """
-        countries = countries or ["GB", "IE"]
-        market_types = market_types or ["WIN", "PLACE"]
-        event_type_ids = event_type_ids or ["4339"]  # greyhounds par défaut
+        mins = int(lookahead_minutes or self.lookahead_minutes)
+        country_list = countries or self.countries
+        types = market_types or ["WIN", "PLACE"]
 
-        frm = self._now_utc()
-        to = frm + timedelta(minutes=lookahead_minutes)
+        now = _utc_now()
+        time_from = _iso_utc(now)
+        time_to = _iso_utc(now + timedelta(minutes=mins))
 
-        market_filter = bf_filters.market_filter(
-            event_type_ids=list(event_type_ids),
-            market_countries=list(countries),
-            market_type_codes=list(market_types),
-            market_start_time=bf_filters.time_range(from_=frm, to=to),
-        )
+        market_filter = {
+            "eventTypeIds": [GREYHOUND_EVENT_TYPE_ID],
+            "marketTypeCodes": types,
+            "marketCountries": country_list,
+            "marketStartTime": {"from": time_from, "to": time_to},
+        }
 
-        market_projection = [
-            "EVENT",
-            "MARKET_START_TIME",
-            "RUNNER_DESCRIPTION",
-            "MARKET_DESCRIPTION",
-        ]
+        projection = ["MARKET_START_TIME", "RUNNER_METADATA", "EVENT", "MARKET_DESCRIPTION"]
 
-        catalogues: List[MarketCatalogue] = self.client.betting.list_market_catalogue(
+        catalogues = self._call_with_retry(
+            self.client.betting.list_market_catalogue,
             filter=market_filter,
-            market_projection=market_projection,
+            market_projection=projection,
             max_results=max_results,
+            sort="FIRST_TO_START",
         )
 
-        # Reset minimal des index (on reconstruit)
+        found = 0
+        with_start = 0
         self.market_index.clear()
-        self.event_index.clear()
 
-        start_present = 0
-        market_ids: List[str] = []
+        for cat in catalogues or []:
+            found += 1
+            market_id = cat.market_id
+            event_id = getattr(cat.event, "id", None)
 
-        for mc in catalogues:
-            market_ids.append(mc.market_id)
+            # ✅ FIX: le type de marché est dans cat.description.market_type
+            mtype = None
+            try:
+                desc = getattr(cat, "description", None)
+                if desc is not None:
+                    mtype = getattr(desc, "market_type", None)
+            except Exception:
+                mtype = None
 
-            # Event
-            ev = mc.event
-            event_id = getattr(ev, "id", None)
-            venue = getattr(ev, "venue", None)
-            country_code = getattr(ev, "country_code", None)
-            open_date = self._to_utc(getattr(ev, "open_date", None))
-            if event_id and event_id not in self.event_index:
-                self.event_index[event_id] = EventIndexEntry(
-                    event_id=event_id,
-                    venue=venue,
-                    country_code=country_code,
-                    open_date=open_date,
-                    course_uuid=event_id,
-                )
+            # Fallback si description absente : on infère via le nom du marché
+            if not mtype:
+                name = (getattr(cat, "market_name", None) or "").lower()
+                if "place" in name or "to be placed" in name:
+                    mtype = "PLACE"
+                elif "win" in name:
+                    mtype = "WIN"
 
-            # Market
-            mdesc = getattr(mc, "description", None)
-            market_type = getattr(mdesc, "market_type", None)
-            start_time = self._to_utc(getattr(mc, "market_start_time", None))
+            start_time = getattr(cat, "market_start_time", None)
             if start_time:
-                start_present += 1
+                with_start += 1
 
-            self.market_index[mc.market_id] = MarketIndexEntry(
-                market_id=mc.market_id,
-                market_type=market_type,
-                event_id=event_id or "",
+            is_place = (str(mtype).upper() == "PLACE") if mtype else False
+
+            self.market_index[market_id] = MarketIndexEntry(
+                market_id=market_id,
+                event_id=event_id,
+                market_type=mtype,
                 start_time=start_time,
-                venue=venue,
-                country_code=country_code,
-                runner_count=len(getattr(mc, "runners", []) or []),
-                course_uuid=(event_id or ""),
+                is_place=is_place,
             )
 
-        logger.info(
-            f"Found {len(market_ids)} greyhound markets in next {lookahead_minutes} minutes "
-            f"(start_time present for {start_present}/{len(market_ids)})"
+        LOG.info(
+            "Found %d greyhound markets in next %d minutes (start_time present for %d/%d)",
+            found, mins, with_start, found,
         )
-        return market_ids
+        return list(self.market_index.keys())
 
-    # ---------- Poll MarketBook ----------
-    def poll_market_books(self, market_ids: Sequence[str]) -> List[MarketBook]:
-        """
-        Récupère les MarketBooks en chunks pour éviter TOO_MUCH_DATA.
-        """
-        if not market_ids:
-            return []
-
-        all_books: List[MarketBook] = []
-        chunk = max(1, int(self.books_chunk))
-        depth = max(1, int(self.best_price_depth))
-
-        price_proj = bf_filters.price_projection(
-            price_data=["EX_BEST_OFFERS"],  # volontairement léger
-            virtualise=True,
-            ex_best_offers_overrides=bf_filters.ex_best_offers_overrides(
-                best_prices_depth=depth
-            ),
-        )
-
-        for i in range(0, len(market_ids), chunk):
-            subset = market_ids[i : i + chunk]
-            try:
-                books = self.client.betting.list_market_book(
-                    market_ids=list(subset),
-                    price_projection=price_proj,
-                    order_projection=None,
-                    match_projection=None,
-                )
-                if books:
-                    all_books.extend(books)
-            except Exception as e:
-                # log et on continue (le poll suivant réessaiera)
-                logger.warning(
-                    f"list_market_book chunk error on {len(subset)} ids: {e!r}"
-                )
-                time.sleep(0.25)
-
-        return all_books
-
-    # ---------- Utilitaires index ----------
     def get_market_index_entry(self, market_id: str) -> Optional[MarketIndexEntry]:
         return self.market_index.get(market_id)
 
-    def get_event_index_entry(self, event_id: str) -> Optional[EventIndexEntry]:
-        return self.event_index.get(event_id)
-
-    def get_course_uuid_for_market(self, market_id: str) -> Optional[str]:
-        idx = self.get_market_index_entry(market_id)
-        return idx.course_uuid if idx else None
-
-    # ---------- t_to_off ----------
-    def get_time_to_off(self, market_id: str, book: Optional[MarketBook]) -> Optional[int]:
+    def get_time_to_off(self, market_id: str, book=None) -> Optional[int]:
         """
-        Calcule t_to_off (secondes) depuis, par ordre de priorité :
-          1) book.market_definition.market_time
-          2) index.market.start_time (scan catalogue)
+        Retourne le temps jusqu’au départ (secondes).
+        Priorité aux infos du MarketBook (market_definition.market_time),
+        sinon retombe sur l’index catalogue (start_time).
         """
-        start_dt: Optional[datetime] = None
-
-        # 1) market_definition.market_time du MarketBook
         try:
             if book and getattr(book, "market_definition", None):
-                md = book.market_definition
-                start_dt = getattr(md, "market_time", None)
-                start_dt = self._to_utc(start_dt)
+                mdef = book.market_definition
+                mt = getattr(mdef, "market_time", None)
+                if isinstance(mt, datetime):
+                    return int((mt.astimezone(timezone.utc) - _utc_now()).total_seconds())
         except Exception:
-            start_dt = None
+            pass
 
-        # 2) fallback via l'index
-        if start_dt is None:
-            idx = self.get_market_index_entry(market_id)
-            if idx and idx.start_time:
-                start_dt = idx.start_time
+        entry = self.market_index.get(market_id)
+        if entry and isinstance(entry.start_time, datetime):
+            return int((entry.start_time.astimezone(timezone.utc) - _utc_now()).total_seconds())
+        return None
 
-        if start_dt is None:
-            return None
+    # ------------------- MarketBook polling ----------------- #
+    def poll_market_books(self, market_ids: List[str]):
+        """Récupère les MarketBooks en chunks avec retry."""
+        if not market_ids:
+            return []
 
-        now = self._now_utc()
-        return int(round((start_dt - now).total_seconds()))
+        pp = filters.price_projection(
+            price_data=["EX_BEST_OFFERS", "EX_TRADED", "SP_AVAILABLE", "SP_TRADED"],
+            virtualise=True,
+            rollover_stakes=False,
+        )
+
+        all_books = []
+        chunk = max(1, self.market_book_chunk)
+
+        for i in range(0, len(market_ids), chunk):
+            part = market_ids[i : i + chunk]
+            try:
+                books = self._call_with_retry(
+                    self.client.betting.list_market_book,
+                    market_ids=part,
+                    price_projection=pp,
+                )
+                if books:
+                    all_books.extend(books)
+            except APIError as e:
+                LOG.warning("list_market_book chunk error on %d ids: %s", len(part), e)
+            except Exception as e:
+                LOG.warning("list_market_book chunk unexpected error on %d ids: %s", len(part), e)
+
+        return all_books
+
+    def prefetch_market_books(self, market_ids: List[str]) -> None:
+        """Appel de warm-up, échec toléré."""
+        if not market_ids:
+            return
+        try:
+            self.poll_market_books(market_ids)
+        except Exception as e:
+            LOG.debug("prefetch_market_books ignored error: %s", e)
+
+    # ------------------------ Retry util -------------------- #
+    def _call_with_retry(self, fn, attempts: int = 3, **kwargs):
+        last_err = None
+        for k in range(1, attempts + 1):
+            try:
+                return fn(**kwargs)
+            except Exception as e:
+                last_err = e
+                LOG.warning(
+                    "%s error '%s' on attempt %d → retrying…",
+                    getattr(fn, "__name__", "call"),
+                    e,
+                    k,
+                )
+        if last_err:
+            raise last_err
