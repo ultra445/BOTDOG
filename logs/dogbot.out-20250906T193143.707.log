@@ -1,0 +1,280 @@
+2025-09-06 21:30:58.718 | INFO     | src.dogbot.betfair_client:login:98 - Logged in to Betfair API
+2025-09-06 21:30:58.719 | INFO     | __main__:main:36 - Strategies enabled: BACK_WIN_1
+2025-09-06 21:30:59.179 | INFO     | src.dogbot.betfair_client:scan_catalogue:226 - Found 45 greyhound markets in next 120 minutes
+2025-09-06 21:30:59.181 | INFO     | src.dogbot.executor:run:159 - Starting polling loop…
+2025-09-06 21:31:00.290 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:00.291 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:00.291 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:00.291 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:00.291 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:00.291 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:00.291 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:00.291 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:00.291 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:00.292 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:00.292 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:00.292 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:01.626 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.626 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.627 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.627 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.627 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:01.627 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.628 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:01.628 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458606 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458929 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459210 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459646 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448799 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:02.946 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448799 with total stake ~0.00
+2025-09-06 21:31:02.946 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:02.947 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459783 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:02.947 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460197 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:04.272 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458931 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459648 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459742 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460157 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448795 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459212 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:04.274 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459610 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459744 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459785 t_to_off=None inplay=False runners=4
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460159 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460199 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448793 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:05.632 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448793 with total stake ~0.00
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459214 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459612 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:05.632 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460201 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:06.228 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448797 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:06.228 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448803 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:06.228 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460161 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:06.228 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460163 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:06.228 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460165 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:08.566 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:08.567 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:08.567 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:08.568 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:08.568 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:08.568 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:08.569 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:08.569 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:08.570 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:08.570 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:08.570 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:08.571 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:09.882 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.883 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:09.883 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:11.224 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458606 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:11.224 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458929 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459210 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459646 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448799 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:11.226 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448799 with total stake ~0.00
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459783 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:11.226 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460197 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:12.531 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458931 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459648 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459742 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460157 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448795 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459212 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:12.532 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459610 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:13.824 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459744 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:13.825 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459785 t_to_off=None inplay=False runners=4
+2025-09-06 21:31:13.825 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460159 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:13.826 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460199 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:13.826 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448793 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:13.826 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448793 with total stake ~0.00
+2025-09-06 21:31:13.826 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459214 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:13.826 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459612 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:13.826 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460201 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:14.437 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448797 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:14.437 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448803 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:14.437 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460161 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:14.437 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460163 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:14.437 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460165 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:16.778 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:16.779 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:16.779 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:16.780 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:16.780 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:16.780 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:16.781 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:16.781 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:16.781 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:16.782 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:16.782 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:16.783 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:18.112 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:19.422 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458606 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:19.422 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458929 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:19.423 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459210 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:19.423 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459646 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:19.423 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448799 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:19.423 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448799 with total stake ~0.00
+2025-09-06 21:31:19.423 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:19.424 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459783 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:19.424 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460197 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:20.691 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458931 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459648 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459742 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460157 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448795 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459212 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:20.692 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459610 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.010 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459744 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.011 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459785 t_to_off=None inplay=False runners=4
+2025-09-06 21:31:22.011 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460159 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.012 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460199 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:22.012 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448793 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.013 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448793 with total stake ~0.00
+2025-09-06 21:31:22.013 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459214 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:22.014 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459612 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:22.014 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460201 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:22.574 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448797 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.575 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448803 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.575 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460161 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:22.575 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460163 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:22.575 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460165 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:24.892 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:24.893 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:24.893 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:24.893 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:24.893 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:24.894 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:24.894 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:24.894 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:24.895 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:24.895 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:24.895 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:24.896 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:26.212 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.213 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.213 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.214 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.214 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:26.214 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.214 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:26.215 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:27.544 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458606 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:27.545 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458929 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:27.545 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459210 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:27.546 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459646 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:27.546 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448799 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:27.546 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448799 with total stake ~0.00
+2025-09-06 21:31:27.546 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:27.546 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459783 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:27.547 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460197 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:28.836 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458931 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.836 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459648 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.836 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459742 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.837 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460157 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.837 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448795 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:28.837 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.837 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459212 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:28.837 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459610 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.118 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459744 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.118 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459785 t_to_off=None inplay=False runners=4
+2025-09-06 21:31:30.118 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460159 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.118 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460199 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:30.118 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448793 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.118 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448793 with total stake ~0.00
+2025-09-06 21:31:30.119 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459214 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:30.119 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459612 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:30.119 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460201 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:30.699 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448797 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.699 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448803 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.699 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460161 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:30.699 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460163 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:30.699 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460165 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:33.036 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:33.036 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:33.037 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:33.038 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:33.038 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:33.039 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:33.039 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:33.039 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:33.040 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:33.040 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:33.040 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:33.040 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:34.344 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458606 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458929 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459210 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459646 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448799 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:35.644 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448799 with total stake ~0.00
+2025-09-06 21:31:35.644 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:35.645 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459783 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:35.645 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460197 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:36.961 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458931 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.962 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459648 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.962 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459742 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.962 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460157 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.962 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448795 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:36.962 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458608 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.963 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459212 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:36.963 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459610 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.299 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459744 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.300 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459785 t_to_off=None inplay=False runners=4
+2025-09-06 21:31:38.300 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460159 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.300 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460199 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:38.300 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448793 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.300 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448793 with total stake ~0.00
+2025-09-06 21:31:38.301 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459214 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:38.301 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459612 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:38.301 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460201 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:38.876 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448797 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.877 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448803 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.877 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460161 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:38.877 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460163 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:38.877 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460165 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:41.204 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448805 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:41.205 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247448805 with total stake ~0.00
+2025-09-06 21:31:41.205 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459206 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:41.206 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459206 with total stake ~0.00
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459779 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:41.206 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459779 with total stake ~0.00
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460193 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458927 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459644 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459738 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:41.206 | INFO     | src.dogbot.executor:_place_or_log:248 - DRY-RUN: would place 1 instruction(s) on 1.247459738 with total stake ~0.00
+2025-09-06 21:31:41.206 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460153 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:42.497 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247448801 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247458604 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459208 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459606 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459740 t_to_off=None inplay=False runners=5
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247459781 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460155 t_to_off=None inplay=False runners=6
+2025-09-06 21:31:42.498 | DEBUG    | src.dogbot.executor:run:194 - [poll] 1.247460195 t_to_off=None inplay=False runners=7
+2025-09-06 21:31:43.707 | INFO     | src.dogbot.executor:run:231 - Shutting down (CTRL+C)

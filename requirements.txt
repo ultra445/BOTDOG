@@ -1,0 +1,5 @@
+betfairlightweight==2.15.0
+python-dotenv==1.0.1
+pydantic==2.8.2
+ujson==5.10.0
+loguru==0.7.2

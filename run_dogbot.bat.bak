@@ -1,0 +1,22 @@
+@echo off
+setlocal
+cd /d %~dp0
+
+REM ===== Single-instance guard : bloque si un autre bot identique tourne =====
+for /f %%P in ('powershell -NoProfile -Command "$p=Get-CimInstance Win32_Process ^| Where-Object { $_.Name -eq ''python.exe'' -and $_.CommandLine -match ''src\.dogbot\.run'' }; if($p){$p.Count}else{0}"') do set COUNT=%%P
+if not "%COUNT%"=="0" (
+  echo Another dogbot instance is running (%COUNT%). Exiting.
+  exit /b 1
+)
+
+REM ===== Venv =====
+call .\.venv\Scripts\activate.bat
+
+REM ===== Logs horodatés =====
+if not exist logs mkdir logs
+set PYTHONUNBUFFERED=1
+for /f "tokens=1-3 delims=/ " %%a in ("%date%") do set D=%%c%%b%%a
+for /f "tokens=1-3 delims=:." %%a in ("%time%") do set T=%%a%%b%%c
+set STAMP=%D%_%T%
+
+python -m src.dogbot.run >> "logs\dogbot.out.%STAMP%.log" 2>> "logs\dogbot.err.%STAMP%.log"

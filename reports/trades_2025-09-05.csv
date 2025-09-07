@@ -1,0 +1,2 @@
+ts_iso,dry_run,placed,status,error,market_id,market_type,event,scheduled_start,selection_id,selection_name,trap,side,price,size,strategy,category,slot,bet_id,customer_order_ref
+2025-09-05T21:57:12,True,False,DRY_RUN,,1.247430793,WIN,Sheffield 5th Sep,2025-09-05 19:59:00,57194891,6. Ellanne Best,,BACK,1.98,2.0,BACK_WIN_1,BACK_WIN,1,,dogbot

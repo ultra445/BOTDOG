@@ -1,0 +1,12 @@
+2025-09-06 14:39:26.173 | INFO     | src.dogbot.betfair_client:login:98 - Logged in to Betfair API
+2025-09-06 14:39:26.173 | INFO     | __main__:main:44 - Strategies enabled: BACK_WIN_1, LAY_WIN_1, BACK_PLACE_1, LAY_PLACE_1
+2025-09-06 14:39:26.563 | INFO     | src.dogbot.betfair_client:scan_catalogue:226 - Found 40 greyhound markets in next 120 minutes
+2025-09-06 14:39:26.564 | INFO     | src.dogbot.executor:run:256 - Starting polling loop…
+2025-09-06 14:40:31.704 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247443942 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:40:38.149 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247460254 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:41:16.813 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247460254 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:41:55.284 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247460254 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:42:14.830 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247443942 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:42:54.018 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247443942 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:52:59.849 | INFO     | src.dogbot.executor:_place_or_log:201 - DRY-RUN: would place 1 instruction(s) on 1.247443947 with total stake ~2.00 [BACK_WIN_1]
+2025-09-06 14:53:20.497 | INFO     | src.dogbot.executor:run:300 - Shutdown requested (CTRL+C)

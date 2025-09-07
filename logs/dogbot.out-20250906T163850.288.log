@@ -1,0 +1,5 @@
+2025-09-06 18:30:27.159 | INFO     | src.dogbot.betfair_client:login:98 - Logged in to Betfair API
+2025-09-06 18:30:27.159 | INFO     | __main__:main:81 - Strategies enabled: BACK_WIN_1, LAY_WIN_1, BACK_PLACE_1, LAY_PLACE_1
+2025-09-06 18:30:27.159 | INFO     | src.dogbot.executor:__init__:74 - Starting polling loop…
+2025-09-06 18:30:27.620 | INFO     | src.dogbot.betfair_client:scan_catalogue:226 - Found 80 greyhound markets in next 120 minutes
+2025-09-06 18:38:50.288 | INFO     | src.dogbot.executor:run:284 - Shutting down (CTRL+C)
