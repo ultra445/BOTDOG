@@ -10,10 +10,10 @@ from typing import Any, Dict, Iterable, Optional
 from loguru import logger
 
 try:
-    # Ne fais pas échouer l'import si StrategyManager n'est pas présent ici.
+    # On n'échoue pas si StrategyManager n'est pas présent.
     from .strategies import StrategyManager  # type: ignore
 except Exception:  # pragma: no cover
-    StrategyManager = Any  # fallback typing only
+    StrategyManager = Any  # typing fallback
 
 
 class _NoOpStrategy:
@@ -29,7 +29,6 @@ def _coerce_seconds(val: Any) -> Optional[float]:
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, (list, tuple)) and len(val) > 0:
-        # certains parseurs d'ENV donnent ['2.0'] → on prend le premier
         try:
             return float(val[0])
         except Exception:
@@ -42,7 +41,6 @@ def _coerce_seconds(val: Any) -> Optional[float]:
             return float(val)
         except Exception:
             return None
-    # format inconnu → ignore
     return None
 
 
@@ -60,6 +58,18 @@ def _ensure_header(path: str, header: Iterable[str]) -> None:
             w.writerow(list(header))
 
 
+def _instantiate_strategy(obj: Any) -> Any:
+    """Si on nous passe une classe, on l'instancie; sinon on renvoie tel quel."""
+    if obj is None:
+        return _NoOpStrategy()
+    try:
+        if isinstance(obj, type):
+            return obj()  # StrategyManager -> StrategyManager()
+    except Exception:
+        pass
+    return obj
+
+
 class Executor:
     def __init__(
         self,
@@ -71,7 +81,7 @@ class Executor:
         snapshot_seconds: float | int | str | list | tuple | None = None,
     ) -> None:
         self.client = client
-        self.strategy = strategy if strategy is not None else _NoOpStrategy()
+        self.strategy = _instantiate_strategy(strategy)
         self.dry_run = bool(dry_run)
 
         # conversions robustes
@@ -125,17 +135,13 @@ class Executor:
                         self._write_snapshot(now, books)
                     except Exception as e:
                         logger.warning("snapshot write error: {}", e)
-                    # planifie le prochain snapshot
                     self._next_snapshot_at = time.monotonic() + self._snapshot_period
 
                 for mid, book in books.items():
                     try:
                         t_to_off = self.client.get_time_to_off(book)
                     except TypeError as e:
-                        # robustesse si signature inattendue (ancienne version)
-                        logger.debug(
-                            "[executor] get_time_to_off(book) -> {}", e
-                        )
+                        logger.debug("[executor] get_time_to_off(book) -> {}", e)
                         t_to_off = None
                     except Exception as e:
                         logger.debug(
@@ -154,19 +160,12 @@ class Executor:
                         runners,
                     )
 
-                    # Appel stratégie (robuste avec kwargs)
                     entry = self.client.get_market_index_entry(mid)
-                    try:
-                        decisions = self._call_strategy_decide_all(
-                            market_book=book,
-                            market_index_entry=entry,
-                            now=now,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "[strategy] decide_all error on {}: {}", mid, e
-                        )
-                        decisions = []
+                    decisions = self._safe_decide_all(
+                        market_book=book,
+                        market_index_entry=entry,
+                        now=now,
+                    )
 
                     if decisions:
                         self._place_or_log(mid, decisions)
@@ -178,22 +177,62 @@ class Executor:
 
     # ------------------------------------------------------------------ #
 
-    def _call_strategy_decide_all(self, **kwargs) -> list[dict] | list[Any]:
-        """Appelle la stratégie avec des kwargs pour éviter les erreurs d'ordre des params."""
-        if not hasattr(self.strategy, "decide_all"):
+    def _safe_decide_all(self, **kwargs) -> list[dict] | list[Any]:
+        """Essaye plusieurs signatures pour decide_all afin d'être compatible avec ton StrategyManager."""
+        strat = self.strategy
+        if not hasattr(strat, "decide_all"):
             return []
+
+        mb = kwargs.get("market_book")
+        mie = kwargs.get("market_index_entry")
+        now = kwargs.get("now")
+
+        # 1) Essai en kwargs (idéal si les noms correspondent)
         try:
-            return self.strategy.decide_all(**kwargs) or []
+            out = strat.decide_all(**kwargs)
+            return out or []
         except TypeError as te:
-            # Essaye en ordre positionnel (fallback)
-            mb = kwargs.get("market_book")
-            mie = kwargs.get("market_index_entry")
-            now = kwargs.get("now")
-            return self.strategy.decide_all(mb, mie, now) or []
+            # continue avec des variantes
+            logger.debug("[strategy] kwargs call failed: {}", te)
+
+        # 2) Positionnel (book, entry, now)
+        try:
+            out = strat.decide_all(mb, mie, now)
+            return out or []
+        except TypeError:
+            pass
+
+        # 3) Positionnel (entry, book, now)
+        try:
+            out = strat.decide_all(mie, mb, now)
+            return out or []
+        except TypeError:
+            pass
+
+        # 4) Positionnel (book, entry)
+        try:
+            out = strat.decide_all(mb, mie)
+            return out or []
+        except TypeError:
+            pass
+
+        # 5) Positionnel (book, now)
+        try:
+            out = strat.decide_all(mb, now)
+            return out or []
+        except TypeError:
+            pass
+
+        # 6) Positionnel (book)
+        try:
+            out = strat.decide_all(mb)
+            return out or []
+        except TypeError as te:
+            logger.warning("[strategy] decide_all type error: {}", te)
+            return []
 
     def _place_or_log(self, market_id: str, instructions: list[dict] | list[Any]) -> None:
         if self.dry_run:
-            # calcule une somme stake si possible
             total = 0.0
             for ins in instructions:
                 try:
@@ -208,8 +247,6 @@ class Executor:
             )
             return
 
-        # Ici tu brancheras la vraie prise d’ordres quand tu sortiras du dry-run.
-        # self.client.place_orders(market_id, instructions)
         logger.warning("Live placing not implemented in this snippet.")
 
     # ------------------------------------------------------------------ #
@@ -227,7 +264,6 @@ class Executor:
         rows = []
         for mid, book in books.items():
             entry = self.client.get_market_index_entry(mid)
-            # champs
             course_uid = getattr(entry, "course_uid", None)
             event_name = getattr(entry, "event_name", None)
             market_type = getattr(entry, "market_type", None)
