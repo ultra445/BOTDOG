@@ -1,10 +1,12 @@
-﻿.env
+﻿.venv/
+certs/
+logs/
+data/
+snapshots/
+*.csv
 *.pem
 *.crt
 *.key
+.env
 __pycache__/
 *.pyc
-logs/
-*.csv
-snapshots/
-C:/betfair-certs/
