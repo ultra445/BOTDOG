@@ -1,209 +1,257 @@
-﻿from __future__ import annotations
+﻿# src/dogbot/betfair_client.py
+from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Sequence
 
-import betfairlightweight as bflw
 from loguru import logger
+import betfairlightweight as bflw
+from betfairlightweight.resources import MarketBook, MarketCatalogue
 
 
-@dataclass
+# --- Helpers ---------------------------------------------------------------
+
+def _absnorm(path: str) -> str:
+    path = path.strip().strip('"').strip("'")
+    return os.path.abspath(os.path.normpath(path))
+
+
+def _chunked(seq: Sequence[str], n: int) -> Iterable[list[str]]:
+    for i in range(0, len(seq), n):
+        yield list(seq[i : i + n])
+
+
+def _to_iso_z(dt: datetime) -> str:
+    """Format datetime UTC en ISO 8601 se terminant par 'Z' (sans microsecondes)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    # remove microseconds for cleaner payloads
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
 class MarketIndexEntry:
     market_id: str
-    race_id: str
-    start_time: Optional[datetime]
-    market_type: Optional[str]
-    number_of_winners: int = 1
+    market_type: str | None
+    event_id: str | None
+    event_name: str | None
+    country: str | None
+    venue: str | None
+    start_time: datetime | None
+    course_uid: str | None   # identifiant commun WIN/PLACE (simple, robuste)
 
+
+# --- Client ----------------------------------------------------------------
 
 class BetfairClient:
     """
-    Minimise les changements : on garde la logique existante
-    et on ajoute les utilitaires attendus par l'executor.
+    Enveloppe autour de betfairlightweight qui:
+      - gère proprement les certificats (Windows OK, versions anciennes de la lib)
+      - expose des méthodes simples utilisées par run.py / executor.py
     """
 
     def __init__(
         self,
-        app_key: str,
         username: str,
         password: str,
-        certs_path: Optional[str] = None,
-        locale: str = "en",
+        app_key: str,
+        certs_path: str | None = None,
+        *,
+        list_book_chunk: int = 20,  # 25 max conseillé par l'API
     ) -> None:
-        self.app_key = app_key
         self.username = username
         self.password = password
-        self.certs_path = certs_path
-        self.locale = locale
+        self.app_key = app_key
 
-        # betfairlightweight client
+        # 1) Résolution du dossier certs (priorité: argument > env > ./certs)
+        env_dir = os.getenv("BETFAIR_CERTS_PATH") or os.getenv("BF_CERTS_PATH")
+        base_dir = certs_path or env_dir or os.path.join(os.getcwd(), "certs")
+        self._certs_dir = _absnorm(base_dir)
+
+        # 2) Vérification .crt/.key (la lib veut un DOSSIER qui contient les fichiers)
+        if not os.path.isdir(self._certs_dir):
+            raise FileNotFoundError(f"Dossier des certificats introuvable: {self._certs_dir}")
+
+        files = os.listdir(self._certs_dir)
+        has_crt = any(f.lower().endswith(".crt") for f in files)
+        has_key = any(f.lower().endswith(".key") for f in files)
+        if not (has_crt and has_key):
+            raise FileNotFoundError(
+                f"Aucun couple .crt/.key trouvé dans {self._certs_dir}. "
+                f"Assure-toi d'y mettre tes fichiers client-2048.crt et client-2048.key (ou équivalents)."
+            )
+
+        crt_name = next((f for f in files if f.lower().endswith(".crt")), "?")
+        key_name = next((f for f in files if f.lower().endswith(".key")), "?")
+        logger.info("Certs: dir='{}' crt='{}' key='{}'", self._certs_dir, crt_name, key_name)
+
+        # 3) Création du client — ta version attend un CHEMIN DE DOSSIER dans 'certs'
         self.client = bflw.APIClient(
             username=self.username,
             password=self.password,
             app_key=self.app_key,
-            certs=self.certs_path,
-            locale=self.locale,
+            certs=self._certs_dir,  # dossier, pas (crt, key)
         )
 
-        # Index {market_id -> MarketIndexEntry}
-        self.market_index: Dict[str, MarketIndexEntry] = {}
+        self._list_book_chunk = int(list_book_chunk)
+        self._index: dict[str, MarketIndexEntry] = {}
 
-    # ---------------------------------------------------------------------
-    # Auth
-    # ---------------------------------------------------------------------
+    # --- Auth --------------------------------------------------------------
+
     def login(self) -> None:
         self.client.login()
         logger.info("Logged in to Betfair API")
 
-    # ---------------------------------------------------------------------
-    # Catalogue
-    # ---------------------------------------------------------------------
+    # --- Catalogue ---------------------------------------------------------
+
     def scan_catalogue(
         self,
-        countries: Iterable[str],
-        market_types: Iterable[str],
-        lookahead_minutes: int = 10,
-        max_results: int = 200,
-    ) -> List[str]:
+        *,
+        countries: list[str],
+        market_types: list[str],
+        lookahead_minutes: int,
+    ) -> list[str]:
         """
-        Scanne les marchés et alimente self.market_index.
-        Retourne la liste des market_ids (filtrés par market_types).
+        Retourne la liste des marketIds (WIN/PLACE) dans [now, now+lookahead].
+        Remplit aussi un index (MarketIndexEntry) exploitable par l'executor.
         """
         now_utc = datetime.now(timezone.utc)
-        to_utc = now_utc.replace(microsecond=0)  # keep tz-aware
-        # betfairlightweight attend des timestamps; on laisse le filtre faire par défaut (FIRST_TO_START)
+        to_utc = now_utc + timedelta(minutes=int(lookahead_minutes))
 
-        # On s'appuie sur l'endpoint haut-niveau; pas de custom JSON ici.
-        cats = self.client.betting.list_market_catalogue(
-            filter={
-                "eventTypeIds": ["4339"],  # Greyhound Racing
-                "marketCountries": list(countries),
-                "marketTypeCodes": list(market_types),
-            },
-            market_projection=[
-                "MARKET_START_TIME",
-                "RUNNER_DESCRIPTION",
-                "EVENT",
-                "COMPETITION",
-                "MARKET_DESCRIPTION",
-            ],
+        # IMPORTANT: convertir en chaînes ISO pour éviter "datetime is not JSON serializable"
+        start_filter = {
+            "from": _to_iso_z(now_utc),
+            "to": _to_iso_z(to_utc),
+        }
+
+        flt = bflw.filters.market_filter(
+            market_countries=countries or None,
+            market_type_codes=market_types or None,
+            market_start_time=start_filter,
+        )
+        projections = [
+            "MARKET_START_TIME",
+            "RUNNER_DESCRIPTION",
+            "MARKET_DESCRIPTION",
+            "EVENT",
+        ]
+
+        catalogues: list[MarketCatalogue] = self.client.betting.list_market_catalogue(
+            filter=flt,
+            market_projection=projections,
             sort="FIRST_TO_START",
-            max_results=max_results,
+            max_results=1000,
         )
 
-        market_ids: List[str] = []
-        with_start = 0
+        self._index.clear()
+        market_ids: list[str] = []
+        for cat in catalogues:
+            mid = cat.market_id
+            market_ids.append(mid)
 
-        for cat in cats or []:
-            mid = getattr(cat, "market_id", None) or getattr(cat, "marketId", None)
-            if not mid:
-                continue
-
-            # start_time
-            start_time: Optional[datetime] = getattr(cat, "market_start_time", None)
-            if start_time and start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=timezone.utc)
-            if start_time:
-                with_start += 1
-
-            # race_id : on privilégie l'id d'event s'il est dispo
+            start = getattr(cat, "market_start_time", None)
             event = getattr(cat, "event", None)
-            venue = getattr(event, "venue", None)
-            event_id = getattr(event, "id", None)
+            evt_id = getattr(event, "id", None)
+            evt_name = getattr(event, "name", None)
+            country = getattr(event, "country_code", None)
+            venue = getattr(cat, "market_name", None)
 
-            if event_id:
-                race_id = str(event_id)
+            mtype = getattr(cat, "market_type", None)
+            if mtype is None:
+                desc = getattr(cat, "description", None)
+                mtype = getattr(desc, "market_type", None)
+
+            if isinstance(start, datetime):
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                course_uid = f"{evt_id}@{start.strftime('%Y%m%dT%H%M')}"
             else:
-                # fallback stable : venue + horodatage
-                stamp = start_time.astimezone(timezone.utc).strftime("%Y%m%d%H%M") if start_time else "unknown"
-                race_id = f"{(venue or 'UNKNOWN').strip()}_{stamp}"
+                course_uid = None
 
-            # market_type
-            mtype = getattr(cat, "market_type", None) or getattr(cat, "marketName", None)
-
-            # nb de places gagnantes (si dispo)
-            desc = getattr(cat, "description", None)
-            nwin = getattr(desc, "number_of_winners", None)
-            if not isinstance(nwin, int) or nwin <= 0:
-                nwin = 1
-
-            self.market_index[mid] = MarketIndexEntry(
+            self._index[mid] = MarketIndexEntry(
                 market_id=mid,
-                race_id=race_id,
-                start_time=start_time,
-                market_type=str(mtype) if mtype else None,
-                number_of_winners=nwin,
+                market_type=mtype,
+                event_id=evt_id,
+                event_name=evt_name,
+                country=country,
+                venue=venue,
+                start_time=start,
+                course_uid=course_uid,
             )
-
-            # On ne renvoie que ce qui correspond au market_types demandés
-            # (Betfair a déjà filtré, mais on reste défensif)
-            if mtype and str(mtype).upper() in set(mt.upper() for mt in market_types):
-                market_ids.append(mid)
 
         logger.info(
             "Found {} greyhound markets in next {} minutes (start_time present for {}/{})",
             len(market_ids),
             lookahead_minutes,
-            with_start,
+            sum(1 for e in self._index.values() if isinstance(e.start_time, datetime)),
             len(market_ids),
         )
         return market_ids
 
-    # ---------------------------------------------------------------------
-    # Books
-    # ---------------------------------------------------------------------
-    def poll_market_books(self, market_ids: List[str]) -> Dict[str, object]:
+    # --- Books -------------------------------------------------------------
+
+    def get_market_books(self, market_ids: list[str]) -> dict[str, MarketBook]:
         """
-        Récupère les MarketBook par paquets et **retourne toujours un dict**
-        {market_id: MarketBook} pour correspondre à l'executor.
+        Récupère les MarketBook pour les market_ids donnés (dict {mid: MarketBook}).
         """
         if not market_ids:
             return {}
 
-        out: Dict[str, object] = {}
-        chunk = 25  # confortable sous les limites
-        for i in range(0, len(market_ids), chunk):
-            part = market_ids[i : i + chunk]
-            books = self.client.betting.list_market_book(
-                market_ids=part,
-                price_projection={"priceData": ["EX_BEST_OFFERS"]},
-                order_projection=None,
-                match_projection=None,
-            )
-            for b in books or []:
-                mid = getattr(b, "market_id", None) or getattr(b, "marketId", None)
-                if mid:
-                    out[mid] = b
+        price_projection = bflw.filters.price_projection(
+            price_data=["EX_BEST_OFFERS"]  # léger pour le polling
+        )
 
+        out: dict[str, MarketBook] = {}
+        for chunk in _chunked(market_ids, self._list_book_chunk):
+            try:
+                books: list[MarketBook] = self.client.betting.list_market_book(
+                    market_ids=chunk,
+                    price_projection=price_projection,
+                    order_projection=None,
+                    match_projection=None,
+                )
+                for b in books:
+                    out[b.market_id] = b
+            except Exception as e:
+                logger.warning(
+                    "list_market_book chunk error on {} ids: {}", len(chunk), e
+                )
         return out
 
-    # ---------------------------------------------------------------------
-    # Utilitaires attendus par l'executor
-    # ---------------------------------------------------------------------
-    def get_market_index_entry(self, market_id: str) -> Optional[MarketIndexEntry]:
-        return self.market_index.get(market_id)
+    # Alias backward-compat
+    def prefetch_market_books(self, market_ids: list[str]) -> dict[str, MarketBook]:
+        return self.get_market_books(market_ids)
 
-    def get_time_to_off(self, book: object, fallback_start: Optional[datetime]) -> Optional[int]:
-        """
-        Renvoie le t_to_off en secondes (peut être négatif si déjà parti),
-        ou None si on ne sait pas.
-        """
-        market_time: Optional[datetime] = None
+    # --- Infos utiles à l’executor ----------------------------------------
 
-        # market_definition.market_time si dispo dans le book
+    def get_market_index_entry(self, market_id: str) -> MarketIndexEntry | None:
+        return self._index.get(market_id)
+
+    def get_time_to_off(self, book: MarketBook) -> float | None:
+        """
+        Calcule T-to-OFF en secondes depuis le MarketBook.
+        Essaye marketDefinition.marketTime, sinon retombe sur l’index.
+        """
+        start: datetime | None = None
+
         mdef = getattr(book, "market_definition", None)
-        if mdef is None:
-            # certains wrappers utilisent camelCase
-            mdef = getattr(book, "marketDefinition", None)
         if mdef is not None:
-            market_time = getattr(mdef, "market_time", None) or getattr(mdef, "marketTime", None)
+            start = getattr(mdef, "market_time", None)
 
-        start_time = market_time or fallback_start
-        if not start_time:
+        if start is None:
+            entry = self._index.get(book.market_id)
+            if entry:
+                start = entry.start_time
+
+        if not isinstance(start, datetime):
             return None
 
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=timezone.utc)
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+
         now = datetime.now(timezone.utc)
-        return int((start_time - now).total_seconds())
+        return (start - now).total_seconds()
