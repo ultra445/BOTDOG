@@ -1,0 +1,23 @@
+Metadata-Version: 2.1
+Name: betfairlightweight
+Version: 2.15.0
+Summary: Lightweight python wrapper for Betfair API-NG
+Home-page: https://github.com/liampauling/betfair
+Author: Liam Pauling
+Author-email: a@unknown.invalid
+License: MIT
+Platform: UNKNOWN
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Requires-Dist: requests (<2.27.0)
+Provides-Extra: speed
+Requires-Dist: ciso8601 (==2.2.0) ; extra == 'speed'
+Requires-Dist: orjson (==3.6.4) ; extra == 'speed'
+
+UNKNOWN
+
+

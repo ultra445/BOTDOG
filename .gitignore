@@ -1,6 +1,10 @@
+﻿.env
+*.pem
+*.crt
+*.key
 __pycache__/
 *.pyc
-.env
-.venv/
-.idea/
-
+logs/
+*.csv
+snapshots/
+C:/betfair-certs/
