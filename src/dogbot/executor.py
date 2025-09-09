@@ -269,10 +269,10 @@ class Executor:
 
         self._diag_fetch_latency_ms: Optional[float] = None
         self._diag_retry_count: Optional[int] = None
-               self._diag_throttle_weight: Optional[float] = None
+        self._diag_throttle_weight: Optional[float] = None
         self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
 
-    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[float] = None,
+    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
         if fetch_latency_ms is not None:
             self._diag_fetch_latency_ms = float(fetch_latency_ms)
@@ -368,7 +368,7 @@ class Executor:
             st = (getattr(r, "status", None) or "ACTIVE").upper()
             sid = getattr(r, "selection_id", None)
             rm = meta_by_sid.get(int(sid)) if (sid is not None) else None
-            trap = _parse_trap(rm, getattr(rm, "runner_name", None) if rm else None)
+            trap = _parse_trap(rm, getattr(r, "runner_name", None) if rm else None)
             if st == "ACTIVE" and trap is not None:
                 active.append((int(sid), trap))
             elif st != "ACTIVE" and trap is not None:
@@ -499,7 +499,7 @@ class Executor:
         n_places = (mie.n_places if mie and mie.n_places else (3 if n_active >= 8 else 2))
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
-        # --- Préparation PL côté WIN (inchangé) ---
+        # --- Préparation PL côté WIN ---
         sid_prices_for_pl: Dict[int, float] = {}
         temp_cache: Dict[int, Dict[str, Optional[float]]] = {}
 
@@ -515,7 +515,7 @@ class Executor:
             bspmoy = (near_sp + far_sp)/2.0 if (near_sp is not None and far_sp is not None) else (near_sp if near_sp is not None else far_sp)
             winprob_price = (bspmoy + lpt)/2.0 if (bspmoy is not None and lpt is not None) else None
 
-            # priorité modifiée: WINPROB -> BSPMOY -> LTP -> BACK
+            # priorité: WINPROB -> BSPMOY -> LTP -> BACK
             chosen = winprob_price or bspmoy or lpt or bb
             if chosen and chosen > 0:
                 sid_prices_for_pl[sid] = float(chosen)
