@@ -1,4 +1,4 @@
-﻿# src/dogbot/executor.py — snapshots enrichis (BSPMOY, WINPROB, PLACE_THEORIQUE Plackett–Luce) + auto-rotate header
+﻿# src/dogbot/executor.py — WIN + PLACE snapshots, BSPMOY_PLACE & PLACEPROB, PL (Top-K) côté WIN, auto-rotate header
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +9,6 @@ import csv, math, os, re
 from .types import MarketIndexEntry, Instruction, RunnerMeta
 from .indexer import MarketIndex
 
-# ---------- helpers de base ----------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -151,7 +150,6 @@ def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
     return ({sid:i+1 for i,(sid,_) in enumerate(arr_ltp)},
             {sid:i+1 for i,(sid,_) in enumerate(arr_bb)})
 
-# ---------- TRAP parsing ----------
 _TRAP_PATTS = [
     re.compile(r"^\s*(?:TRAP|T)\s*([1-9]\d?)\b", re.I),
     re.compile(r"^\s*([1-9]\d?)\s*[.\-)\s]"),
@@ -179,9 +177,8 @@ def _parse_trap(meta: Optional[RunnerMeta], runner_name: Optional[str]) -> Optio
                     continue
     return None
 
-# ---------- Plackett–Luce: Top-K place prob exact ----------
+# ----- Plackett–Luce Top-K (pour PLACE_THÉORIQUE sur WIN) -----
 def _elem_sym_poly(weights: List[float], K: int) -> List[float]:
-    """e[m] = somme des produits de m poids (polynômes symétriques élémentaires), m=0..K"""
     e = [0.0] * (K + 1)
     e[0] = 1.0
     for w in weights:
@@ -190,15 +187,10 @@ def _elem_sym_poly(weights: List[float], K: int) -> List[float]:
     return e
 
 def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
-    """
-    Retourne pour chaque i la proba d'être classé dans le Top-K sous PL avec poids 'weights'.
-    Formule: P_i(m) = w_i * e_{m-1}^{(-i)} / e_m^{(all)} ; q_i = sum_{m=1..K} P_i(m)
-    """
     n = len(weights)
     K = min(K, n)
     if K <= 0:
         return [0.0]*n
-    # e_m(all)
     e_all = _elem_sym_poly(weights, K)
     res = [0.0]*n
     for i in range(n):
@@ -206,7 +198,6 @@ def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
         if wi <= 0:
             res[i] = 0.0
             continue
-        # e_m(excl i)
         w_excl = [weights[j] for j in range(n) if j != i]
         e_ex = _elem_sym_poly(w_excl, K-1 if K>0 else 0)
         s = 0.0
@@ -218,7 +209,6 @@ def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
         res[i] = s
     return res
 
-# ============ Executor ============
 class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
@@ -238,12 +228,12 @@ class Executor:
     ]
 
     RUNNER_HEADER = [
-        "SNAP_TS_UTC","MARKET_ID","SELECTION_ID","RUNNER_NAME","RUNNER_STATUS",
+        "SNAP_TS_UTC","MARKET_ID","MARKET_TYPE","SELECTION_ID","RUNNER_NAME","RUNNER_STATUS",
         "DRAW","TRAP","VIRTUAL_TRAP","SORT_PRIORITY","N_RUNNERS_ACTIVE","N_PLACES",
         "LTP","BEST_BACK_PRICE_1","BEST_BACK_SIZE_1","BEST_LAY_PRICE_1","BEST_LAY_SIZE_1",
         "BACK_LADDER","LAY_LADDER","RUNNER_TOTAL_MATCHED",
         "FAV_RANK_LTP","FAV_RANK_BACK","WIN_IMPLIED_PROB",
-        "NEAR_SP","FAR_SP","BSPMOY","WINPROB",
+        "NEAR_SP","FAR_SP","BSPMOY","BSPMOY_PLACE","WINPROB","PLACEPROB",
         "LTP_300","LTP_150","LTP_80","LTP_45","LTP_2",
         "DIFF150_300","DIFF80_150","DIFF45_80",
         "MOM45","MOM80","MOM150","MOM300",
@@ -279,10 +269,10 @@ class Executor:
 
         self._diag_fetch_latency_ms: Optional[float] = None
         self._diag_retry_count: Optional[int] = None
-        self._diag_throttle_weight: Optional[float] = None
+               self._diag_throttle_weight: Optional[float] = None
         self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
 
-    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
+    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[float] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
         if fetch_latency_ms is not None:
             self._diag_fetch_latency_ms = float(fetch_latency_ms)
@@ -293,7 +283,6 @@ class Executor:
         if code_version is not None:
             self._code_version = str(code_version)
 
-    # auto-rotate header si ancien
     def _ensure_header(self, path: Path, header: Iterable[str]) -> None:
         header_list = list(header)
         if path.exists():
@@ -319,7 +308,7 @@ class Executor:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
 
-    # ---------- milestones / histo ----------
+    # --- milestones / histo ---
     def _milestone_due(self, mid: str, tto: Optional[float]) -> Optional[int]:
         if tto is None:
             return None
@@ -371,7 +360,6 @@ class Executor:
         var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
         return math.sqrt(var)
 
-    # ---------- virtual traps ----------
     @staticmethod
     def _compute_virtual_traps(runners, meta_by_sid: Dict[int, RunnerMeta]) -> Dict[int, Optional[int]]:
         active = []
@@ -385,28 +373,25 @@ class Executor:
                 active.append((int(sid), trap))
             elif st != "ACTIVE" and trap is not None:
                 absent_traps.add(int(trap))
-
         active.sort(key=lambda t: t[1])
         N = len(active)
         vmap: Dict[int, Optional[int]] = {}
         if N == 0:
             return vmap
-
         for i, (sid, _trap) in enumerate(active):
             vmap[sid] = i + 1
-
         if N >= 7 and 8 in absent_traps:
             rightmost_sid = active[-1][0]
             vmap[rightmost_sid] = 8
-
         return vmap
 
-    # ---------- main ----------
+    # --- main ---
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
         md = getattr(book, "market_definition", None)
         runners = getattr(book, "runners", None) or []
         now = datetime.now(timezone.utc)
+        market_type = (getattr(md, "market_type", None) or "").upper()
 
         mie: Optional[MarketIndexEntry] = self.market_index.get(market_id) if self.market_index else None
         event_open_utc = mie.event_open_utc if mie else None
@@ -429,11 +414,13 @@ class Executor:
         self._write_market_row(book, mie, t_to_off_s, milestone, runners)
 
         if milestone is not None:
-            self._write_runner_rows(book, mie, t_to_off_s, milestone, runners, rank_ltp, rank_back)
+            self._write_runner_rows(book, mie, t_to_off_s, milestone, runners, rank_ltp, rank_back, market_type)
 
+        # stratégie (inchangé)
         instructions: List[Instruction] = []
         try:
-            instructions = self.strategy.decide_all(book, mie, now) or []
+            now_dt = datetime.now(timezone.utc)
+            instructions = self.strategy.decide_all(book, mie, now_dt) or []
         except Exception as e:
             print(f"[STRATEGY_ERR] {market_id}: {e}")
 
@@ -448,7 +435,6 @@ class Executor:
         if t_to_off_s is not None:
             self._last_tto[market_id] = t_to_off_s
 
-    # ---------- write market ----------
     def _write_market_row(self, book, mie: Optional[MarketIndexEntry], tto: Optional[float], milestone: Optional[int], runners) -> None:
         md = getattr(book, "market_definition", None)
         back_over = _overround_back(runners)
@@ -504,71 +490,43 @@ class Executor:
         fav_price = min(ex_prices)
         return (self.PRICE_MIN <= fav_price <= self.PRICE_MAX)
 
-    # ---------- write runners (aux jalons) ----------
     def _write_runner_rows(self, book, mie: Optional[MarketIndexEntry], tto: Optional[float], milestone: int,
-                           runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int]) -> None:
+                           runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int], market_type: str) -> None:
         ts = _now_utc_iso()
         market_id = str(getattr(book, "market_id", ""))
         n_active = _active_count(runners)
         meta_by_sid = mie.runners_meta if (mie and mie.runners_meta) else {}
-
-        # N_PLACES (priorité à l'info marché, sinon règle 2/3)
         n_places = (mie.n_places if mie and mie.n_places else (3 if n_active >= 8 else 2))
-
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
-        # ------- Préparer les poids WIN pour PL (par SID) -------
-        # Choix du prix WIN par runner (PRIORITÉ demandée: WINPROB -> BSPMOY -> LTP -> meilleur BACK)
+        # --- Préparation PL côté WIN (inchangé) ---
         sid_prices_for_pl: Dict[int, float] = {}
         temp_cache: Dict[int, Dict[str, Optional[float]]] = {}
 
-        # Première passe: collecter prix nécessaires
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None:
                 continue
             sid = int(sid)
-            rm: RunnerMeta | None = meta_by_sid.get(sid)
-            # prix instantanés
             lpt = _runner_lpt_or_back(r)
             ex = getattr(r, "ex", None)
             bb, _ = _best_at_side(ex, "BACK")
-            # SP estimé
             near_sp, far_sp = _get_sp_near_far(r)
-            bspmoy = None
-            if near_sp is not None and far_sp is not None:
-                bspmoy = (near_sp + far_sp) / 2.0
-            elif near_sp is not None:
-                bspmoy = near_sp
-            elif far_sp is not None:
-                bspmoy = far_sp
-            winprob_price = None
-            if (bspmoy is not None) and (lpt is not None):
-                winprob_price = (bspmoy + lpt) / 2.0
+            bspmoy = (near_sp + far_sp)/2.0 if (near_sp is not None and far_sp is not None) else (near_sp if near_sp is not None else far_sp)
+            winprob_price = (bspmoy + lpt)/2.0 if (bspmoy is not None and lpt is not None) else None
 
-            # *** PRIORITÉ MODIFIÉE ICI ***
-            # ancien: winprob -> LTP -> best back -> BSPMOY
-            # nouveau: winprob -> BSPMOY -> LTP -> best back
+            # priorité modifiée: WINPROB -> BSPMOY -> LTP -> BACK
             chosen = winprob_price or bspmoy or lpt or bb
-
             if chosen and chosen > 0:
                 sid_prices_for_pl[sid] = float(chosen)
-            temp_cache[sid] = {
-                "LTP": lpt, "BB": bb, "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy, "WINPROB": winprob_price
-            }
+            temp_cache[sid] = {"LTP": lpt, "BB": bb, "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy, "WINPROB": winprob_price}
 
-        # s'il manque trop d'infos, on ne calcule pas PL
-        do_pl = len(sid_prices_for_pl) >= max(2, min(5, n_active))  # garde-fou souple
-
-        # construire vecteur des poids (même ordre que l'itération runners ci-dessous)
+        do_pl = (market_type == "WIN") and (len(sid_prices_for_pl) >= max(2, min(5, n_active)))
         ordered_sids: List[int] = []
         weights: List[float] = []
         if do_pl:
             for r in runners:
-                sid = getattr(r, "selection_id", None)
-                if sid is None:
-                    continue
-                sid = int(sid)
+                sid = int(getattr(r, "selection_id", 0) or 0)
                 price = sid_prices_for_pl.get(sid)
                 if price and price > 0:
                     ordered_sids.append(sid)
@@ -576,7 +534,6 @@ class Executor:
                 else:
                     ordered_sids.append(sid)
                     weights.append(0.0)
-
             q_topk: Dict[int, Optional[float]] = {}
             if sum(weights) > 0 and n_places > 0:
                 probs = _place_probs_plackett_luce(weights, K=n_places)
@@ -587,7 +544,7 @@ class Executor:
         else:
             q_topk = {}
 
-        # ------- Écriture des lignes runners -------
+        # --- Écriture des runners ---
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None:
@@ -614,7 +571,7 @@ class Executor:
             near_sp = temp_cache.get(sid, {}).get("NEAR")
             far_sp  = temp_cache.get(sid, {}).get("FAR")
             bspmoy  = temp_cache.get(sid, {}).get("BSPMOY")
-            winprob = temp_cache.get(sid, {}).get("WINPROB")  # prix mixte (moyenne BSPMOY/LTP)
+            winprob = temp_cache.get(sid, {}).get("WINPROB")  # pour WIN
 
             # LTP aux jalons
             if lpt is not None:
@@ -644,22 +601,29 @@ class Executor:
             vol = self._volatility(market_id, sid, 60.0)
             liq_score = (bs or 0.0) + (ls or 0.0)
 
-            # Place théorique (probabilité Top-K)
-            place_theorique = q_topk.get(sid) if do_pl else None
+            # Champs spécifiques WIN / PLACE
+            bspmoy_place = None
+            placeprob = None
+            winprob_out = None
+            if market_type == "WIN":
+                winprob_out = winprob  # (BSPMOY + LTP)/2 si tous deux présents
+            else:  # PLACE
+                bspmoy_place = bspmoy
+                if (bspmoy_place is not None) and (lpt is not None):
+                    placeprob = (bspmoy_place + lpt) / 2.0
+
+            place_theorique = q_topk.get(sid) if do_pl else None  # défini seulement côté WIN
 
             row = [
-                ts, market_id, sid,
-                runner_name,
-                status,
+                ts, market_id, market_type, sid,
+                runner_name, status,
                 (rm.draw if rm and rm.draw else None),
-                trap,
-                vtrap,
-                (rm.sort_priority if rm else None),
+                trap, vtrap, (rm.sort_priority if rm else None),
                 n_active, n_places,
                 lpt, bb, bs, bl, ls,
                 ladder_b, ladder_l, total_matched_runner,
                 rk_ltp, rk_bb, implied,
-                near_sp, far_sp, bspmoy, winprob,
+                near_sp, far_sp, bspmoy, bspmoy_place, winprob_out, placeprob,
                 ltp_300, ltp_150, ltp_80, ltp_45, ltp_2,
                 diff150_300, diff80_150, diff45_80,
                 mom45, mom80, mom150, mom300,
