@@ -1,4 +1,4 @@
-﻿# src/dogbot/executor.py — WIN + PLACE snapshots, BSPMOY_PLACE & PLACEPROB, PL (Top-K) côté WIN, auto-rotate header
+﻿# src/dogbot/executor.py — runners CSV réorganisé : bloc WIN puis bloc PLACE (à droite) + marketIds visibles
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +9,7 @@ import csv, math, os, re
 from .types import MarketIndexEntry, Instruction, RunnerMeta
 from .indexer import MarketIndex
 
+# ----------------- helpers -----------------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -150,6 +151,7 @@ def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
     return ({sid:i+1 for i,(sid,_) in enumerate(arr_ltp)},
             {sid:i+1 for i,(sid,_) in enumerate(arr_bb)})
 
+# -------- TRAP parsing --------
 _TRAP_PATTS = [
     re.compile(r"^\s*(?:TRAP|T)\s*([1-9]\d?)\b", re.I),
     re.compile(r"^\s*([1-9]\d?)\s*[.\-)\s]"),
@@ -209,6 +211,7 @@ def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
         res[i] = s
     return res
 
+# ----------------- Executor -----------------
 class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
@@ -227,19 +230,30 @@ class Executor:
         "FETCH_LATENCY_MS","CACHE_AGE_S","RETRY_COUNT","THROTTLE_WEIGHT","CODE_VERSION",
     ]
 
+    # >>> RUNNER CSV : base, bloc WIN, bloc PLACE (à droite)
     RUNNER_HEADER = [
-        "SNAP_TS_UTC","MARKET_ID","MARKET_TYPE","SELECTION_ID","RUNNER_NAME","RUNNER_STATUS",
-        "DRAW","TRAP","VIRTUAL_TRAP","SORT_PRIORITY","N_RUNNERS_ACTIVE","N_PLACES",
-        "LTP","BEST_BACK_PRICE_1","BEST_BACK_SIZE_1","BEST_LAY_PRICE_1","BEST_LAY_SIZE_1",
-        "BACK_LADDER","LAY_LADDER","RUNNER_TOTAL_MATCHED",
-        "FAV_RANK_LTP","FAV_RANK_BACK","WIN_IMPLIED_PROB",
-        "NEAR_SP","FAR_SP","BSPMOY","BSPMOY_PLACE","WINPROB","PLACEPROB",
-        "LTP_300","LTP_150","LTP_80","LTP_45","LTP_2",
-        "DIFF150_300","DIFF80_150","DIFF45_80",
-        "MOM45","MOM80","MOM150","MOM300",
-        "PRICE_DELTA_5S","PRICE_DELTA_30S","VOLATILITY_60S","LIQUIDITY_SCORE",
-        "IS_FAVOURITE","PLACE_THEORIQUE",
-        "SECONDS_TO_OFF","VENUE","COURSE_ID","MILESTONE_S"
+        # Base
+        "SNAP_TS_UTC","COURSE_ID","VENUE","MARKET_START_TIME_UTC","SECONDS_TO_OFF","MILESTONE_S",
+        "WIN_MARKET_ID","PLACE_MARKET_ID","MARKET_ID","MARKET_TYPE",
+        "SELECTION_ID","RUNNER_NAME","RUNNER_STATUS","DRAW","TRAP","VIRTUAL_TRAP","SORT_PRIORITY",
+        "N_RUNNERS_ACTIVE","N_PLACES",
+
+        # --- Bloc WIN ---
+        "LTP_WIN","BEST_BACK_PRICE_1_WIN","BEST_BACK_SIZE_1_WIN","BEST_LAY_PRICE_1_WIN","BEST_LAY_SIZE_1_WIN",
+        "BACK_LADDER_WIN","LAY_LADDER_WIN","RUNNER_TOTAL_MATCHED_WIN",
+        "FAV_RANK_LTP_WIN","FAV_RANK_BACK_WIN","WIN_IMPLIED_PROB_WIN",
+        "NEAR_SP_WIN","FAR_SP_WIN","BSPMOY_WIN","WINPROB",
+        "LTP_300_WIN","LTP_150_WIN","LTP_80_WIN","LTP_45_WIN","LTP_2_WIN",
+        "DIFF150_300_WIN","DIFF80_150_WIN","DIFF45_80_WIN",
+        "MOM45_WIN","MOM80_WIN","MOM150_WIN","MOM300_WIN",
+        "PRICE_DELTA_5S_WIN","PRICE_DELTA_30S_WIN","VOLATILITY_60S_WIN","LIQUIDITY_SCORE_WIN",
+        "IS_FAVOURITE_WIN","PLACE_THEORIQUE",  # PL (Top-K) calculée côté WIN
+
+        # --- Bloc PLACE (tout à droite) ---
+        "LTP_PLACE","BEST_BACK_PRICE_1_PLACE","BEST_BACK_SIZE_1_PLACE","BEST_LAY_PRICE_1_PLACE","BEST_LAY_SIZE_1_PLACE",
+        "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
+        "NEAR_SP_PLACE","FAR_SP_PLACE","BSPMOY_PLACE","PLACEPROB",
+        "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
     ]
 
     ENTRY_MIN_T_S = 120
@@ -268,11 +282,11 @@ class Executor:
         self._ltp_ms: Dict[str, Dict[int, Dict[int, float]]] = defaultdict(lambda: defaultdict(dict))
 
         self._diag_fetch_latency_ms: Optional[float] = None
-        self._diag_retry_count: Optional[int] = None
+        self._diag_retry_count: Optional[float] = None
         self._diag_throttle_weight: Optional[float] = None
         self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
 
-    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
+    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[float] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
         if fetch_latency_ms is not None:
             self._diag_fetch_latency_ms = float(fetch_latency_ms)
@@ -283,6 +297,7 @@ class Executor:
         if code_version is not None:
             self._code_version = str(code_version)
 
+    # auto-rotate header si ancien
     def _ensure_header(self, path: Path, header: Iterable[str]) -> None:
         header_list = list(header)
         if path.exists():
@@ -308,7 +323,7 @@ class Executor:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
 
-    # --- milestones / histo ---
+    # --------------- milestones / histo ---------------
     def _milestone_due(self, mid: str, tto: Optional[float]) -> Optional[int]:
         if tto is None:
             return None
@@ -360,6 +375,7 @@ class Executor:
         var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
         return math.sqrt(var)
 
+    # -------- virtual traps --------
     @staticmethod
     def _compute_virtual_traps(runners, meta_by_sid: Dict[int, RunnerMeta]) -> Dict[int, Optional[int]]:
         active = []
@@ -368,7 +384,7 @@ class Executor:
             st = (getattr(r, "status", None) or "ACTIVE").upper()
             sid = getattr(r, "selection_id", None)
             rm = meta_by_sid.get(int(sid)) if (sid is not None) else None
-            trap = _parse_trap(rm, getattr(r, "runner_name", None) if rm else None)
+            trap = _parse_trap(rm, getattr(rm, "runner_name", None) if rm else None)
             if st == "ACTIVE" and trap is not None:
                 active.append((int(sid), trap))
             elif st != "ACTIVE" and trap is not None:
@@ -385,7 +401,7 @@ class Executor:
             vmap[rightmost_sid] = 8
         return vmap
 
-    # --- main ---
+    # ----------------- main -----------------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
         md = getattr(book, "market_definition", None)
@@ -490,6 +506,7 @@ class Executor:
         fav_price = min(ex_prices)
         return (self.PRICE_MIN <= fav_price <= self.PRICE_MAX)
 
+    # --------------- runners write ---------------
     def _write_runner_rows(self, book, mie: Optional[MarketIndexEntry], tto: Optional[float], milestone: int,
                            runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int], market_type: str) -> None:
         ts = _now_utc_iso()
@@ -499,7 +516,7 @@ class Executor:
         n_places = (mie.n_places if mie and mie.n_places else (3 if n_active >= 8 else 2))
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
-        # --- Préparation PL côté WIN ---
+        # --- Préparation PL côté WIN (priorité : WINPROB -> BSPMOY -> LTP -> BACK) ---
         sid_prices_for_pl: Dict[int, float] = {}
         temp_cache: Dict[int, Dict[str, Optional[float]]] = {}
 
@@ -515,11 +532,12 @@ class Executor:
             bspmoy = (near_sp + far_sp)/2.0 if (near_sp is not None and far_sp is not None) else (near_sp if near_sp is not None else far_sp)
             winprob_price = (bspmoy + lpt)/2.0 if (bspmoy is not None and lpt is not None) else None
 
-            # priorité: WINPROB -> BSPMOY -> LTP -> BACK
             chosen = winprob_price or bspmoy or lpt or bb
             if chosen and chosen > 0:
                 sid_prices_for_pl[sid] = float(chosen)
-            temp_cache[sid] = {"LTP": lpt, "BB": bb, "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy, "WINPROB": winprob_price}
+            temp_cache[sid] = {
+                "LTP": lpt, "BB": bb, "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy, "WINPROB": winprob_price
+            }
 
         do_pl = (market_type == "WIN") and (len(sid_prices_for_pl) >= max(2, min(5, n_active)))
         ordered_sids: List[int] = []
@@ -544,7 +562,7 @@ class Executor:
         else:
             q_topk = {}
 
-        # --- Écriture des runners ---
+        # --- Écriture des lignes ---
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None:
@@ -573,7 +591,7 @@ class Executor:
             bspmoy  = temp_cache.get(sid, {}).get("BSPMOY")
             winprob = temp_cache.get(sid, {}).get("WINPROB")  # pour WIN
 
-            # LTP aux jalons
+            # LTP aux jalons (par market_id)
             if lpt is not None:
                 self._ltp_ms[market_id][sid][milestone] = float(lpt)
             ms_vals = self._ltp_ms[market_id][sid]
@@ -601,38 +619,83 @@ class Executor:
             vol = self._volatility(market_id, sid, 60.0)
             liq_score = (bs or 0.0) + (ls or 0.0)
 
-            # Champs spécifiques WIN / PLACE
-            bspmoy_place = None
-            placeprob = None
-            winprob_out = None
-            if market_type == "WIN":
-                winprob_out = winprob  # (BSPMOY + LTP)/2 si tous deux présents
-            else:  # PLACE
-                bspmoy_place = bspmoy
-                if (bspmoy_place is not None) and (lpt is not None):
-                    placeprob = (bspmoy_place + lpt) / 2.0
-
-            place_theorique = q_topk.get(sid) if do_pl else None  # défini seulement côté WIN
-
-            row = [
-                ts, market_id, market_type, sid,
-                runner_name, status,
-                (rm.draw if rm and rm.draw else None),
-                trap, vtrap, (rm.sort_priority if rm else None),
-                n_active, n_places,
-                lpt, bb, bs, bl, ls,
-                ladder_b, ladder_l, total_matched_runner,
-                rk_ltp, rk_bb, implied,
-                near_sp, far_sp, bspmoy, bspmoy_place, winprob_out, placeprob,
-                ltp_300, ltp_150, ltp_80, ltp_45, ltp_2,
-                diff150_300, diff80_150, diff45_80,
-                mom45, mom80, mom150, mom300,
-                d5, d30, vol, liq_score,
-                (rk_bb == 1 if rk_bb is not None else None),
-                place_theorique,
-                float(tto) if tto is not None else None,
-                (mie.venue if mie else None),
+            # ----- mapping de sortie par bloc -----
+            # infos communes
+            base = [
+                ts,
                 (mie.course_id if mie else None),
+                (mie.venue if mie else None),
+                (mie.event_open_utc.isoformat().replace("+00:00","Z") if (mie and mie.event_open_utc) else None),
+                float(tto) if tto is not None else None,
                 milestone,
+                (mie.win_market_id if mie else None),
+                (mie.place_market_id if mie else None),
+                market_id,
+                market_type,
+                sid, runner_name, status,
+                (rm.draw if rm and rm.draw else None),
+                trap, vtrap,
+                (rm.sort_priority if rm else None),
+                n_active, n_places,
             ]
+
+            # bloc WIN (rempli seulement si market_type == WIN)
+            win_block = [
+                lpt if market_type=="WIN" else None,
+                (bb if market_type=="WIN" else None),
+                (bs if market_type=="WIN" else None),
+                (bl if market_type=="WIN" else None),
+                (ls if market_type=="WIN" else None),
+                (ladder_b if market_type=="WIN" else None),
+                (ladder_l if market_type=="WIN" else None),
+                (total_matched_runner if market_type=="WIN" else None),
+                (rk_ltp if market_type=="WIN" else None),
+                (rk_bb if market_type=="WIN" else None),
+                (implied if market_type=="WIN" else None),
+                (near_sp if market_type=="WIN" else None),
+                (far_sp  if market_type=="WIN" else None),
+                (bspmoy  if market_type=="WIN" else None),
+                (winprob if market_type=="WIN" else None),
+                (ltp_300 if market_type=="WIN" else None),
+                (ltp_150 if market_type=="WIN" else None),
+                (ltp_80  if market_type=="WIN" else None),
+                (ltp_45  if market_type=="WIN" else None),
+                (ltp_2   if market_type=="WIN" else None),
+                (diff150_300 if market_type=="WIN" else None),
+                (diff80_150  if market_type=="WIN" else None),
+                (diff45_80   if market_type=="WIN" else None),
+                (mom45  if market_type=="WIN" else None),
+                (mom80  if market_type=="WIN" else None),
+                (mom150 if market_type=="WIN" else None),
+                (mom300 if market_type=="WIN" else None),
+                (d5 if market_type=="WIN" else None),
+                (d30 if market_type=="WIN" else None),
+                (vol if market_type=="WIN" else None),
+                (liq_score if market_type=="WIN" else None),
+                ((rk_bb == 1) if (market_type=="WIN" and rk_bb is not None) else None),
+                (q_topk.get(sid) if (market_type=="WIN" and do_pl) else None),
+            ]
+
+            # bloc PLACE (à droite) — rempli seulement si market_type == PLACE
+            place_block = [
+                lpt if market_type=="PLACE" else None,
+                (bb if market_type=="PLACE" else None),
+                (bs if market_type=="PLACE" else None),
+                (bl if market_type=="PLACE" else None),
+                (ls if market_type=="PLACE" else None),
+                (ladder_b if market_type=="PLACE" else None),
+                (ladder_l if market_type=="PLACE" else None),
+                (total_matched_runner if market_type=="PLACE" else None),
+                (near_sp if market_type=="PLACE" else None),
+                (far_sp  if market_type=="PLACE" else None),
+                (bspmoy  if market_type=="PLACE" else None),
+                (( (bspmoy + lpt)/2.0 ) if (market_type=="PLACE" and bspmoy is not None and lpt is not None) else None),
+                (ltp_300 if market_type=="PLACE" else None),
+                (ltp_150 if market_type=="PLACE" else None),
+                (ltp_80  if market_type=="PLACE" else None),
+                (ltp_45  if market_type=="PLACE" else None),
+                (ltp_2   if market_type=="PLACE" else None),
+            ]
+
+            row = base + win_block + place_block
             self._append(self.runner_csv, row)
