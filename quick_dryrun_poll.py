@@ -1,24 +1,24 @@
-# quick_dryrun_poll.py — DRY-RUN réel (Betfair REST)
+# quick_dryrun_poll.py — DRY-RUN réel (Betfair REST), priceProjection minimal + fallbacks
 from __future__ import annotations
 import os, sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-# Ajoute ./src au chemin d'import pour "from dogbot ..."
+from betfairlightweight import APIClient, filters
+
+# Chemin vers ./src pour "from dogbot ..."
 ROOT = Path(__file__).parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# Charger .env explicitement depuis la racine du projet
+# Charge .env explicitement (facultatif si $env déjà définies)
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv(ROOT / ".env")
 except Exception:
     pass
-
-from betfairlightweight import APIClient, filters
 
 from dogbot.indexer import MarketIndex, make_course_id
 from dogbot.types import MarketIndexEntry
@@ -26,38 +26,15 @@ from dogbot.strategy.back_win_1 import BackWin1
 from dogbot.executor import Executor
 
 
-def _pick(*names: str) -> str | None:
+def need(*names: str) -> str:
     for n in names:
         v = os.environ.get(n)
         if v:
             return v
-    return None
+    raise SystemExit("Manque des variables d'env: " + " / ".join(names))
 
 
-def _need(*names: str) -> str:
-    v = _pick(*names)
-    if not v:
-        raise SystemExit("Manque des variables d'env: " + " / ".join(names))
-    return v
-
-
-def _resolve_certs(certs_path: str) -> str | tuple[str, str]:
-    p = Path(certs_path)
-    if p.is_dir():
-        crt = p / "client-2048.crt"
-        key = p / "client-2048.key"
-        if crt.exists() and key.exists():
-            return (str(crt), str(key))
-        crt_files = list(p.glob("*.crt"))
-        key_files = list(p.glob("*.key"))
-        if crt_files and key_files:
-            return (str(crt_files[0]), str(key_files[0]))
-        return str(p)
-    else:
-        return str(p)
-
-
-def _iso_z(dt: datetime) -> str:
+def iso_z(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -77,7 +54,7 @@ def build_index(catalogue_markets) -> MarketIndex:
                 open_utc = open_utc.replace(tzinfo=timezone.utc)
             else:
                 open_utc = open_utc.astimezone(timezone.utc)
-        race_no = None  # TODO: parser si dispo
+        race_no = None
         course_id = make_course_id(venue, open_utc, cc, race_no) if open_utc else None
         entries.append(
             MarketIndexEntry(
@@ -96,22 +73,25 @@ def build_index(catalogue_markets) -> MarketIndex:
 
 
 def main() -> None:
-    username = _need("BF_USER", "BETFAIR_USERNAME", "BETFAIR_USER")
-    password = _need("BF_PASS", "BETFAIR_PASSWORD")
-    app_key  = _need("BF_APP_KEY", "BETFAIR_APP_KEY")
-    certs_in = _need("BF_CERTS_PATH", "BETFAIR_CERTS_PATH")
+    username  = need("BF_USER", "BETFAIR_USERNAME", "BETFAIR_USER")
+    password  = need("BF_PASS", "BETFAIR_PASSWORD")
+    app_key   = need("BF_APP_KEY", "BETFAIR_APP_KEY")
+    certs_dir = need("BF_CERTS_PATH", "BETFAIR_CERTS_PATH")  # ex: C:\betfair-certs
 
-    certs = _resolve_certs(certs_in)
+    p = Path(certs_dir)
+    if not p.is_dir():
+        raise SystemExit(f"Le chemin certs n'est pas un dossier: {p}")
 
-    client = APIClient(username=username, password=password, app_key=app_key, certs=certs)
+    # Betfair attend ici un DOSSIER (ta version bflw n'aime pas le tuple)
+    client = APIClient(username=username, password=password, app_key=app_key, certs=certs_dir)
     print("[LOGIN] connecting...")
     client.login()
     print("[LOGIN] OK")
 
     now = datetime.now(timezone.utc)
     lookahead = int(os.environ.get("LOOKAHEAD_MINUTES", "60"))
-    t_from = _iso_z(now)
-    t_to = _iso_z(now + timedelta(minutes=lookahead))
+    t_from = iso_z(now)
+    t_to   = iso_z(now + timedelta(minutes=lookahead))
 
     market_filter = filters.market_filter(
         text_query="Greyhound",
@@ -138,12 +118,31 @@ def main() -> None:
     executor = Executor(client=None, strategy=strategy, market_index=index, dry_run=True, data_dir="./data")
 
     market_ids = [m.market_id for m in catalogue[:5]]
-    price_projection = filters.price_projection(price_data=["EX_LTP"])  # suffisant pour fav LPT
 
-    print("[BOOKS] fetching...")
-    books = client.betting.list_market_book(market_ids=market_ids, price_projection=price_projection)
+    # --- Tentative 1 : priceProjection minimal (évite DSC-0018) ---
+    price_projection = {"priceData": ["EX_LTP"]}
+    print("[BOOKS] fetching (minimal priceProjection EX_LTP)...")
+    try:
+        books = client.betting.list_market_book(market_ids=market_ids, price_projection=price_projection)
+    except Exception as e:
+        print(f"[BOOKS] first attempt failed: {e}")
+        # --- Fallback 1 : EX_BEST_OFFERS avec bestPricesDepth ---
+        price_projection = {"priceData": ["EX_BEST_OFFERS"], "exBestOffersOverrides": {"bestPricesDepth": 3}}
+        print("[BOOKS] retry with EX_BEST_OFFERS (bestPricesDepth=3)...")
+        try:
+            books = client.betting.list_market_book(market_ids=market_ids, price_projection=price_projection)
+        except Exception as e2:
+            print(f"[BOOKS] batch retry failed: {e2}")
+            # --- Fallback 2 : minimal par marché pour isoler un éventuel ID invalide ---
+            books = []
+            for mid in market_ids:
+                try:
+                    b = client.betting.list_market_book(market_ids=[mid], price_projection={"priceData": ["EX_LTP"]})
+                    books.extend(b)
+                except Exception as e3:
+                    print(f"[BOOKS] skip {mid}: {e3}")
+
     print(f"[BOOKS] got {len(books)} books")
-
     for b in books:
         try:
             executor.process_book(b)
