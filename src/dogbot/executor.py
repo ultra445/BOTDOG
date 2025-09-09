@@ -1,296 +1,211 @@
-﻿# src/dogbot/executor.py
-from __future__ import annotations
-
+﻿import os
 import csv
-import os
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+import logging
+import datetime as dt
+from typing import Dict, List, Optional, Any
 
-from loguru import logger
-
-try:
-    # On n'échoue pas si StrategyManager n'est pas présent.
-    from .strategies import StrategyManager  # type: ignore
-except Exception:  # pragma: no cover
-    StrategyManager = Any  # typing fallback
-
-
-class _NoOpStrategy:
-    """Stratégie neutre : ne renvoie aucune instruction."""
-    def decide_all(self, *args, **kwargs):
-        return []
-
-
-def _coerce_seconds(val: Any) -> Optional[float]:
-    """Transforme divers formats (list/tuple/str/int/float/None) en float|None."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        return float(val)
-    if isinstance(val, (list, tuple)) and len(val) > 0:
-        try:
-            return float(val[0])
-        except Exception:
-            return None
-    if isinstance(val, str):
-        val = val.strip()
-        if not val:
-            return None
-        try:
-            return float(val)
-        except Exception:
-            return None
-    return None
-
-
-def _today_snapshot_path() -> str:
-    # Fichier au format 20250908_snapshots.csv dans la racine du projet courant
-    fname = datetime.now(timezone.utc).strftime("%Y%m%d") + "_snapshots.csv"
-    return os.path.abspath(os.path.join(os.getcwd(), fname))
-
-
-def _ensure_header(path: str, header: Iterable[str]) -> None:
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(list(header))
-
-
-def _instantiate_strategy(obj: Any) -> Any:
-    """Si on nous passe une classe, on l'instancie; sinon on renvoie tel quel."""
-    if obj is None:
-        return _NoOpStrategy()
-    try:
-        if isinstance(obj, type):
-            return obj()  # StrategyManager -> StrategyManager()
-    except Exception:
-        pass
-    return obj
+logger = logging.getLogger(__name__)
 
 
 class Executor:
+    """
+    Boucle de polling:
+      - récupère régulièrement les MarketBooks,
+      - appelle la stratégie via decide_all(market_book, market_index_entry, now_utc),
+      - écrit des snapshots CSV périodiques.
+    """
+
     def __init__(
         self,
-        client,  # BetfairClient
-        strategy: Optional[Any] = None,
-        *,
+        client,
+        strategy,
+        snapshot_enabled: bool = True,
+        snapshot_path: str = "./data",
+        snapshot_period: float = 5.0,
         dry_run: bool = True,
-        poll_interval: float | int | str | list | tuple = 2.0,
-        snapshot_seconds: float | int | str | list | tuple | None = None,
-    ) -> None:
+        poll_interval: float = 2.0,
+    ):
         self.client = client
-        self.strategy = _instantiate_strategy(strategy)
-        self.dry_run = bool(dry_run)
+        self.strategy = strategy
+        self._snapshot_enabled = bool(snapshot_enabled)
+        self._snapshot_path = snapshot_path
+        self._snapshot_period = float(snapshot_period)
+        self._dry_run = bool(dry_run)
+        self._poll_interval = float(poll_interval)
 
-        # conversions robustes
-        self._poll_interval = _coerce_seconds(poll_interval) or 2.0
-        self._snapshot_period = _coerce_seconds(snapshot_seconds)
+        os.makedirs(self._snapshot_path, exist_ok=True)
 
-        # snapshot
-        self._snapshot_path = _today_snapshot_path()
-        self._next_snapshot_at = (
-            time.monotonic() + self._snapshot_period
-            if self._snapshot_period is not None
-            else None
-        )
+    # ---------- Helpers ----------
 
-        # header minimal (une ligne par marché)
-        self._snapshot_header = [
+    @staticmethod
+    def _utc_now() -> dt.datetime:
+        return dt.datetime.now(dt.timezone.utc)
+
+    def _get_time_to_off(self, market_id: str) -> Optional[float]:
+        try:
+            return self.client.time_to_off_seconds(market_id)
+        except Exception as e:
+            logger.debug("[executor] time_to_off(%s) -> %s", market_id, repr(e))
+            return None
+
+    def _snapshot_filename(self) -> str:
+        day = self._utc_now().strftime("%Y%m%d")
+        return os.path.join(self._snapshot_path, f"{day}_snapshots.csv")
+
+    def _append_snapshot_row(
+        self,
+        market_id: str,
+        book: Any,
+        index_entry: Optional[dict],
+        t_to_off_s: Optional[float],
+    ) -> None:
+        if not self._snapshot_enabled:
+            return
+
+        filename = self._snapshot_filename()
+        file_exists = os.path.isfile(filename)
+
+        # Données simples et robustes
+        inplay = getattr(book, "inplay", False)
+        runners = getattr(book, "runners", None)
+        n_runners = len(runners) if runners else 0
+        total_matched = getattr(book, "total_matched", None)
+
+        # Favori par last_price_traded > 0 min
+        fav_lpt = None
+        if runners:
+            prices = [
+                r.last_price_traded
+                for r in runners
+                if getattr(r, "last_price_traded", None) not in (None, 0)
+            ]
+            fav_lpt = min(prices) if prices else None
+
+        row = {
+            "ts_utc": self._utc_now().isoformat(),
+            "market_id": market_id,
+            "market_type": index_entry.get("market_type") if index_entry else None,
+            "inplay": inplay,
+            "runners": n_runners,
+            "t_to_off_s": None if t_to_off_s is None else round(float(t_to_off_s), 3),
+            "last_price_fav": fav_lpt,
+            "total_matched": total_matched,
+            "venue": index_entry.get("venue") if index_entry else None,
+            "event_name": index_entry.get("event_name") if index_entry else None,
+        }
+
+        fieldnames = [
             "ts_utc",
             "market_id",
-            "course_uid",
-            "inplay",
-            "t_to_off_s",
-            "runners",
-            "event_name",
             "market_type",
+            "inplay",
+            "runners",
+            "t_to_off_s",
+            "last_price_fav",
+            "total_matched",
             "venue",
+            "event_name",
         ]
 
-        logger.info(
-            "Executor ready (dry_run={}, poll_interval={}s, snapshot_period={}s)",
-            self.dry_run,
-            self._poll_interval,
-            self._snapshot_period,
-        )
+        with open(filename, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                w.writeheader()
+            w.writerow(row)
 
-    # ------------------------------------------------------------------ #
+    # ---------- Strategy wrapper ----------
 
-    def run(self, market_ids: list[str]) -> None:
+    def _call_strategy_decide_all(
+        self,
+        market_id: str,
+        book: Any,
+        index_entry: Optional[dict],
+        now_utc: dt.datetime,
+    ) -> List[dict]:
+        """
+        Appelle la stratégie de manière sûre.
+        Signature attendue: decide_all(market_book, market_index_entry, now_utc) -> list[dikt]
+        """
+        try:
+            return self.strategy.decide_all(book, index_entry, now_utc) or []
+        except TypeError as e:
+            logger.warning(
+                "[strategy] decide_all type error on %s: %s", market_id, e
+            )
+            return []
+        except Exception as e:
+            logger.warning(
+                "[strategy] decide_all error on %s: %s", market_id, e
+            )
+            return []
+
+    # ---------- Main loop ----------
+
+    def run(self, market_ids: List[str]) -> None:
         if not market_ids:
-            logger.warning("No market_ids to poll — exiting run().")
+            logger.warning("No markets to run.")
             return
 
-        logger.info("Starting polling loop…")
-        try:
-            while True:
-                books = self.client.get_market_books(market_ids)  # dict[mid] = MarketBook
-                now = datetime.now(timezone.utc)
+        logger.info("Starting polling loop… (%d markets)", len(market_ids))
 
-                # éventuel snapshot
-                if self._snapshot_period is not None and self._should_snapshot():
-                    try:
-                        self._write_snapshot(now, books)
-                    except Exception as e:
-                        logger.warning("snapshot write error: {}", e)
-                    self._next_snapshot_at = time.monotonic() + self._snapshot_period
+        # Prefetch initial books
+        books = self.client.prefetch_market_books(market_ids)
 
-                for mid, book in books.items():
-                    try:
-                        t_to_off = self.client.get_time_to_off(book)
-                    except TypeError as e:
-                        logger.debug("[executor] get_time_to_off(book) -> {}", e)
-                        t_to_off = None
-                    except Exception as e:
-                        logger.debug(
-                            "[executor] get_time_to_off exception on {}: {}", mid, e
-                        )
-                        t_to_off = None
+        last_snapshot = 0.0
+        while True:
+            start = time.perf_counter()
 
-                    inplay = bool(getattr(book, "inplay", False))
-                    runners = len(getattr(book, "runners", []) or [])
+            # Rafraîchir les books
+            books = self.client.get_market_books(market_ids)
+            now_utc = self._utc_now()
 
-                    logger.debug(
-                        "[poll] {} t_to_off={} inplay={} runners={}",
-                        mid,
-                        None if t_to_off is None else int(t_to_off),
-                        inplay,
-                        runners,
-                    )
+            for mid in market_ids:
+                book = books.get(mid)
+                if not book:
+                    continue
 
-                    entry = self.client.get_market_index_entry(mid)
-                    decisions = self._safe_decide_all(
-                        market_book=book,
-                        market_index_entry=entry,
-                        now=now,
-                    )
+                index_entry = self.client.get_market_index_entry(mid)
+                t_to_off = self._get_time_to_off(mid)
 
-                    if decisions:
-                        self._place_or_log(mid, decisions)
+                inplay = getattr(book, "inplay", False)
+                runners = getattr(book, "runners", None)
+                n_runners = len(runners) if runners else 0
 
-                time.sleep(self._poll_interval)
-
-        except KeyboardInterrupt:
-            logger.info("Polling loop stopped by user (Ctrl+C).")
-
-    # ------------------------------------------------------------------ #
-
-    def _safe_decide_all(self, **kwargs) -> list[dict] | list[Any]:
-        """Essaye plusieurs signatures pour decide_all afin d'être compatible avec ton StrategyManager."""
-        strat = self.strategy
-        if not hasattr(strat, "decide_all"):
-            return []
-
-        mb = kwargs.get("market_book")
-        mie = kwargs.get("market_index_entry")
-        now = kwargs.get("now")
-
-        # 1) Essai en kwargs (idéal si les noms correspondent)
-        try:
-            out = strat.decide_all(**kwargs)
-            return out or []
-        except TypeError as te:
-            # continue avec des variantes
-            logger.debug("[strategy] kwargs call failed: {}", te)
-
-        # 2) Positionnel (book, entry, now)
-        try:
-            out = strat.decide_all(mb, mie, now)
-            return out or []
-        except TypeError:
-            pass
-
-        # 3) Positionnel (entry, book, now)
-        try:
-            out = strat.decide_all(mie, mb, now)
-            return out or []
-        except TypeError:
-            pass
-
-        # 4) Positionnel (book, entry)
-        try:
-            out = strat.decide_all(mb, mie)
-            return out or []
-        except TypeError:
-            pass
-
-        # 5) Positionnel (book, now)
-        try:
-            out = strat.decide_all(mb, now)
-            return out or []
-        except TypeError:
-            pass
-
-        # 6) Positionnel (book)
-        try:
-            out = strat.decide_all(mb)
-            return out or []
-        except TypeError as te:
-            logger.warning("[strategy] decide_all type error: {}", te)
-            return []
-
-    def _place_or_log(self, market_id: str, instructions: list[dict] | list[Any]) -> None:
-        if self.dry_run:
-            total = 0.0
-            for ins in instructions:
-                try:
-                    total += float(getattr(ins, "size", None) or ins.get("size", 0.0) or 0.0)
-                except Exception:
-                    pass
-            logger.info(
-                "DRY-RUN: would place {} instruction(s) on {} with total stake ~{:.2f}",
-                len(instructions),
-                market_id,
-                total,
-            )
-            return
-
-        logger.warning("Live placing not implemented in this snippet.")
-
-    # ------------------------------------------------------------------ #
-    # Snapshots
-
-    def _should_snapshot(self) -> bool:
-        if self._next_snapshot_at is None:
-            return False
-        return time.monotonic() >= self._next_snapshot_at
-
-    def _write_snapshot(self, now_utc: datetime, books: Dict[str, Any]) -> None:
-        path = self._snapshot_path
-        _ensure_header(path, self._snapshot_header)
-
-        rows = []
-        for mid, book in books.items():
-            entry = self.client.get_market_index_entry(mid)
-            course_uid = getattr(entry, "course_uid", None)
-            event_name = getattr(entry, "event_name", None)
-            market_type = getattr(entry, "market_type", None)
-            venue = getattr(entry, "venue", None)
-
-            inplay = bool(getattr(book, "inplay", False))
-            runners = len(getattr(book, "runners", []) or [])
-
-            try:
-                t_to_off = self.client.get_time_to_off(book)
-            except Exception:
-                t_to_off = None
-
-            rows.append(
-                [
-                    now_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                logger.debug(
+                    "[poll] %s t_to_off=%ss inplay=%s runners=%s",
                     mid,
-                    course_uid,
+                    "None" if t_to_off is None else int(t_to_off),
                     inplay,
-                    None if t_to_off is None else int(t_to_off),
-                    runners,
-                    event_name,
-                    market_type,
-                    venue,
-                ]
-            )
+                    n_runners,
+                )
 
-        with open(path, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerows(rows)
+                # Stratégie
+                instructions = self._call_strategy_decide_all(
+                    mid, book, index_entry, now_utc
+                )
+                if instructions:
+                    if self._dry_run:
+                        logger.info(
+                            "DRY-RUN: would place %d instruction(s) on %s",
+                            len(instructions),
+                            mid,
+                        )
+                    else:
+                        # Intégration ordres si besoin, ici on log seulement
+                        logger.info(
+                            "LIVE: placing %d instruction(s) on %s (not implemented here)",
+                            len(instructions),
+                            mid,
+                        )
+
+                # Snapshots (périodiques)
+                now_s = time.perf_counter()
+                if self._snapshot_enabled and (now_s - last_snapshot) >= self._snapshot_period:
+                    self._append_snapshot_row(mid, book, index_entry, t_to_off)
+                    last_snapshot = now_s
+
+            # Cadence
+            elapsed = time.perf_counter() - start
+            sleep_for = max(0.0, self._poll_interval - elapsed)
+            time.sleep(sleep_for)

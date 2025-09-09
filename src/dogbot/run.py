@@ -1,99 +1,122 @@
-﻿# src/dogbot/run.py
-from __future__ import annotations
+﻿import os
+import sys
+import logging
+from typing import Optional
 
-import os
-from datetime import datetime, timezone
+# Logging simple (tu peux brancher loguru/structlog si tu veux)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-from loguru import logger
-
-# Chargement facultatif d'un .env (si présent)
+# Charger .env si disponible
 try:
-    from dotenv import load_dotenv  # type: ignore
-    load_dotenv()
+    from dotenv import load_dotenv
+    load_dotenv()  # charge .env local
 except Exception:
     pass
 
 from .betfair_client import BetfairClient
 from .executor import Executor
 
-# Essaye d'importer la stratégie si elle existe
-try:
-    from .strategies import StrategyManager  # type: ignore
-    DEFAULT_STRATEGY = StrategyManager()  # instance !
-except Exception:
-    DEFAULT_STRATEGY = None
+# Stratégie : on essaie d'importer la tienne ; sinon on crée un fallback no-op
+def _build_strategy() -> object:
+    try:
+        # Adapte ce chemin si ta StrategyManager est ailleurs
+        from .strategy import StrategyManager  # type: ignore
+        return StrategyManager(enabled=["BACK_WIN_1"])
+    except Exception as e:
+        logger.warning("Using fallback strategy (no-op) because import failed: %s", e)
+
+        class FallbackStrategy:
+            def decide_all(self, market_book, market_index_entry, now_utc):
+                # Pas de signal → pas d'ordres
+                return []
+
+        return FallbackStrategy()
 
 
-def _require_env(*keys: str) -> None:
-    missing = [k for k in keys if not os.getenv(k)]
-    if missing:
-        raise RuntimeError(
-            "Variables d'environnement manquantes: " + " / ".join(missing)
-        )
+def _env_str(name: str, default: Optional[str] = None) -> Optional[str]:
+    val = os.getenv(name, default)
+    if val is None:
+        return None
+    val = val.strip()
+    return val if val != "" else None
 
 
 def main() -> None:
     logger.info("Connexion Betfair…")
 
-    # --- ENV requis
-    _require_env("BETFAIR_USERNAME", "BETFAIR_PASSWORD", "BETFAIR_APP_KEY")
+    username = _env_str("BETFAIR_USERNAME")
+    password = _env_str("BETFAIR_PASSWORD")
+    app_key = _env_str("BETFAIR_APP_KEY")
+    certs_path = _env_str("BETFAIR_CERTS_PATH") or r"C:\betfair-certs"
 
-    username = os.getenv("BETFAIR_USERNAME")
-    password = os.getenv("BETFAIR_PASSWORD")
-    app_key = os.getenv("BETFAIR_APP_KEY")
-
-    # Dossier des certs depuis ENV (sinon, laisse None pour fallback dans BetfairClient)
-    certs_path = os.getenv("BETFAIR_CERTS_PATH") or os.getenv("BF_CERTS_PATH")
+    missing = [n for n, v in [
+        ("BETFAIR_USERNAME", username),
+        ("BETFAIR_PASSWORD", password),
+        ("BETFAIR_APP_KEY", app_key),
+    ] if not v]
+    if missing:
+        raise RuntimeError(
+            f"Variables d'environnement manquantes: { ' / '.join(missing) }"
+        )
 
     client = BetfairClient(
-        username=username, password=password, app_key=app_key, certs_path=certs_path
+        username=username,
+        password=password,
+        app_key=app_key,
+        certs_dir=certs_path,
     )
-
     client.login()
     logger.info("Connexion OK.")
 
-    # --- Paramètres de scan
+    # --- Scan catalogue ---
     countries = ["GB", "IE", "AU", "NZ"]
     market_types = ["WIN"]
-    lookahead_minutes = int(os.getenv("LOOKAHEAD_MINUTES", "60"))
-
+    lookahead_minutes = int(_env_str("LOOKAHEAD_MINUTES", "60") or "60")
     logger.info(
-        "Scan catalogue… (countries={}, market_types={}, lookahead={}min)",
-        countries,
-        market_types,
-        lookahead_minutes,
+        "Scan catalogue… (countries=%s, market_types=%s, lookahead=%dmin)",
+        countries, market_types, lookahead_minutes
     )
-
     market_ids = client.scan_catalogue(
         countries=countries,
         market_types=market_types,
         lookahead_minutes=lookahead_minutes,
+        max_results=1000,
     )
-    logger.info("Marchés trouvés: {}", len(market_ids))
-
+    logger.info("Marchés trouvés: %d", len(market_ids))
     if not market_ids:
-        logger.warning(
-            "Aucun marché à surveiller. Ajuste LOOKAHEAD_MINUTES (ex: 60/120) ou l'heure de trading."
-        )
+        logger.warning("Aucun marché à surveiller. Ajuste LOOKAHEAD_MINUTES (ex: 60) ou l'heure de trading.")
         return
 
-    # --- Executor
-    dry_run = os.getenv("DRY_RUN", "1") not in ("0", "false", "False")
-    poll_interval = os.getenv("POLL_INTERVAL", "2.0")
-    snapshot_seconds = os.getenv("SNAPSHOT_SECONDS")  # None -> pas de snapshots
+    # --- Stratégie ---
+    strategy = _build_strategy()
+    logger.info("Strategies enabled: BACK_WIN_1")
 
+    # --- Executor ---
+    snapshot_enabled = _env_str("SNAPSHOT_ENABLED", "1") not in ("0", "false", "False", "no", "No")
+    snapshot_path = _env_str("SNAPSHOT_PATH", "./data") or "./data"
+    snapshot_period = float(_env_str("SNAPSHOT_PERIOD_SECONDS", "5.0") or "5.0")
+    dry_run = _env_str("DRY_RUN", "1") not in ("0", "false", "False", "no", "No")
+
+    logger.info("Démarrage de la boucle de polling…")
     exe = Executor(
         client=client,
-        strategy=DEFAULT_STRATEGY,      # << instance (ou None)
+        strategy=strategy,
+        snapshot_enabled=snapshot_enabled,
+        snapshot_path=snapshot_path,
+        snapshot_period=snapshot_period,
         dry_run=dry_run,
-        poll_interval=poll_interval,
-        snapshot_seconds=snapshot_seconds,
+        poll_interval=2.0,
     )
-
-    logger.info("Strategies enabled: {}", "BACK_WIN_1" if DEFAULT_STRATEGY else "NONE")
-    logger.info("Démarrage de la boucle de polling…")
     exe.run(market_ids)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Arrêt demandé (Ctrl+C).")
+        sys.exit(0)
