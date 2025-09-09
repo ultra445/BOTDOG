@@ -1,17 +1,14 @@
-﻿# src/dogbot/executor.py
+﻿# src/dogbot/executor.py — avec diagnostics setters
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, Dict, List, Tuple
 from collections import defaultdict, deque
-import csv
-import math
+import csv, math
 
-from .types import MarketIndex, MarketIndexEntry, Instruction, RunnerMeta
-from .strategy.base import Strategy
-
-# ===== Helpers calc =====
+from .types import MarketIndexEntry, Instruction, RunnerMeta
+from .indexer import MarketIndex
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -34,7 +31,7 @@ def _compress_ladder(ladder, n=3) -> Optional[str]:
     if not ladder:
         return None
     items = []
-    for i, x in enumerate(ladder[:n]):
+    for x in ladder[:n]:
         try:
             items.append(f"{x.price}:{x.size}")
         except Exception:
@@ -116,12 +113,10 @@ def _spread_pct(runners) -> Optional[float]:
     return m * 100.0
 
 def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
-    """Retourne (rank_by_ltp, rank_by_back) mapping selection_id -> rang (1=favori)"""
-    arr_ltp = []
-    arr_bb  = []
+    arr_ltp, arr_bb = [], []
     for r in (runners or []):
         sid = getattr(r, "selection_id", None)
-        if sid is None: 
+        if sid is None:
             continue
         lpt = _runner_lpt(r)
         ex = getattr(r, "ex", None)
@@ -130,42 +125,26 @@ def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
             arr_ltp.append((sid, lpt))
         if pb is not None:
             arr_bb.append((sid, pb))
-    arr_ltp.sort(key=lambda t: t[1])  # plus petit = fav
+    arr_ltp.sort(key=lambda t: t[1])
     arr_bb.sort(key=lambda t: t[1])
-    rank_ltp = {sid: i+1 for i, (sid, _) in enumerate(arr_ltp)}
-    rank_bb  = {sid: i+1 for i, (sid, _) in enumerate(arr_bb)}
-    return rank_ltp, rank_bb
-
-# ===== Executor =====
+    return ({sid:i+1 for i,(sid,_) in enumerate(arr_ltp)},
+            {sid:i+1 for i,(sid,_) in enumerate(arr_bb)})
 
 class Executor:
-    """
-    - Snapshots marché + runners (aux milestones)
-    - Milestones: 300/150/80/45/2 s avant off
-    - Calcul de deltas 5s/30s et volatilité 60s par runner
-    - Expose: identifiants, temps, prix, overrounds, ranks, flags rules, plan d'ordre si déclenché
-    """
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
 
     MARKET_HEADER = [
-        # Identifiants & temps
         "SNAP_TS_UTC","MARKET_ID","COURSE_ID","MARKET_TYPE",
         "EVENT_ID","EVENT_NAME","VENUE","COUNTRY_CODE",
         "MARKET_START_TIME_UTC","SECONDS_TO_OFF",
         "INPLAY","MARKET_STATUS","NUMBER_OF_WINNERS","N_RUNNERS_ACTIVE","MARKET_TOTAL_MATCHED",
-        # Prix & agrégats marché
         "BACK_OVERROUND","LAY_OVERROUND","SPREAD_PCT",
-        # Appariement WIN<->PLACE
         "WIN_MARKET_ID","PLACE_MARKET_ID","COURSE_LINK_OK","N_PLACES",
-        # Gating rules (exemple)
         "RULE_OK_TIME_WINDOW","RULE_OK_PRICE_BOUNDS","RULE_OK_LIQUIDITY","RULE_OK_OVERROUND","RULES_ALL_OK",
-        # Décision (si déclenchée)
         "STRATEGY_NAME","SIGNAL","SIDE","TARGET_PRICE","STAKE","PERSISTENCE","HEDGE_TICKS","STOP_TICKS",
         "EST_LIABILITY","REASON_CODE","DRYRUN_WOULD_PLACE",
-        # Milestone
         "MILESTONE_S",
-        # Diagnostics
         "FETCH_LATENCY_MS","CACHE_AGE_S","RETRY_COUNT","THROTTLE_WEIGHT","CODE_VERSION",
     ]
 
@@ -180,14 +159,13 @@ class Executor:
         "SECONDS_TO_OFF","VENUE","COURSE_ID","MILESTONE_S"
     ]
 
-    # Paramètres (à terme: lire depuis config/env)
     ENTRY_MIN_T_S = 120
     ENTRY_MAX_T_S = 7200
     PRICE_MIN = 1.30
     PRICE_MAX = 12.0
-    MIN_LIQUIDITY_MARKET = 0.0  # en dry-run on n'impose pas
+    MIN_LIQUIDITY_MARKET = 0.0
 
-    def __init__(self, client: Any, strategy: Strategy, market_index: MarketIndex, dry_run: bool = True, data_dir: str = "./data"):
+    def __init__(self, client: Any, strategy, market_index: MarketIndex, dry_run: bool = True, data_dir: str = "./data"):
         self.client = client
         self.strategy = strategy
         self.market_index = market_index
@@ -201,12 +179,28 @@ class Executor:
         self._ensure_header(self.market_csv, self.MARKET_HEADER)
         self._ensure_header(self.runner_csv, self.RUNNER_HEADER)
 
-        # suivi milestones & historique prix pour deltas/volatilité
         self._next_ms: Dict[str, List[int]] = defaultdict(lambda: list(self.MILESTONES))
         self._last_tto: Dict[str, float] = {}
-        self._hist: Dict[str, Dict[int, deque[Tuple[float,float]]]] = defaultdict(lambda: defaultdict(lambda: deque(maxlen=600)))  # ts, price; 600 x 1s = 10m
+        self._hist: Dict[str, Dict[int, deque[Tuple[float,float]]]] = defaultdict(lambda: defaultdict(lambda: deque(maxlen=600)))
 
-    # ---------- I/O CSV ----------
+        # diagnostics (remplis par bot_collect)
+        self._diag_fetch_latency_ms: Optional[float] = None
+        self._diag_retry_count: Optional[int] = None
+        self._diag_throttle_weight: Optional[float] = None
+        self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
+
+    def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
+                        throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
+        if fetch_latency_ms is not None:
+            self._diag_fetch_latency_ms = float(fetch_latency_ms)
+        if retry_count is not None:
+            self._diag_retry_count = int(retry_count)
+        if throttle_weight is not None:
+            self._diag_throttle_weight = float(throttle_weight)
+        if code_version is not None:
+            self._code_version = str(code_version)
+
+    # ---------- I/O ----------
     def _ensure_header(self, path: Path, header: Iterable[str]) -> None:
         if not path.exists():
             with path.open("w", newline="", encoding="utf-8") as f:
@@ -216,14 +210,13 @@ class Executor:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
 
-    # ---------- Milestones ----------
+    # ---------- internals ----------
     def _milestone_due(self, mid: str, tto: Optional[float]) -> Optional[int]:
         if tto is None:
             return None
         ms_list = self._next_ms[mid]
-        # tolérance à la première mesure
         for ms in list(ms_list):
-            if abs(tto - ms) <= self.TOLERANCE_S:
+            if abs(tto - ms) <= 1.5:
                 ms_list.remove(ms)
                 return ms
         last = self._last_tto.get(mid)
@@ -235,12 +228,10 @@ class Executor:
                 return ms
         return None
 
-    # ---------- Deltas/volatilité ----------
     def _push_hist(self, market_id: str, selection_id: int, price: Optional[float]) -> None:
         if price is None:
             return
-        dq = self._hist[market_id][selection_id]
-        dq.append((datetime.now(timezone.utc).timestamp(), float(price)))
+        self._hist[market_id][selection_id].append((datetime.now(timezone.utc).timestamp(), float(price)))
 
     def _delta_since(self, market_id: str, selection_id: int, seconds: float) -> Optional[float]:
         dq = self._hist.get(market_id, {}).get(selection_id)
@@ -249,7 +240,7 @@ class Executor:
         now_ts = datetime.now(timezone.utc).timestamp()
         target = now_ts - seconds
         older = None
-        for ts, p in reversed(dq):  # plus récent -> plus vieux
+        for ts, p in reversed(dq):
             older = (ts, p)
             if ts <= target:
                 break
@@ -271,7 +262,7 @@ class Executor:
         var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
         return math.sqrt(var)
 
-    # ---------- Process ----------
+    # ---------- main ----------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
         md = getattr(book, "market_definition", None)
@@ -282,16 +273,13 @@ class Executor:
         event_open_utc = mie.event_open_utc if mie else None
         t_to_off_s = (event_open_utc - now).total_seconds() if event_open_utc else None
 
-        # in-play -> on arrête de snaper
         if getattr(book, "inplay", False):
             self._next_ms.pop(market_id, None)
             self._last_tto[market_id] = t_to_off_s if t_to_off_s is not None else 0.0
             return
 
-        # rank info
-        rank_ltp, rank_back = _rankings(runners)
+        rank_ltp, rank_back = self._rankings_cached(runners)
 
-        # push hist for deltas/vol
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None:
@@ -303,14 +291,11 @@ class Executor:
             self._push_hist(market_id, int(sid), lpt)
 
         milestone = self._milestone_due(market_id, t_to_off_s)
-        # Always write market-level snapshot (with milestone_s)
         self._write_market_row(book, mie, t_to_off_s, milestone, runners, rank_back)
 
-        # Runner snapshots only at milestones
         if milestone is not None:
             self._write_runner_rows(book, mie, t_to_off_s, milestone, runners, rank_ltp, rank_back)
 
-        # Strategy call
         instructions: List[Instruction] = []
         try:
             instructions = self.strategy.decide_all(book, mie, now) or []
@@ -328,23 +313,16 @@ class Executor:
         if t_to_off_s is not None:
             self._last_tto[market_id] = t_to_off_s
 
-    # ---------- Market row ----------
+    def _rankings_cached(self, runners):
+        return _rankings(runners)
+
     def _write_market_row(self, book, mie: Optional[MarketIndexEntry], tto: Optional[float], milestone: Optional[int], runners, rank_back: Dict[int,int]) -> None:
         md = getattr(book, "market_definition", None)
-        fav_sid = None
-        # find favourite by best-back rank 1
-        if rank_back:
-            for sid, rk in rank_back.items():
-                if rk == 1:
-                    fav_sid = sid
-                    break
-
         back_over = _overround_back(runners)
-        lay_over = _overround_lay(runners)
-        spread = _spread_pct(runners)
+        lay_over  = _overround_lay(runners)
+        spread    = _spread_pct(runners)
 
-        market_row = [
-            # Identifiants & temps
+        row = [
             _now_utc_iso(),
             str(getattr(book, "market_id", "")),
             mie.course_id if mie else None,
@@ -353,48 +331,37 @@ class Executor:
             (mie.event_name if mie else None),
             (mie.venue if mie else None),
             (mie.country_code if mie else None),
-            mie.event_open_utc.isoformat().replace("+00:00", "Z") if (mie and mie.event_open_utc) else None,
+            mie.event_open_utc.isoformat().replace("+00:00","Z") if (mie and mie.event_open_utc) else None,
             float(tto) if tto is not None else None,
             bool(getattr(book, "inplay", False)),
             _market_status(md),
             _num_winners(md),
             _active_count(runners),
             float(getattr(book, "total_matched", None) or 0.0),
-            # Prix & agrégats
             back_over, lay_over, spread,
-            # Link WIN<->PLACE
             (mie.win_market_id if mie else None),
             (mie.place_market_id if mie else None),
             (1 if (mie and mie.win_market_id and mie.place_market_id) else 0),
             (mie.n_places if mie else None),
-            # Gating rules (exemples simples)
             (tto is not None and self.ENTRY_MIN_T_S <= tto <= self.ENTRY_MAX_T_S),
-            # price bounds: on utilise le fav back si dispo
             self._fav_price_ok(runners),
             (float(getattr(book, "total_matched", 0.0)) >= self.MIN_LIQUIDITY_MARKET),
-            (back_over is not None and lay_over is not None),  # placeholder règle overround
-            None,  # RULES_ALL_OK sera rempli après si on a une instru (voir ci-dessous)
-            # Décision (remplie si la stratégie a retourné une instruction)
+            (back_over is not None and lay_over is not None),
+            None,  # RULES_ALL_OK (on remplira quand on propagera la décision)
             (getattr(self.strategy, "name", None) or None),
-            None, None, None, None, None, None, None, None,  # SIGNAL..REASON_CODE
+            None, None, None, None, None, None, None, None,
             False,  # DRYRUN_WOULD_PLACE
-            # Milestone / Diag
             milestone,
-            None, None, None, None,  # diagnostics placeholders
+            # Diagnostics
+            self._diag_fetch_latency_ms,
+            None,  # CACHE_AGE_S
+            self._diag_retry_count,
+            self._diag_throttle_weight,
+            self._code_version,
         ]
-
-        # STRATEGY preview: si decide_all décide, on les met ici
-        # NB: on ne relance pas la stratégie; on lit ce qu'elle a décidé dans le dernier run (pas idéal).
-        # Si tu veux que ces colonnes reflètent EXACTEMENT les ordres, il faut passer les instructions ici.
-        # On garde simple: DRY dans console = vérité, CSV = “hint”.
-        # (Option avancée: faire renvoyer decide_all(...) et on remplit directement)
-        # => pour l’instant, on laisse tel quel; les colonnes décision restent None/False.
-
-        # Écrit la ligne
-        self._append(self.market_csv, market_row)
+        self._append(self.market_csv, row)
 
     def _fav_price_ok(self, runners) -> Optional[bool]:
-        # favori par best-back
         ex_prices = []
         for r in (runners or []):
             ex = getattr(r, "ex", None)
@@ -406,7 +373,6 @@ class Executor:
         fav_price = min(ex_prices)
         return (self.PRICE_MIN <= fav_price <= self.PRICE_MAX)
 
-    # ---------- Runner rows ----------
     def _write_runner_rows(self, book, mie: Optional[MarketIndexEntry], tto: Optional[float], milestone: int, runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int]) -> None:
         ts = _now_utc_iso()
         market_id = str(getattr(book, "market_id", ""))
@@ -425,10 +391,8 @@ class Executor:
             total_matched_runner = getattr(r, "total_matched", None)
             status = getattr(r, "status", None)
 
-            # runner meta
             rm: RunnerMeta | None = (mie.runners_meta.get(sid) if (mie and mie.runners_meta) else None)
 
-            # rankings & implied prob
             rk_ltp = rank_ltp.get(sid)
             rk_bb  = rank_back.get(sid)
             implied = None
@@ -436,18 +400,15 @@ class Executor:
             if base_price and base_price > 0:
                 implied = 1.0 / base_price
 
-            # deltas & vol
+            # deltas/vol
             d5  = self._delta_since(market_id, sid, 5.0)
             d30 = self._delta_since(market_id, sid, 30.0)
             vol = self._volatility(market_id, sid, 60.0)
 
-            # liquidity score simple: somme des tailles top-of-book
             liq_score = (bs or 0.0) + (ls or 0.0)
 
-            # place théorique — placeholder (à affiner quand PLACE market link + règles)
             place_theorique = None
             if implied is not None and mie and (mie.n_places or (mie.place_market_id and mie.win_market_id)):
-                # simple proxy: borne haute
                 npl = mie.n_places or 0
                 if npl > 0:
                     place_theorique = min(0.99, implied * npl)
