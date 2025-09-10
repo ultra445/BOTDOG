@@ -5,7 +5,8 @@
 # - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
 # - Duplication : PLACETHEORIQUE_PLACE (même valeur que sur WIN) affichée sur les lignes PLACE
 # - Fallback duplication si WIN_MARKET_ID pas encore résolu : cache par (event_id, start_utc minute)
-# - NEW: pré-remplissage du cache PLACETHEORIQUE à CHAQUE passage sur un marché WIN (même sans jalon)
+# - Pré-remplissage du cache PLACETHEORIQUE à CHAQUE passage sur un marché WIN (même sans jalon)
+# - NEW: SP_AVAILABLE_WIN / SP_AVAILABLE_PLACE (bool) pour savoir si Betfair renvoie near/far SP estimés
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -223,7 +224,7 @@ class Executor:
         "MID_WIN","MOYLTP_WIN",
         "BACK_LADDER_WIN","LAY_LADDER_WIN","RUNNER_TOTAL_MATCHED_WIN",
         "FAV_RANK_LTP_WIN","FAV_RANK_BACK_WIN","WIN_IMPLIED_PROB_WIN",
-        "NEAR_SP_WIN","FAR_SP_WIN","BSPMOY_WIN","WINPROB",
+        "NEAR_SP_WIN","FAR_SP_WIN","SP_AVAILABLE_WIN","BSPMOY_WIN","WINPROB",
         "LTP_300_WIN","LTP_150_WIN","LTP_80_WIN","LTP_45_WIN","LTP_2_WIN",
         "DIFF150_300_WIN","DIFF80_150_WIN","DIFF45_80_WIN",
         "MOM45_WIN","MOM80_WIN","MOM150_WIN","MOM300_WIN",
@@ -233,7 +234,7 @@ class Executor:
         "LTP_PLACE","BEST_BACK_PRICE_1_PLACE","BEST_BACK_SIZE_1_PLACE","BEST_LAY_PRICE_1_PLACE","BEST_LAY_SIZE_1_PLACE",
         "MID_PLACE","MOYLTP_PLACE",
         "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
-        "NEAR_SP_PLACE","FAR_SP_PLACE","BSPMOY_PLACE","PLACEPROB",
+        "NEAR_SP_PLACE","FAR_SP_PLACE","SP_AVAILABLE_PLACE","BSPMOY_PLACE","PLACEPROB",
         "PLACETHEORIQUE_PLACE",
         "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
     ]
@@ -273,8 +274,7 @@ class Executor:
         # Cache pour dupliquer PLACETHEORIQUE sur PLACE
         # key = WIN marketId (string) -> { selection_id (int) : place_theo_odds (float) }
         self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
-        # NEW: cache de secours par (event_id, start_utc à la minute)
-        # key = (event_id, "YYYY-MM-DDTHH:MM")
+        # Cache de secours par (event_id, start_utc à la minute)
         self._last_place_theo_by_event: Dict[tuple[str, str], Dict[int, float]] = defaultdict(dict)
 
         self._diag_fetch_latency_ms: Optional[float] = None
@@ -372,7 +372,7 @@ class Executor:
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
 
-    # ---------- NEW: pré-calcul du PLACETHEORIQUE dès qu'on voit un book WIN ----------
+    # ---------- pré-calcul du PLACETHEORIQUE dès qu'on voit un book WIN ----------
     def _compute_and_cache_place_theo_from_win(self, info: Dict[str, Any], win_id: Optional[str],
                                                market_id: str, runners, n_active: int, n_places: int) -> None:
         """Calcule PLACETHEORIQUE à partir des prix WIN du book courant
@@ -465,7 +465,7 @@ class Executor:
             if lpt is not None:
                 self._hist[market_id][int(sid)].append((datetime.now(timezone.utc).timestamp(), float(lpt)))
 
-        # NEW: pré-remplir le cache PLACETHEORIQUE dès qu'on voit un WIN (même sans jalon)
+        # Pré-remplir le cache PLACETHEORIQUE dès qu'on voit un WIN (même sans jalon)
         if market_type == "WIN":
             n_active = _active_count(runners)
             n_places = (_num_winners(md) or (3 if n_active >= 8 else 2))
@@ -760,6 +760,9 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
+            # Flags SP_AVAILABLE pour le marché courant
+            sp_available = 1 if (near_sp is not None or far_sp is not None) else 0
+
             base = [
                 _now_utc_iso(),
                 None,  # COURSE_ID (optionnel)
@@ -792,6 +795,7 @@ class Executor:
                 (implied if is_win else None),
                 (near_sp if is_win else None),
                 (far_sp  if is_win else None),
+                (sp_available if is_win else None),
                 (bspmoy  if is_win else None),
                 (winprob if is_win else None),
                 (base_300 if is_win else None),
@@ -827,6 +831,7 @@ class Executor:
                 (total_matched_runner if is_place else None),
                 (near_sp if is_place else None),
                 (far_sp  if is_place else None),
+                (sp_available if is_place else None),
                 (bspmoy  if is_place else None),
                 (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),  # PLACEPROB proxy
                 (place_theo_place if is_place else None),  # <-- DUPLICATION de PLACETHEORIQUE (WIN)
