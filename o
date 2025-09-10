@@ -1,0 +1,20 @@
+[33mcd0f645[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m 1009 2025 17 40  cotes places  CSV affichage OK WIN et PLACE ok ET PLACETHEORIQUE OK
+[33m0576414[m 1009 2025 13 40  cotes places  CSV affichage OK ammeliorations varaible de cotes ( notamment si non BSP)
+[33m2a6a64d[m 1009 2025 12 30  cotes places  CSV affichage OK mais pas de BSP win ni BSP place
+[33m4df2148[m 1009 2025 11 30  cotes places  CSV pas d e WIN affiche
+[33m105da5b[m 1009 2025 09 30 cotes places  CSV a checker
+[33m84430fa[m 1009 2025 00 13 cotes places  CSV bien organisé
+[33me52603f[m 0909 2025 23 H 59 cotes places   ( fonctionne mais csv à revoir  )
+[33mae46c76[m 0909 2025 23 H 40 cotes places   ( erreur )
+[33m56c1aa6[m 0909 2025 23 H 00  ( non testee en reel )
+[33m9ee8279[m 0909 2025 21 H 33  ( fonctionnel )
+[33m240c2d5[m 0909 2025 20 H 13  ( erreurs)
+[33m65af90a[m 0909 2025 19 H 56  ( erreurs)
+[33m0a4978e[m 0909 2025 18 H 46
+[33m7a1ad05[m 0909 2025 18 H 32
+[33mfa8fa92[m 0909 1301 fin 1 et fil conversation
+[33md8b132b[m 0809  2323
+[33m2bd5097[m 0809  2319
+[33m1971116[m deps + env example
+[33m4c10896[m seed repo after cleanup
+[33m33c3cce[m chore: enable pre-commit hooks
