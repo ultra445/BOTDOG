@@ -4,6 +4,8 @@
 # - DIFF/MOM sur BASE_WIN = (WINPROB -> MOYLTP_WIN -> LTP_WIN -> BEST_BACK)
 # - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
 # - Duplication : PLACETHEORIQUE_PLACE (même valeur que sur WIN) affichée sur les lignes PLACE
+# - Fallback duplication si WIN_MARKET_ID pas encore résolu : cache par (event_id, start_utc minute)
+# - NEW: pré-remplissage du cache PLACETHEORIQUE à CHAQUE passage sur un marché WIN (même sans jalon)
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -17,10 +19,10 @@ from .indexer import MarketIndex
 
 # --- import Plackett–Luce (supporte plackett OU placket pour éviter la confusion) ---
 try:
-    # On s'attend à trouver dans src/dogbot/plackett/__init__.py les fonctions ci-dessous
+    # On s'attend à trouver dans src/dogbot/plackett/__init__.py ces fonctions
     from .plackett import odds_to_win_probs, place_probabilities, fair_place_odds
 except Exception:
-    # fallback: src/dogbot/placket/__init__.py ou placket.py
+    # fallback: src/dogbot/placket/__init__.py
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
 
 
@@ -232,7 +234,7 @@ class Executor:
         "MID_PLACE","MOYLTP_PLACE",
         "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
         "NEAR_SP_PLACE","FAR_SP_PLACE","BSPMOY_PLACE","PLACEPROB",
-        "PLACETHEORIQUE_PLACE",         # <-- DUPLICATION (même valeur que WIN, si dispo)
+        "PLACETHEORIQUE_PLACE",
         "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
     ]
 
@@ -271,6 +273,9 @@ class Executor:
         # Cache pour dupliquer PLACETHEORIQUE sur PLACE
         # key = WIN marketId (string) -> { selection_id (int) : place_theo_odds (float) }
         self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
+        # NEW: cache de secours par (event_id, start_utc à la minute)
+        # key = (event_id, "YYYY-MM-DDTHH:MM")
+        self._last_place_theo_by_event: Dict[tuple[str, str], Dict[int, float]] = defaultdict(dict)
 
         self._diag_fetch_latency_ms: Optional[float] = None
         self._diag_retry_count: Optional[float] = None
@@ -331,7 +336,6 @@ class Executor:
         if win_id and place_id:
             return win_id, place_id
 
-        name_hint = getattr(mie, "market_name", None) or getattr(mie, "marketName", None)
         cur_mt = (getattr(md, "market_type", None) or market_type_hint or "").upper()
         if cur_mt not in ("WIN","PLACE"):
             if getattr(md, "number_of_winners", None) or getattr(md, "numberOfWinners", None):
@@ -340,7 +344,7 @@ class Executor:
 
         ev_id = getattr(getattr(mie, "event", None), "id", None) if mie is not None else None
         start = _tz_utc(getattr(mie, "market_start_time", None)) if mie is not None else None
-        if start is None:
+        if start is None and md is not None:
             start = _tz_utc(getattr(md, "market_time", None))
 
         if ev_id and start:
@@ -367,6 +371,68 @@ class Executor:
             place_id = current_market_id
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
+
+    # ---------- NEW: pré-calcul du PLACETHEORIQUE dès qu'on voit un book WIN ----------
+    def _compute_and_cache_place_theo_from_win(self, info: Dict[str, Any], win_id: Optional[str],
+                                               market_id: str, runners, n_active: int, n_places: int) -> None:
+        """Calcule PLACETHEORIQUE à partir des prix WIN du book courant
+        et met à jour les caches de duplication (par WIN_MARKET_ID + par (event_id, start_utc minute)).
+        Appelée à CHAQUE passage sur un marché WIN, indépendamment des jalons.
+        """
+        sid_prices_for_pl: List[Tuple[int, float]] = []
+
+        for r in (runners or []):
+            sid = getattr(r, "selection_id", None)
+            if sid is None:
+                continue
+            sid = int(sid)
+
+            # Prix instantanés sur WIN
+            lpt = _runner_lpt_or_back(r)
+            ex = getattr(r, "ex", None)
+            bb, _ = _best_at_side(ex, "BACK")
+            bl, _ = _best_at_side(ex, "LAY")
+
+            mid = ((bb + bl) / 2.0) if (bb is not None and bl is not None) else None
+            moy = ((lpt + mid) / 2.0) if (lpt is not None and mid is not None) else None
+
+            near, far = _get_sp_near_far(r)
+            bspmoy = (near + far) / 2.0 if (near is not None and far is not None) else (near if near is not None else far)
+            winprob = (bspmoy + lpt) / 2.0 if (bspmoy is not None and lpt is not None) else None
+
+            base = winprob or moy or lpt or bb  # priorité: WINPROB -> MOYLTP -> LTP -> BB
+            if base and base > 1.0:
+                sid_prices_for_pl.append((sid, float(base)))
+
+        if len(sid_prices_for_pl) < 2:
+            return  # pas assez d’infos pour PL Plackett–Luce
+
+        # Tri stable par sid
+        sid_prices_for_pl.sort(key=lambda t: t[0])
+        sids = [sid for sid, _ in sid_prices_for_pl]
+        odds = [price for _, price in sid_prices_for_pl]
+
+        try:
+            p = odds_to_win_probs(odds, beta=1.0)       # probas gagnantes
+            q = place_probabilities(p, K=n_places)      # probas de place (Top-K)
+            fair = fair_place_odds(q)                   # cotes équitables (1/q)
+            fair_list = list(fair) if not hasattr(fair, "tolist") else fair.tolist()
+            by_sid = {sid: float(od) for sid, od in zip(sids, fair_list)}
+        except Exception as e:
+            print(f"[PL_ERR_PRE] {market_id}: {e}")
+            return
+
+        # Cache par WIN market id
+        cache_key = (win_id or market_id)
+        if cache_key and by_sid:
+            self._last_place_theo_by_market[str(cache_key)] = by_sid
+
+        # Cache fallback par (event_id, start_utc minute)
+        ev_id = str(info.get("event_id") or "")
+        st = info.get("start_utc")
+        if ev_id and st and by_sid:
+            ev_key = (ev_id, st.strftime("%Y-%m-%dT%H:%M"))
+            self._last_place_theo_by_event[ev_key] = by_sid
 
     # ---------- cœur ----------
     def process_book(self, book: Any) -> None:
@@ -398,6 +464,13 @@ class Executor:
             lpt = _runner_lpt_or_back(r)
             if lpt is not None:
                 self._hist[market_id][int(sid)].append((datetime.now(timezone.utc).timestamp(), float(lpt)))
+
+        # NEW: pré-remplir le cache PLACETHEORIQUE dès qu'on voit un WIN (même sans jalon)
+        if market_type == "WIN":
+            n_active = _active_count(runners)
+            n_places = (_num_winners(md) or (3 if n_active >= 8 else 2))
+            win_id, _ = self._resolve_link_ids(market_id, mie, md, market_type)
+            self._compute_and_cache_place_theo_from_win(info, win_id, market_id, runners, n_active, n_places)
 
         rank_ltp, rank_back = _rankings(runners)
         milestone = self._milestone_due(market_id, t_to_off_s)
@@ -512,9 +585,11 @@ class Executor:
             bb, _ = _best_at_side(ex, "BACK")
             bl, _ = _best_at_side(ex, "LAY")
 
+            # WIN mid/moyltp
             mid_win = ((bb + bl) / 2.0) if (bb is not None and bl is not None) else None
             moyltp_win = ((lpt + mid_win) / 2.0) if (lpt is not None and mid_win is not None) else None
 
+            # PLACE mid/moyltp
             mid_place = ((bb + bl) / 2.0) if (bb is not None and bl is not None) else None
             moyltp_place = ((lpt + mid_place) / 2.0) if (lpt is not None and mid_place is not None) else None
 
@@ -535,7 +610,7 @@ class Executor:
                 "WINPROB": winprob, "BASE_WIN": base_win,
             }
 
-        # --- PLACETHEORIQUE via Plackett–Luce (cote = 1/q) pour le marché WIN ---
+        # --- PLACETHEORIQUE via Plackett–Luce (cote = 1/q) pour le marché WIN (au jalon) ---
         place_theo_by_sid: Dict[int, Optional[float]] = {}
         if is_win and len(sid_prices_for_pl) >= max(2, min(5, n_active)):
             sid_prices_for_pl.sort(key=lambda t: t[0])  # tri par sid
@@ -545,7 +620,6 @@ class Executor:
                 p = odds_to_win_probs(odds, beta=1.0)      # -> probas gagnantes normalisées
                 q = place_probabilities(p, K=n_places)     # -> probas de place Top-K (K=2 ou 3)
                 fair = fair_place_odds(q)                  # -> cotes équitables (1/q)
-                # fair peut être list/np.array ; on normalise en float
                 fair_list = list(fair) if not hasattr(fair, "tolist") else fair.tolist()
                 for sid, odd_place in zip(sids, fair_list):
                     place_theo_by_sid[sid] = float(odd_place)
@@ -553,10 +627,18 @@ class Executor:
                 print(f"[PL_ERR] {market_id}: {e}")
                 place_theo_by_sid = {sid: None for sid,_ in sid_prices_for_pl}
 
-            # ---- IMPORTANT : on met en cache par WIN_MARKET_ID pour dupliquer côté PLACE
+            # Cache par WIN market id (pour dupliquer côté PLACE)
             cache_key = (win_id or market_id)
             if cache_key:
                 self._last_place_theo_by_market[str(cache_key)] = {
+                    sid: v for sid, v in place_theo_by_sid.items() if v is not None
+                }
+            # Cache par (event_id, start_utc minute) pour fallback
+            ev_id = str(info.get("event_id") or "")
+            st = info.get("start_utc")
+            if ev_id and st:
+                ev_key = (ev_id, st.strftime("%Y-%m-%dT%H:%M"))
+                self._last_place_theo_by_event[ev_key] = {
                     sid: v for sid, v in place_theo_by_sid.items() if v is not None
                 }
 
@@ -601,7 +683,7 @@ class Executor:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
             # DIFF/MOM (WIN) sur BASE_WIN
-            def _get(msdict, ms): 
+            def _get(msdict, ms):
                 return msdict.get(market_id, {}).get(sid, {}).get(ms)
             def ratio(a: Optional[float], b: Optional[float]) -> Optional[float]:
                 if a is None or b is None or b == 0: return None
@@ -622,7 +704,8 @@ class Executor:
             mom300 = ratio(base_2,  base_300) if is_win else None
 
             # Deltas/vol sur LTP pour info (WIN)
-            d5 = d30 = vol = None
+            d5 = d30 = None
+            vol = None
             if is_win:
                 dq = self._hist.get(market_id, {}).get(sid)
                 if dq:
@@ -644,18 +727,32 @@ class Executor:
                         var = sum((x-m)**2 for x in vals)/(len(vals)-1)
                         vol = math.sqrt(var)
 
-            # PLACETHEORIQUE (cote) :
-            place_theo_win = place_theo_by_sid.get(sid) if is_win else None
-
-            # Duplication côté PLACE (si on a vu le WIN lié dans la boucle et déjà calculé)
+            # PLACETHEORIQUE (cote) : calcul si WIN, sinon duplication via cache(s)
+            place_theo_win = None
             place_theo_place = None
-            if is_place and win_id:
-                cached = self._last_place_theo_by_market.get(str(win_id))
-                if cached is not None:
-                    place_theo_place = cached.get(sid)
+
+            if is_win:
+                # si calculé au-dessus (jalon)
+                place_theo_win = place_theo_by_sid.get(sid)
+
+            if is_place:
+                # 1) via WIN_MARKET_ID
+                if win_id:
+                    cached = self._last_place_theo_by_market.get(str(win_id))
+                    if cached:
+                        place_theo_place = cached.get(sid)
+                # 2) fallback via (event_id, start_utc minute)
+                if place_theo_place is None:
+                    ev_id = str(info.get("event_id") or "")
+                    st = info.get("start_utc")
+                    if ev_id and st:
+                        ev_key = (ev_id, st.strftime("%Y-%m-%dT%H:%M"))
+                        cached2 = self._last_place_theo_by_event.get(ev_key)
+                        if cached2:
+                            place_theo_place = cached2.get(sid)
 
             # Milestones PLACE (LTP)
-            def _get_place(ms): 
+            def _get_place(ms):
                 return self._ltp_place_ms.get(market_id, {}).get(sid, {}).get(ms)
             ltp_300_p = _get_place(300) if is_place else None
             ltp_150_p = _get_place(150) if is_place else None
@@ -680,7 +777,7 @@ class Executor:
             ]
 
             win_block = [
-                lpt if is_win else None,
+                (lpt if is_win else None),
                 (bb if is_win else None),
                 (bs if is_win else None),
                 (bl if is_win else None),
@@ -714,7 +811,7 @@ class Executor:
                 (vol if is_win else None),
                 ((bs or 0.0) + (ls or 0.0) if is_win else None),
                 (((rk_bb or 0) == 1) if is_win else None),
-                (place_theo_win if is_win else None),  # cote théorique de place (WIN)
+                (place_theo_win if is_win else None),
             ]
 
             place_block = [
@@ -731,7 +828,7 @@ class Executor:
                 (near_sp if is_place else None),
                 (far_sp  if is_place else None),
                 (bspmoy  if is_place else None),
-                (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),  # PLACEPROB (simple proxy)
+                (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),  # PLACEPROB proxy
                 (place_theo_place if is_place else None),  # <-- DUPLICATION de PLACETHEORIQUE (WIN)
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
