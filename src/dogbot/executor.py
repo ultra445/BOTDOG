@@ -1,7 +1,6 @@
 ﻿# src/dogbot/executor.py
-# Robust WIN/PLACE detection (even if MarketDefinition.market_type is missing),
-# link IDs always filled (uses current market_id when index entry is missing),
-# unified snapshots for WIN + PLACE, BSP estimés, jalons 300/150/80/45/2, Plackett–Luce sur WIN.
+# Snapshots WIN + PLACE, jalons 300/150/80/45/2, variables mid/moyltp, PLACETHEORIQUE via Plackett–Luce
+# Priorité PL pour le prix interne : WINPROB -> MOYLTP -> LTP -> BestBack
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -198,7 +197,7 @@ def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
         res[i] = s
     return res
 
-# ----- robust WIN/PLACE detection -----
+# ----- market type heuristics -----
 def _guess_type_from_name(name: Optional[str]) -> Optional[str]:
     if not name: return None
     s = name.lower()
@@ -207,28 +206,20 @@ def _guess_type_from_name(name: Optional[str]) -> Optional[str]:
     return None
 
 def _determine_type(md: Any, name_hint: Optional[str], mt_hint: Optional[str]) -> Optional[str]:
-    # 1) hint direct (string)
     if isinstance(mt_hint, str) and mt_hint.upper() in ("WIN","PLACE"):
         return mt_hint.upper()
-    # 2) marketDefinition.market_type
     mt2 = getattr(md, "market_type", None)
     if isinstance(mt2, str) and mt2.upper() in ("WIN","PLACE"):
         return mt2.upper()
-    # 3) number_of_winners heuristic
     nw = _num_winners(md)
     if isinstance(nw, int):
-        if nw >= 2:
-            return "PLACE"
-        if nw == 1:
-            return "WIN"
-    # 4) nom
+        if nw >= 2: return "PLACE"
+        if nw == 1: return "WIN"
     by_name = _guess_type_from_name(name_hint)
-    if by_name:
-        return by_name
-    # 5) défaut
+    if by_name: return by_name
     return "WIN"
 
-# ----- accès polyvalent à l’index -----
+# ----- flexible access to MarketIndex -----
 def _mindex_values(idx: MarketIndex) -> List[Any]:
     for try_fn in (
         lambda i: list(i.values()),
@@ -255,19 +246,16 @@ def _extract_catalogue_info(mie: Any, md: Any) -> Dict[str, Any]:
         "start_utc": None, "market_type": None, "market_name": None, "meta_by_sid": {},
     }
     info["market_name"] = getattr(mie, "market_name", None) or getattr(mie, "marketName", None)
-
     start = getattr(mie, "event_open_utc", None) or getattr(mie, "market_start_time", None)
     if start is None and md is not None:
         start = getattr(md, "market_time", None)
     info["start_utc"] = _tz_utc(start)
-
     ev = getattr(mie, "event", None)
     if ev is not None:
         info["event_id"] = getattr(ev, "id", None)
         info["event_name"] = getattr(ev, "name", None)
         info["venue"] = getattr(ev, "venue", None)
         info["country_code"] = getattr(ev, "country_code", None) or getattr(ev, "countryCode", None)
-
     m = {}
     try:
         for rc in getattr(mie, "runners", []) or []:
@@ -279,7 +267,6 @@ def _extract_catalogue_info(mie: Any, md: Any) -> Dict[str, Any]:
     except Exception:
         pass
     info["meta_by_sid"] = m
-
     info["market_type"] = _determine_type(md, info["market_name"], getattr(md, "market_type", None))
     return info
 
@@ -309,6 +296,7 @@ class Executor:
         "N_RUNNERS_ACTIVE","N_PLACES",
         # WIN
         "LTP_WIN","BEST_BACK_PRICE_1_WIN","BEST_BACK_SIZE_1_WIN","BEST_LAY_PRICE_1_WIN","BEST_LAY_SIZE_1_WIN",
+        "MID_WIN","MOYLTP_WIN",  # <-- ajout
         "BACK_LADDER_WIN","LAY_LADDER_WIN","RUNNER_TOTAL_MATCHED_WIN",
         "FAV_RANK_LTP_WIN","FAV_RANK_BACK_WIN","WIN_IMPLIED_PROB_WIN",
         "NEAR_SP_WIN","FAR_SP_WIN","BSPMOY_WIN","WINPROB",
@@ -390,24 +378,15 @@ class Executor:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
 
-    # --------- NEW: virtual traps ----------
     @staticmethod
     def _compute_virtual_traps(runners, meta_by_sid):
-        """
-        VIRTUAL_TRAP :
-        - compresse les gaps à gauche si NP (1..N)
-        - cas spécial : si N>=7 et TRAP 8 est NP, le plus à droite prend VIRTUAL_TRAP=8
-        """
         active = []
         absent_traps = set()
         for r in (runners or []):
             st = (getattr(r, "status", None) or "ACTIVE").upper()
             sid = getattr(r, "selection_id", None)
             rm = meta_by_sid.get(int(sid)) if sid is not None else None
-            try:
-                runner_name = getattr(rm, "runner_name", None) if rm else None
-            except Exception:
-                runner_name = None
+            runner_name = getattr(rm, "runner_name", None) if rm else None
             trap = _parse_trap(rm, runner_name)
             if trap is None or sid is None:
                 continue
@@ -427,7 +406,6 @@ class Executor:
             vmap[rightmost_sid] = 8
         return vmap
 
-    # --------- NEW: robust link resolver using current market_id ---------
     def _resolve_link_ids(self, current_market_id: str, mie: Any, md: Any, market_type_hint: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         win_id = getattr(mie, "win_market_id", None) if mie is not None else None
         place_id = getattr(mie, "place_market_id", None) if mie is not None else None
@@ -591,23 +569,37 @@ class Executor:
         mie_current = getattr(self.market_index, "get", lambda _:_)(market_id)
         win_id, place_id = self._resolve_link_ids(market_id, mie_current, getattr(book,"market_definition",None), market_type)
 
-        # Prépare Plackett–Luce (WIN)
+        # Prépare Plackett–Luce (WIN) avec nouvelle hiérarchie de prix:
         sid_prices_for_pl: Dict[int, float] = {}
         temp_cache: Dict[int, Dict[str, Optional[float]]] = {}
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None: continue
             sid = int(sid)
+
             lpt = _runner_lpt_or_back(r)
             ex = getattr(r, "ex", None)
             bb, _ = _best_at_side(ex, "BACK")
+            bl, _ = _best_at_side(ex, "LAY")
+
+            mid = ((bb + bl) / 2.0) if (bb is not None and bl is not None) else None
+            moyltp = ((lpt + mid) / 2.0) if (lpt is not None and mid is not None) else None
+
             near_sp, far_sp = _get_sp_near_far(r)
             bspmoy = (near_sp + far_sp)/2.0 if (near_sp is not None and far_sp is not None) else (near_sp if near_sp is not None else far_sp)
             winprob_price = (bspmoy + lpt)/2.0 if (bspmoy is not None and lpt is not None) else None
-            chosen = winprob_price or bspmoy or lpt or bb
+
+            # <<< PRIORITÉ >>> WINPROB -> MOYLTP -> LTP -> BestBack
+            chosen = winprob_price or moyltp or lpt or bb
             if chosen and chosen > 0:
                 sid_prices_for_pl[sid] = float(chosen)
-            temp_cache[sid] = {"LTP": lpt, "BB": bb, "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy, "WINPROB": winprob_price}
+
+            temp_cache[sid] = {
+                "LTP": lpt, "BB": bb, "BL": bl,
+                "MID": mid, "MOYLTP": moyltp,
+                "NEAR": near_sp, "FAR": far_sp, "BSPMOY": bspmoy,
+                "WINPROB": winprob_price,
+            }
 
         do_pl = (market_type == "WIN") and (len(sid_prices_for_pl) >= max(2, min(5, n_active)))
         ordered_sids: List[int] = []
@@ -644,6 +636,9 @@ class Executor:
             ex = getattr(r, "ex", None)
             bb, bs = _best_at_side(ex, "BACK")
             bl, ls = _best_at_side(ex, "LAY")
+            mid = temp_cache.get(sid, {}).get("MID")
+            moyltp = temp_cache.get(sid, {}).get("MOYLTP")
+
             ladder_b = _compress_ladder(getattr(ex, "available_to_back", None), 3)
             ladder_l = _compress_ladder(getattr(ex, "available_to_lay", None), 3)
             total_matched_runner = getattr(r, "total_matched", None)
@@ -657,6 +652,7 @@ class Executor:
             bspmoy  = temp_cache.get(sid, {}).get("BSPMOY")
             winprob = temp_cache.get(sid, {}).get("WINPROB")
 
+            # Store LTP at milestone for deltas
             if lpt is not None:
                 self._ltp_ms[market_id][sid][milestone] = float(lpt)
             ms_vals = self._ltp_ms[market_id][sid]
@@ -683,6 +679,8 @@ class Executor:
             is_win = (market_type == "WIN")
             is_place = (market_type == "PLACE")
 
+            place_theorique = q_topk.get(sid) if (is_win and q_topk) else None
+
             base = [
                 _now_utc_iso(),
                 None,  # COURSE_ID (optionnel)
@@ -705,6 +703,8 @@ class Executor:
                 (bs if is_win else None),
                 (bl if is_win else None),
                 (ls if is_win else None),
+                (mid if is_win else None),        # MID_WIN
+                (moyltp if is_win else None),     # MOYLTP_WIN
                 (ladder_b if is_win else None),
                 (ladder_l if is_win else None),
                 (total_matched_runner if is_win else None),
@@ -732,7 +732,7 @@ class Executor:
                 (vol if is_win else None),
                 (liq_score if is_win else None),
                 (((rk_bb or 0) == 1) if is_win else None),
-                (None),  # PLACE_THEORIQUE (si on veut la calculer ici plus tard)
+                (place_theorique if is_win else None),
             ]
 
             place_block = [
@@ -751,8 +751,8 @@ class Executor:
                 (ltp_300 if is_place else None),
                 (ltp_150 if is_place else None),
                 (ltp_80  if is_place else None),
-                (ltp_45  if is_place else None),
-                (ltp_2   if is_place else None),
+                (ltp_45 if is_place else None),
+                (ltp_2  if is_place else None),
             ]
 
             row = base + win_block + place_block
