@@ -1,4 +1,9 @@
 ﻿# src/dogbot/executor.py
+# Snapshots WIN + PLACE, jalons 300/150/80/45/2
+# - MID_PLACE, MOYLTP_PLACE
+# - DIFF/MOM sur BASE_WIN = (WINPROB -> MOYLTP_WIN -> LTP_WIN -> BEST_BACK)
+# - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
+# - Duplication : PLACETHEORIQUE_PLACE (même valeur que sur WIN) affichée sur les lignes PLACE
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -12,10 +17,14 @@ from .indexer import MarketIndex
 
 # --- import Plackett–Luce (supporte plackett OU placket pour éviter la confusion) ---
 try:
+    # On s'attend à trouver dans src/dogbot/plackett/__init__.py les fonctions ci-dessous
     from .plackett import odds_to_win_probs, place_probabilities, fair_place_odds
 except Exception:
+    # fallback: src/dogbot/placket/__init__.py ou placket.py
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
 
+
+# ---------- utilitaires généraux ----------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -174,6 +183,15 @@ def _parse_trap(meta: Optional[RunnerMeta], runner_name: Optional[str]) -> Optio
                 except Exception: continue
     return None
 
+# ----- petit stub pour ranger les métadonnées catalogue -----
+class _MetaStub:
+    def __init__(self, runner_name=None, draw=None, sort_priority=None, trap=None):
+        self.runner_name = runner_name
+        self.draw = draw
+        self.sort_priority = sort_priority
+        self.trap = trap
+
+
 # ----- Executor -----
 class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
@@ -214,6 +232,7 @@ class Executor:
         "MID_PLACE","MOYLTP_PLACE",
         "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
         "NEAR_SP_PLACE","FAR_SP_PLACE","BSPMOY_PLACE","PLACEPROB",
+        "PLACETHEORIQUE_PLACE",         # <-- DUPLICATION (même valeur que WIN, si dispo)
         "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
     ]
 
@@ -248,6 +267,10 @@ class Executor:
 
         # Historique LTP (pour d5/d30/vol)
         self._hist: Dict[str, Dict[int, deque[Tuple[float,float]]]] = defaultdict(lambda: defaultdict(lambda: deque(maxlen=600)))
+
+        # Cache pour dupliquer PLACETHEORIQUE sur PLACE
+        # key = WIN marketId (string) -> { selection_id (int) : place_theo_odds (float) }
+        self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
 
         self._diag_fetch_latency_ms: Optional[float] = None
         self._diag_retry_count: Optional[float] = None
@@ -345,7 +368,7 @@ class Executor:
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
 
-    # ---------- main ----------
+    # ---------- cœur ----------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
         md = getattr(book, "market_definition", None)
@@ -499,7 +522,7 @@ class Executor:
             bspmoy = (near_sp + far_sp)/2.0 if (near_sp is not None and far_sp is not None) else (near_sp if near_sp is not None else far_sp)
             winprob = (bspmoy + lpt)/2.0 if (bspmoy is not None and lpt is not None) else None
 
-            base_win = winprob or moyltp_win or lpt or bb  # priorité
+            base_win = winprob or moyltp_win or lpt or bb  # priorité: WINPROB -> MOYLTP -> LTP -> BB
 
             if is_win and base_win and base_win > 1.0:
                 sid_prices_for_pl.append((sid, float(base_win)))
@@ -515,19 +538,27 @@ class Executor:
         # --- PLACETHEORIQUE via Plackett–Luce (cote = 1/q) pour le marché WIN ---
         place_theo_by_sid: Dict[int, Optional[float]] = {}
         if is_win and len(sid_prices_for_pl) >= max(2, min(5, n_active)):
-            # Ordonner par sid pour la stabilité
-            sid_prices_for_pl.sort(key=lambda t: t[0])
+            sid_prices_for_pl.sort(key=lambda t: t[0])  # tri par sid
             sids = [sid for sid,_ in sid_prices_for_pl]
             odds = [price for _,price in sid_prices_for_pl]
             try:
-                p = odds_to_win_probs(odds, beta=1.0)  # normalise
-                q = place_probabilities(p, K=n_places) # probas de place
-                fair = fair_place_odds(q)              # => cotes
-                for sid, odd_place in zip(sids, fair.tolist()):
+                p = odds_to_win_probs(odds, beta=1.0)      # -> probas gagnantes normalisées
+                q = place_probabilities(p, K=n_places)     # -> probas de place Top-K (K=2 ou 3)
+                fair = fair_place_odds(q)                  # -> cotes équitables (1/q)
+                # fair peut être list/np.array ; on normalise en float
+                fair_list = list(fair) if not hasattr(fair, "tolist") else fair.tolist()
+                for sid, odd_place in zip(sids, fair_list):
                     place_theo_by_sid[sid] = float(odd_place)
             except Exception as e:
                 print(f"[PL_ERR] {market_id}: {e}")
                 place_theo_by_sid = {sid: None for sid,_ in sid_prices_for_pl}
+
+            # ---- IMPORTANT : on met en cache par WIN_MARKET_ID pour dupliquer côté PLACE
+            cache_key = (win_id or market_id)
+            if cache_key:
+                self._last_place_theo_by_market[str(cache_key)] = {
+                    sid: v for sid, v in place_theo_by_sid.items() if v is not None
+                }
 
         # --- Écriture des lignes runners ---
         for r in runners:
@@ -569,10 +600,9 @@ class Executor:
             if is_place and lpt is not None:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
+            # DIFF/MOM (WIN) sur BASE_WIN
             def _get(msdict, ms): 
                 return msdict.get(market_id, {}).get(sid, {}).get(ms)
-
-            # DIFF/MOM (WIN) sur BASE_WIN
             def ratio(a: Optional[float], b: Optional[float]) -> Optional[float]:
                 if a is None or b is None or b == 0: return None
                 return (a / b) - 1.0
@@ -614,15 +644,24 @@ class Executor:
                         var = sum((x-m)**2 for x in vals)/(len(vals)-1)
                         vol = math.sqrt(var)
 
-            # PLACE_THEORIQUE (en cotes), WIN uniquement:
-            place_theo = place_theo_by_sid.get(sid) if is_win else None
+            # PLACETHEORIQUE (cote) :
+            place_theo_win = place_theo_by_sid.get(sid) if is_win else None
+
+            # Duplication côté PLACE (si on a vu le WIN lié dans la boucle et déjà calculé)
+            place_theo_place = None
+            if is_place and win_id:
+                cached = self._last_place_theo_by_market.get(str(win_id))
+                if cached is not None:
+                    place_theo_place = cached.get(sid)
 
             # Milestones PLACE (LTP)
-            ltp_300_p = _get(self._ltp_place_ms, 300) if is_place else None
-            ltp_150_p = _get(self._ltp_place_ms, 150) if is_place else None
-            ltp_80_p  = _get(self._ltp_place_ms, 80)  if is_place else None
-            ltp_45_p  = _get(self._ltp_place_ms, 45)  if is_place else None
-            ltp_2_p   = _get(self._ltp_place_ms, 2)   if is_place else None
+            def _get_place(ms): 
+                return self._ltp_place_ms.get(market_id, {}).get(sid, {}).get(ms)
+            ltp_300_p = _get_place(300) if is_place else None
+            ltp_150_p = _get_place(150) if is_place else None
+            ltp_80_p  = _get_place(80)  if is_place else None
+            ltp_45_p  = _get_place(45)  if is_place else None
+            ltp_2_p   = _get_place(2)   if is_place else None
 
             base = [
                 _now_utc_iso(),
@@ -675,7 +714,7 @@ class Executor:
                 (vol if is_win else None),
                 ((bs or 0.0) + (ls or 0.0) if is_win else None),
                 (((rk_bb or 0) == 1) if is_win else None),
-                (place_theo if is_win else None),  # <-- cote théorique de place
+                (place_theo_win if is_win else None),  # cote théorique de place (WIN)
             ]
 
             place_block = [
@@ -692,7 +731,8 @@ class Executor:
                 (near_sp if is_place else None),
                 (far_sp  if is_place else None),
                 (bspmoy  if is_place else None),
-                (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),
+                (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),  # PLACEPROB (simple proxy)
+                (place_theo_place if is_place else None),  # <-- DUPLICATION de PLACETHEORIQUE (WIN)
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
                 (ltp_80_p  if is_place else None),
