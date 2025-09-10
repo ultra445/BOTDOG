@@ -1,6 +1,7 @@
-﻿# executor.py — compatible MarketCatalogue brut (pas d'event_open_utc),
-# écrit snapshots marché + runners (WIN/PLACE séparés en colonnes),
-# BSP estimé, jalons 300/150/80/45/2, Plackett–Luce sur WIN.
+﻿# src/dogbot/executor.py
+# Robust WIN/PLACE detection (even if MarketDefinition.market_type is missing),
+# link IDs always filled (uses current market_id when index entry is missing),
+# unified snapshots for WIN + PLACE, BSP estimés, jalons 300/150/80/45/2, Plackett–Luce sur WIN.
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ import csv, math, os, re
 from .types import Instruction, RunnerMeta
 from .indexer import MarketIndex
 
-# ---------- petits utilitaires ----------
+# ---------- utils ----------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -197,12 +198,42 @@ def _place_probs_plackett_luce(weights: List[float], K: int) -> List[float]:
         res[i] = s
     return res
 
+# ----- robust WIN/PLACE detection -----
+def _guess_type_from_name(name: Optional[str]) -> Optional[str]:
+    if not name: return None
+    s = name.lower()
+    if "place" in s: return "PLACE"
+    if "win" in s or "winner" in s: return "WIN"
+    return None
+
+def _determine_type(md: Any, name_hint: Optional[str], mt_hint: Optional[str]) -> Optional[str]:
+    # 1) hint direct (string)
+    if isinstance(mt_hint, str) and mt_hint.upper() in ("WIN","PLACE"):
+        return mt_hint.upper()
+    # 2) marketDefinition.market_type
+    mt2 = getattr(md, "market_type", None)
+    if isinstance(mt2, str) and mt2.upper() in ("WIN","PLACE"):
+        return mt2.upper()
+    # 3) number_of_winners heuristic
+    nw = _num_winners(md)
+    if isinstance(nw, int):
+        if nw >= 2:
+            return "PLACE"
+        if nw == 1:
+            return "WIN"
+    # 4) nom
+    by_name = _guess_type_from_name(name_hint)
+    if by_name:
+        return by_name
+    # 5) défaut
+    return "WIN"
+
 # ----- accès polyvalent à l’index -----
 def _mindex_values(idx: MarketIndex) -> List[Any]:
     for try_fn in (
-        lambda i: list(i.values()),            # dict-like
-        lambda i: [v for _, v in i.items()],   # items()
-        lambda i: list(i),                     # itérable
+        lambda i: list(i.values()),
+        lambda i: [v for _, v in i.items()],
+        lambda i: list(i),
     ):
         try: return try_fn(idx)  # type: ignore
         except Exception: pass
@@ -211,7 +242,6 @@ def _mindex_values(idx: MarketIndex) -> List[Any]:
         if isinstance(d, dict): return list(d.values())
     return []
 
-# ----- extraction souple depuis MarketCatalogue / MarketBook -----
 class _MetaStub:
     def __init__(self, runner_name=None, draw=None, sort_priority=None, trap=None):
         self.runner_name = runner_name
@@ -224,8 +254,7 @@ def _extract_catalogue_info(mie: Any, md: Any) -> Dict[str, Any]:
         "event_id": None, "event_name": None, "venue": None, "country_code": None,
         "start_utc": None, "market_type": None, "market_name": None, "meta_by_sid": {},
     }
-    mt = (getattr(md, "market_type", None) or "").upper()
-    info["market_type"] = mt if mt else None
+    info["market_name"] = getattr(mie, "market_name", None) or getattr(mie, "marketName", None)
 
     start = getattr(mie, "event_open_utc", None) or getattr(mie, "market_start_time", None)
     if start is None and md is not None:
@@ -239,8 +268,6 @@ def _extract_catalogue_info(mie: Any, md: Any) -> Dict[str, Any]:
         info["venue"] = getattr(ev, "venue", None)
         info["country_code"] = getattr(ev, "country_code", None) or getattr(ev, "countryCode", None)
 
-    info["market_name"] = getattr(mie, "market_name", None) or getattr(mie, "marketName", None)
-
     m = {}
     try:
         for rc in getattr(mie, "runners", []) or []:
@@ -252,15 +279,11 @@ def _extract_catalogue_info(mie: Any, md: Any) -> Dict[str, Any]:
     except Exception:
         pass
     info["meta_by_sid"] = m
+
+    info["market_type"] = _determine_type(md, info["market_name"], getattr(md, "market_type", None))
     return info
 
-def _guess_type_from_name(name: Optional[str]) -> Optional[str]:
-    if not name: return None
-    s = name.lower()
-    if "place" in s: return "PLACE"
-    if "win" in s or "winner" in s: return "WIN"
-    return None
-
+# ----- Executor -----
 class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
@@ -367,124 +390,34 @@ class Executor:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
 
-    def _mindex_vals(self) -> List[Any]:
-        return _mindex_values(self.market_index)
-
-    def _resolve_link_ids(self, mie: Any, md: Any) -> tuple[Optional[str], Optional[str]]:
-        win_id = getattr(mie, "win_market_id", None)
-        place_id = getattr(mie, "place_market_id", None)
-        if win_id and place_id:
-            return win_id, place_id
-
-        info = _extract_catalogue_info(mie, md)
-        mt = info["market_type"] or _guess_type_from_name(info["market_name"])
-        ev_id = info["event_id"]
-        start = info["start_utc"]
-        cur_mid = getattr(mie, "market_id", None)
-
-        if not ev_id or not start:
-            # on retourne au moins le market courant selon son type
-            cur_mt = (mt or "").upper()
-            cur_id = getattr(mie, "market_id", None)
-            if cur_mt == "WIN":   return cur_id, place_id
-            if cur_mt == "PLACE": return win_id, cur_id
-            return win_id, place_id
-
-        for other in self._mindex_vals():
-            if getattr(other, "market_id", None) == cur_mid:
-                continue
-            oi = _extract_catalogue_info(other, None)
-            if oi["event_id"] != ev_id:
-                continue
-            if oi["start_utc"] and abs((oi["start_utc"] - start).total_seconds()) > 180:
-                continue
-            omt = oi["market_type"] or _guess_type_from_name(oi["market_name"])
-            omid = getattr(other, "market_id", None)
-            if not omt or not omid:
-                continue
-            omt = omt.upper()
-            if omt == "WIN" and not win_id:
-                win_id = omid
-            if omt == "PLACE" and not place_id:
-                place_id = omid
-
-        cur_mt = (mt or "").upper()
-        cur_id = getattr(mie, "market_id", None)
-        if cur_mt == "WIN" and not win_id:
-            win_id = cur_id
-        if cur_mt == "PLACE" and not place_id:
-            place_id = cur_id
-
-        return win_id, place_id
-
-    # ---------- milestones / histo ----------
-    def _milestone_due(self, mid: str, tto: Optional[float]) -> Optional[int]:
-        if tto is None:
-            return None
-        ms_list = self._next_ms[mid]
-        for ms in list(ms_list):
-            if abs(tto - ms) <= self.TOLERANCE_S:
-                ms_list.remove(ms)
-                return ms
-        last = self._last_tto.get(mid)
-        if last is None:
-            return None
-        for ms in list(ms_list):
-            if (last - ms) > 0 and (ms - tto) >= 0:
-                ms_list.remove(ms)
-                return ms
-        return None
-
-    def _push_hist(self, market_id: str, selection_id: int, price: Optional[float]) -> None:
-        if price is None:
-            return
-        self._hist[market_id][selection_id].append((datetime.now(timezone.utc).timestamp(), float(price)))
-
-    def _delta_since(self, market_id: str, selection_id: int, seconds: float) -> Optional[float]:
-        dq = self._hist.get(market_id, {}).get(selection_id)
-        if not dq:
-            return None
-        now_ts = datetime.now(timezone.utc).timestamp()
-        target = now_ts - seconds
-        older = None
-        for ts, p in reversed(dq):
-            older = (ts, p)
-            if ts <= target:
-                break
-        if older is None:
-            return None
-        _, p_old = older
-        p_now = dq[-1][1]
-        return p_now - p_old
-
-    def _volatility(self, market_id: str, selection_id: int, window_s: float = 60.0) -> Optional[float]:
-        dq = self._hist.get(market_id, {}).get(selection_id)
-        if not dq:
-            return None
-        now_ts = datetime.now(timezone.utc).timestamp()
-        vals = [p for ts, p in dq if ts >= now_ts - window_s]
-        if len(vals) < 3:
-            return None
-        m = sum(vals) / len(vals)
-        var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
-        return math.sqrt(var)
-
+    # --------- NEW: virtual traps ----------
     @staticmethod
-    def _compute_virtual_traps(runners, meta_by_sid: Dict[int, RunnerMeta]) -> Dict[int, Optional[int]]:
+    def _compute_virtual_traps(runners, meta_by_sid):
+        """
+        VIRTUAL_TRAP :
+        - compresse les gaps à gauche si NP (1..N)
+        - cas spécial : si N>=7 et TRAP 8 est NP, le plus à droite prend VIRTUAL_TRAP=8
+        """
         active = []
         absent_traps = set()
         for r in (runners or []):
             st = (getattr(r, "status", None) or "ACTIVE").upper()
             sid = getattr(r, "selection_id", None)
-            rm = meta_by_sid.get(int(sid)) if (sid is not None) else None
-            trap = _parse_trap(rm, getattr(rm, "runner_name", None) if rm else None)
-            if st == "ACTIVE" and trap is not None:
-                active.append((int(sid), trap))
-            elif st != "ACTIVE" and trap is not None:
+            rm = meta_by_sid.get(int(sid)) if sid is not None else None
+            try:
+                runner_name = getattr(rm, "runner_name", None) if rm else None
+            except Exception:
+                runner_name = None
+            trap = _parse_trap(rm, runner_name)
+            if trap is None or sid is None:
+                continue
+            if st == "ACTIVE":
+                active.append((int(sid), int(trap)))
+            else:
                 absent_traps.add(int(trap))
         active.sort(key=lambda t: t[1])
         N = len(active)
-        vmap: Dict[int, Optional[int]] = {}
+        vmap = {}
         if N == 0:
             return vmap
         for i, (sid, _trap) in enumerate(active):
@@ -494,23 +427,62 @@ class Executor:
             vmap[rightmost_sid] = 8
         return vmap
 
+    # --------- NEW: robust link resolver using current market_id ---------
+    def _resolve_link_ids(self, current_market_id: str, mie: Any, md: Any, market_type_hint: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        win_id = getattr(mie, "win_market_id", None) if mie is not None else None
+        place_id = getattr(mie, "place_market_id", None) if mie is not None else None
+        if win_id and place_id:
+            return win_id, place_id
+
+        name_hint = getattr(mie, "market_name", None) or getattr(mie, "marketName", None)
+        cur_mt = _determine_type(md, name_hint, getattr(md, "market_type", None) or market_type_hint)
+
+        ev_id = getattr(getattr(mie, "event", None), "id", None) if mie is not None else None
+        start = _tz_utc(getattr(mie, "market_start_time", None)) if mie is not None else None
+        if start is None:
+            start = _tz_utc(getattr(md, "market_time", None))
+
+        if ev_id and start:
+            for other in self._mindex_vals():
+                omid = getattr(other, "market_id", None)
+                if not omid or str(omid) == str(current_market_id):
+                    continue
+                oe = getattr(other, "event", None)
+                if getattr(oe, "id", None) != ev_id:
+                    continue
+                ostart = _tz_utc(getattr(other, "market_start_time", None))
+                if ostart and abs((ostart - start).total_seconds()) > 180:
+                    continue
+                omt = _determine_type(None, getattr(other, "market_name", None) or getattr(other, "marketName", None), None)
+                if omt == "WIN" and not win_id: win_id = omid
+                if omt == "PLACE" and not place_id: place_id = omid
+
+        if cur_mt == "WIN" and not win_id:
+            win_id = current_market_id
+        if cur_mt == "PLACE" and not place_id:
+            place_id = current_market_id
+
+        return (str(win_id) if win_id else None, str(place_id) if place_id else None)
+
+    def _mindex_vals(self) -> List[Any]:
+        return _mindex_values(self.market_index)
+
     # ---------- main ----------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
         md = getattr(book, "market_definition", None)
         runners = getattr(book, "runners", None) or []
 
-        # entrée d’index (peut être MarketCatalogue)
         try:
             mie = self.market_index.get(market_id)  # type: ignore
         except Exception:
             mie = None
 
         info = _extract_catalogue_info(mie, md)
+        market_type = _determine_type(md, info["market_name"], info["market_type"])
         start_utc = info["start_utc"]
         now = datetime.now(timezone.utc)
         t_to_off_s = (start_utc - now).total_seconds() if start_utc else None
-        market_type = (info["market_type"] or _guess_type_from_name(info["market_name"]) or "").upper()
 
         if getattr(book, "inplay", False):
             self._next_ms.pop(market_id, None)
@@ -520,17 +492,16 @@ class Executor:
         rank_ltp, rank_back = _rankings(runners)
         for r in runners:
             sid = getattr(r, "selection_id", None)
-            if sid is None: 
+            if sid is None:
                 continue
             self._push_hist(market_id, int(sid), _runner_lpt_or_back(r))
 
         milestone = self._milestone_due(market_id, t_to_off_s)
-        self._write_market_row(book, info, t_to_off_s, milestone, runners)
+        self._write_market_row(book, info, market_type, t_to_off_s, milestone, runners)
 
         if milestone is not None:
-            self._write_runner_rows(book, info, t_to_off_s, milestone, runners, rank_ltp, rank_back, market_type)
+            self._write_runner_rows(book, info, market_type, t_to_off_s, milestone, runners, rank_ltp, rank_back)
 
-        # stratégie (robuste: la stratégie ne doit plus lire mie.event_open_utc)
         instructions: List[Instruction] = []
         try:
             now_dt = datetime.now(timezone.utc)
@@ -549,21 +520,21 @@ class Executor:
         if t_to_off_s is not None:
             self._last_tto[market_id] = t_to_off_s
 
-    def _write_market_row(self, book, info: Dict[str,Any], tto: Optional[float], milestone: Optional[int], runners) -> None:
+    def _write_market_row(self, book, info: Dict[str,Any], market_type: Optional[str],
+                          tto: Optional[float], milestone: Optional[int], runners) -> None:
         md = getattr(book, "market_definition", None)
         back_over = _overround_back(runners)
         lay_over  = _overround_lay(runners)
         spread    = _spread_pct(runners)
 
-        # on essaye de relier WIN/PLACE (même event + start proche)
         mie_current = getattr(self.market_index, "get", lambda _:_)(getattr(book,"market_id",None))
-        win_id, place_id = self._resolve_link_ids(mie_current, md)
+        win_id, place_id = self._resolve_link_ids(str(getattr(book,"market_id","")), mie_current, md, market_type)
 
         row = [
             _now_utc_iso(),
             str(getattr(book, "market_id", "")),
-            None,  # COURSE_ID (optionnel, non reconstruit ici)
-            (info["market_type"] or _guess_type_from_name(info["market_name"])),
+            None,
+            market_type,
             info["event_id"],
             info["event_name"],
             info["venue"],
@@ -607,19 +578,18 @@ class Executor:
         fav_price = min(ex_prices)
         return (self.PRICE_MIN <= fav_price <= self.PRICE_MAX)
 
-    def _write_runner_rows(self, book, info: Dict[str,Any], tto: Optional[float], milestone: int,
-                           runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int], market_type: str) -> None:
-        ts = _now_utc_iso()
+    def _write_runner_rows(self, book, info: Dict[str,Any], market_type: Optional[str], tto: Optional[float], milestone: int,
+                           runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int]) -> None:
         market_id = str(getattr(book, "market_id", ""))
         n_active = _active_count(runners)
-        n_places = (_num_winners(getattr(book, "market_definition", None)) 
+        n_places = (_num_winners(getattr(book, "market_definition", None))
                     or (3 if n_active >= 8 else 2))
 
         meta_by_sid: Dict[int, RunnerMeta] = info.get("meta_by_sid", {}) or {}
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
         mie_current = getattr(self.market_index, "get", lambda _:_)(market_id)
-        win_id, place_id = self._resolve_link_ids(mie_current, getattr(book,"market_definition",None))
+        win_id, place_id = self._resolve_link_ids(market_id, mie_current, getattr(book,"market_definition",None), market_type)
 
         # Prépare Plackett–Luce (WIN)
         sid_prices_for_pl: Dict[int, float] = {}
@@ -643,9 +613,6 @@ class Executor:
         ordered_sids: List[int] = []
         weights: List[float] = []
         if do_pl:
-            for r in runners:
-                sid = int(getattr(r, "selection_id", 0) or 0)
-            # construisons dans le même ordre :
             for r in runners:
                 sid = int(getattr(r, "selection_id", 0) or 0)
                 price = sid_prices_for_pl.get(sid)
@@ -713,15 +680,18 @@ class Executor:
             vol = self._volatility(market_id, sid, 60.0)
             liq_score = (bs or 0.0) + (ls or 0.0)
 
+            is_win = (market_type == "WIN")
+            is_place = (market_type == "PLACE")
+
             base = [
                 _now_utc_iso(),
-                None,  # COURSE_ID (non reconstruit ici)
+                None,  # COURSE_ID (optionnel)
                 info["venue"],
                 (info["start_utc"].isoformat().replace("+00:00","Z") if info["start_utc"] else None),
                 float(tto) if tto is not None else None,
                 milestone,
-                *self._resolve_link_ids(mie_current, getattr(book,"market_definition",None)),
-                market_id, (info["market_type"] or _guess_type_from_name(info["market_name"]) or "").upper(),
+                win_id, place_id,
+                market_id, (market_type or ""),
                 sid, runner_name, status,
                 (getattr(rm, "draw", None) if rm else None),
                 trap, vtrap,
@@ -730,60 +700,112 @@ class Executor:
             ]
 
             win_block = [
-                lpt if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None,
-                (bb if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (bs if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (bl if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ls if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ladder_b if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ladder_l if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (total_matched_runner if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (rk_ltp if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (rk_bb  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (implied if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (near_sp if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (far_sp  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (bspmoy  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (winprob if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ltp_300 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ltp_150 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ltp_80  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ltp_45  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (ltp_2   if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (diff150_300 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (diff80_150  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (diff45_80   if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (mom45  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (mom80  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (mom150 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (mom300 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (d5 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (d30 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (vol if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (liq_score if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (((rk_bb or 0) == 1) if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" else None),
-                (q_topk.get(sid) if ((info["market_type"] or _guess_type_from_name(info["market_name"])) == "WIN" and do_pl) else None),
+                lpt if is_win else None,
+                (bb if is_win else None),
+                (bs if is_win else None),
+                (bl if is_win else None),
+                (ls if is_win else None),
+                (ladder_b if is_win else None),
+                (ladder_l if is_win else None),
+                (total_matched_runner if is_win else None),
+                (rk_ltp if is_win else None),
+                (rk_bb  if is_win else None),
+                (implied if is_win else None),
+                (near_sp if is_win else None),
+                (far_sp  if is_win else None),
+                (bspmoy  if is_win else None),
+                (winprob if is_win else None),
+                (ltp_300 if is_win else None),
+                (ltp_150 if is_win else None),
+                (ltp_80  if is_win else None),
+                (ltp_45  if is_win else None),
+                (ltp_2   if is_win else None),
+                (diff150_300 if is_win else None),
+                (diff80_150  if is_win else None),
+                (diff45_80   if is_win else None),
+                (mom45  if is_win else None),
+                (mom80  if is_win else None),
+                (mom150 if is_win else None),
+                (mom300 if is_win else None),
+                (d5 if is_win else None),
+                (d30 if is_win else None),
+                (vol if is_win else None),
+                (liq_score if is_win else None),
+                (((rk_bb or 0) == 1) if is_win else None),
+                (None),  # PLACE_THEORIQUE (si on veut la calculer ici plus tard)
             ]
 
             place_block = [
-                lpt if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None,
-                (bb if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (bs if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (bl if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ls if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ladder_b if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ladder_l if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (total_matched_runner if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (near_sp if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (far_sp  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (bspmoy  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (((bspmoy + lpt)/2.0) if ((info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" and bspmoy is not None and lpt is not None) else None),
-                (ltp_300 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ltp_150 if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ltp_80  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ltp_45  if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
-                (ltp_2   if (info["market_type"] or _guess_type_from_name(info["market_name"])) == "PLACE" else None),
+                lpt if is_place else None,
+                (bb if is_place else None),
+                (bs if is_place else None),
+                (bl if is_place else None),
+                (ls if is_place else None),
+                (ladder_b if is_place else None),
+                (ladder_l if is_place else None),
+                (total_matched_runner if is_place else None),
+                (near_sp if is_place else None),
+                (far_sp  if is_place else None),
+                (bspmoy  if is_place else None),
+                (((bspmoy + lpt)/2.0) if (is_place and bspmoy is not None and lpt is not None) else None),
+                (ltp_300 if is_place else None),
+                (ltp_150 if is_place else None),
+                (ltp_80  if is_place else None),
+                (ltp_45  if is_place else None),
+                (ltp_2   if is_place else None),
             ]
 
             row = base + win_block + place_block
             self._append(self.runner_csv, row)
+
+    # ----- history / momentum / volatility helpers -----
+    def _milestone_due(self, mid: str, tto: Optional[float]) -> Optional[int]:
+        if tto is None:
+            return None
+        ms_list = self._next_ms[mid]
+        for ms in list(ms_list):
+            if abs(tto - ms) <= self.TOLERANCE_S:
+                ms_list.remove(ms)
+                return ms
+        last = self._last_tto.get(mid)
+        if last is None:
+            return None
+        for ms in list(ms_list):
+            if (last - ms) > 0 and (ms - tto) >= 0:
+                ms_list.remove(ms)
+                return ms
+        return None
+
+    def _push_hist(self, market_id: str, selection_id: int, price: Optional[float]) -> None:
+        if price is None:
+            return
+        self._hist[market_id][selection_id].append((datetime.now(timezone.utc).timestamp(), float(price)))
+
+    def _delta_since(self, market_id: str, selection_id: int, seconds: float) -> Optional[float]:
+        dq = self._hist.get(market_id, {}).get(selection_id)
+        if not dq:
+            return None
+        now_ts = datetime.now(timezone.utc).timestamp()
+        target = now_ts - seconds
+        older = None
+        for ts, p in reversed(dq):
+            older = (ts, p)
+            if ts <= target:
+                break
+        if older is None:
+            return None
+        _, p_old = older
+        p_now = dq[-1][1]
+        return p_now - p_old
+
+    def _volatility(self, market_id: str, selection_id: int, window_s: float = 60.0) -> Optional[float]:
+        dq = self._hist.get(market_id, {}).get(selection_id)
+        if not dq:
+            return None
+        now_ts = datetime.now(timezone.utc).timestamp()
+        vals = [p for ts, p in dq if ts >= now_ts - window_s]
+        if len(vals) < 3:
+            return None
+        m = sum(vals) / len(vals)
+        var = sum((x - m) ** 2 for x in vals) / (len(vals) - 1)
+        return math.sqrt(var)
