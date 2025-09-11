@@ -1,4 +1,3 @@
-# src/dogbot/plackett/win_to_place_plackett_luce_v2.py
 """
 win_to_place_plackett_luce_v2.py
 
