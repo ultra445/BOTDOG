@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Set
+from enum import Enum
 
 # Registre de stratégies par slots (aligne avec executor.py)
 # 4 familles × 10 slots : BACK_WIN / BACK_PLACE / LAY_WIN / LAY_PLACE
@@ -21,6 +22,13 @@ class RunnerCtx:
 
 ConditionFn = Callable[[RunnerCtx], bool]
 
+# --------- Mode d'exécution par slot (prix LTP vs BSP) ---------
+
+class ExecMode(str, Enum):
+    LIMIT_LTP = "LIMIT_LTP"   # Ordre LIMIT au prix de marché (LTP arrondi tick)
+    SP_MOC    = "SP_MOC"      # Betfair SP sans limite (MARKET_ON_CLOSE)
+    SP_LOC    = "SP_LOC"      # Betfair SP avec limite (LIMIT_ON_CLOSE)
+
 @dataclass
 class StrategySlot:
     family: str                 # ex "BACK_WIN"
@@ -28,9 +36,11 @@ class StrategySlot:
     side: Side                  # Side.BACK | Side.LAY
     condition: ConditionFn
     tag: str                    # pour le logging / CSV trades
-    # -------- options nouvelles --------
+    # -------- options d'éxécution / sécurité --------
     bet_per_market: bool = False                     # True = une seule fois par marché pour ce slot
     allowed_milestones: Optional[Set[int]] = None    # ex {150,45,2} si tu veux restreindre
+    exec_mode: ExecMode = ExecMode.LIMIT_LTP         # LTP par défaut (rien ne change si tu ne touches pas)
+    sp_limit: Optional[float] = None                 # pour SP_LOC : BACK=min SP ; LAY=max SP
 
 # --------- Placeholders (à remplacer par tes vraies règles) ---------
 
@@ -40,6 +50,15 @@ def _false(_: RunnerCtx) -> bool:
 # EXEMPLE de condition : BACK_WIN_1, joue si 1.8 <= LTP <= 4.5
 def cond_back_win_1(ctx: RunnerCtx) -> bool:
     return 1.8 <= ctx.ltp <= 4.5
+
+# (exemples supplémentaires que tu peux activer si tu veux des slots BSP)
+def cond_bw_bsp(ctx: RunnerCtx) -> bool:
+    # exemple: autoriser un slot BSP si LTP raisonnable
+    return 2.0 <= ctx.ltp <= 6.0
+
+def cond_bw_bsp_min26(ctx: RunnerCtx) -> bool:
+    # exemple: jouer BSP avec limite min 2.6 (pour BACK)
+    return ctx.ltp >= 2.2
 
 # --------- Construction du registre ---------
 
@@ -54,9 +73,10 @@ def build_registry() -> List[StrategySlot]:
             side=Side.BACK,
             condition=cond_back_win_1 if i == 1 else _false,
             tag=f"BW_{i}",
-            # EXEMPLE: limiter BW_1 aux jalons 150/45/2 et un pari max par marché
             bet_per_market=True if i == 1 else False,
             allowed_milestones={150, 45, 2} if i == 1 else None,
+            exec_mode=ExecMode.LIMIT_LTP,   # par défaut: prix de marché (LTP)
+            # sp_limit=None,                # (utilisé seulement si exec_mode=SP_LOC)
         ))
 
     # BACK PLACE 1..10
@@ -67,7 +87,7 @@ def build_registry() -> List[StrategySlot]:
             side=Side.BACK,
             condition=_false,
             tag=f"BP_{i}",
-            # bet_per_market / allowed_milestones désactivés par défaut
+            exec_mode=ExecMode.LIMIT_LTP,
         ))
 
     # LAY WIN 1..10
@@ -78,6 +98,7 @@ def build_registry() -> List[StrategySlot]:
             side=Side.LAY,
             condition=_false,
             tag=f"LW_{i}",
+            exec_mode=ExecMode.LIMIT_LTP,
         ))
 
     # LAY PLACE 1..10
@@ -88,7 +109,34 @@ def build_registry() -> List[StrategySlot]:
             side=Side.LAY,
             condition=_false,
             tag=f"LP_{i}",
+            exec_mode=ExecMode.LIMIT_LTP,
         ))
+
+    # ------------------------
+    # EXEMPLES (désactivés par défaut) ─ à activer si tu veux tester le BSP :
+    # ------------------------
+    # # BACK WIN, jouer AU BSP sans limite (MARKET_ON_CLOSE)
+    # reg.append(StrategySlot(
+    #     family="BACK_WIN",
+    #     slot=2,
+    #     side=Side.BACK,
+    #     condition=cond_bw_bsp,     # ta règle
+    #     tag="BW_2_BSP",
+    #     bet_per_market=True,
+    #     exec_mode=ExecMode.SP_MOC, # BSP sans limite
+    # ))
+    #
+    # # BACK WIN, jouer AU BSP AVEC limite min 2.6 (LIMIT_ON_CLOSE)
+    # reg.append(StrategySlot(
+    #     family="BACK_WIN",
+    #     slot=3,
+    #     side=Side.BACK,
+    #     condition=cond_bw_bsp_min26,
+    #     tag="BW_3_BSP_MIN",
+    #     bet_per_market=True,
+    #     exec_mode=ExecMode.SP_LOC, # BSP avec limite
+    #     sp_limit=2.6,              # BACK=min SP ; LAY=max SP
+    # ))
 
     return reg
 

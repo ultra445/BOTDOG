@@ -1,8 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Deque, List
+from typing import Optional, Deque, List
 from collections import deque
 import csv
 import time
@@ -20,7 +20,7 @@ class OrderAttempt:
     side: str         # "BACK" | "LAY"
     price: float
     size: float
-    persistence: str  # "LAPSE" | "KEEP" | "CANCEL_ON_SUSPEND"
+    persistence: str  # "LAPSE" | "PERSIST" | "MARKET_ON_CLOSE" | "LIMIT_ON_CLOSE"
     strategy: str
     idempotency_key: str
 
@@ -36,11 +36,12 @@ class OrderResult:
 
 class OrderExecutor:
     """
-    Exécuteur d’ordres LIMIT (LAPSE par défaut) avec:
-      - idempotence (clé unique par tentative de slot)
-      - retry/backoff soft sur erreurs transitoires
-      - throttling (leaky bucket simple)
-      - logs CSV : orders_YYYYMMDD.csv + fills_YYYYMMDD.csv
+    Exécuteur d’ordres Betfair avec :
+      - LIMIT (persistence LAPSE/PERSIST)
+      - MARKET_ON_CLOSE (BSP sans limite)
+      - LIMIT_ON_CLOSE (BSP avec limite)
+    + idempotence, retry/backoff, throttling,
+      logs CSV : orders_YYYYMMDD.csv + fills_YYYYMMDD.csv
     """
     def __init__(
         self,
@@ -48,7 +49,7 @@ class OrderExecutor:
         data_dir: str = "./data",
         throttle_max_per_minute: int = 25,
         default_persistence: str = "LAPSE",
-        fok_ms: Optional[int] = None,   # Fill-or-Kill: si défini, cancel si pas matché dans cette fenêtre
+        fok_ms: Optional[int] = None,   # Fill-or-Kill (LIMIT uniquement)
     ):
         self.client = client
         self.data_dir = Path(data_dir)
@@ -84,7 +85,7 @@ class OrderExecutor:
         price: float,
         size: float,
         strategy: str,
-        persistence: Optional[str] = None,
+        persistence: Optional[str] = None,  # "LAPSE"|"PERSIST" (pour LIMIT)
         idem_key: Optional[str] = None,
         retries: int = 2,
         backoff_ms: int = 250,
@@ -105,7 +106,6 @@ class OrderExecutor:
         )
         self._log_order_attempt(attempt)
 
-        price_filter = filters.price_projection(price_data=["EX_BEST_OFFERS"])
         instruction = filters.place_instruction(
             order_type="LIMIT",
             selection_id=int(selection_id),
@@ -122,7 +122,131 @@ class OrderExecutor:
             customer_strategy_ref=str(strategy)[:15],   # suffixe audit
         )
 
-        # retry soft sur erreurs transitoires
+        # LIMIT → FOK applicable éventuellement
+        return self._do_place_with_retries(attempt, req, retries, backoff_ms, apply_fok=True)
+
+    def place_sp_market_on_close(
+        self,
+        *,
+        market_id: str,
+        selection_id: int,
+        side: str,                 # "BACK"|"LAY"
+        size_or_liability: float,  # BACK: stake ; LAY: liability
+        strategy: str,
+        idem_key: Optional[str] = None,
+        retries: int = 2,
+        backoff_ms: int = 250,
+    ) -> OrderResult:
+        """
+        Betfair BSP sans limite (MARKET_ON_CLOSE).
+        NB: Betfair nomme le champ "liability" même pour BACK ; pour BACK, c'est en pratique la taille du pari (stake).
+        """
+        idem_key = idem_key or f"{market_id}:{selection_id}:{side}:SP_MOC:{round(size_or_liability,2)}:{strategy}"
+        if idem_key in self._idem:
+            return OrderResult(True, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
+
+        self._throttle_wait()
+
+        attempt = OrderAttempt(
+            ts=self._now(), market_id=market_id, selection_id=int(selection_id),
+            side=side, price=0.0, size=float(size_or_liability),
+            persistence="MARKET_ON_CLOSE", strategy=strategy, idempotency_key=idem_key,
+        )
+        self._log_order_attempt(attempt)
+
+        instruction = filters.place_instruction(
+            order_type="MARKET_ON_CLOSE",
+            selection_id=int(selection_id),
+            side=side,
+            market_on_close_order=filters.market_on_close_order(
+                liability=float(size_or_liability)
+            )
+        )
+        req = dict(
+            market_id=str(market_id),
+            instructions=[instruction],
+            customer_strategy_ref=str(strategy)[:15],
+        )
+
+        # SP MOC → pas de FOK (il n'y a pas de match avant l'off)
+        return self._do_place_with_retries(attempt, req, retries, backoff_ms, apply_fok=False)
+
+    def place_sp_limit_on_close(
+        self,
+        *,
+        market_id: str,
+        selection_id: int,
+        side: str,                 # "BACK"|"LAY"
+        size_or_liability: float,  # BACK: stake ; LAY: liability
+        sp_limit_price: float,     # BACK: min SP ; LAY: max SP
+        strategy: str,
+        idem_key: Optional[str] = None,
+        retries: int = 2,
+        backoff_ms: int = 250,
+    ) -> OrderResult:
+        """
+        Betfair BSP avec limite (LIMIT_ON_CLOSE).
+        BACK → sp_limit_price = SP minimum acceptable ; LAY → maximum acceptable.
+        """
+        idem_key = idem_key or f"{market_id}:{selection_id}:{side}:SP_LOC:{round(sp_limit_price,2)}:{round(size_or_liability,2)}:{strategy}"
+        if idem_key in self._idem:
+            return OrderResult(True, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
+
+        self._throttle_wait()
+
+        attempt = OrderAttempt(
+            ts=self._now(), market_id=market_id, selection_id=int(selection_id),
+            side=side, price=float(sp_limit_price), size=float(size_or_liability),
+            persistence="LIMIT_ON_CLOSE", strategy=strategy, idempotency_key=idem_key,
+        )
+        self._log_order_attempt(attempt)
+
+        instruction = filters.place_instruction(
+            order_type="LIMIT_ON_CLOSE",
+            selection_id=int(selection_id),
+            side=side,
+            limit_on_close_order=filters.limit_on_close_order(
+                price=float(sp_limit_price),
+                liability=float(size_or_liability)
+            )
+        )
+        req = dict(
+            market_id=str(market_id),
+            instructions=[instruction],
+            customer_strategy_ref=str(strategy)[:15],
+        )
+
+        # SP LOC → pas de FOK (match seulement à l'off)
+        return self._do_place_with_retries(attempt, req, retries, backoff_ms, apply_fok=False)
+
+    def cancel_market_orders(self, *, market_id: str, bet_ids: Optional[List[str]] = None) -> None:
+        """Annule des ordres ouverts sur un marché (tous si bet_ids=None)."""
+        try:
+            if bet_ids:
+                instructions = [filters.cancel_instruction(bet_id=b) for b in bet_ids]
+                self.client.betting.cancel_orders(market_id=market_id, instructions=instructions)
+            else:
+                # récupère puis annule tous les ordres ouverts du marché
+                cur = self.client.betting.list_current_orders(market_ids=[market_id])
+                ids = [c.bet_id for c in getattr(cur, "current_orders", [])]
+                if ids:
+                    instructions = [filters.cancel_instruction(bet_id=b) for b in ids]
+                    self.client.betting.cancel_orders(market_id=market_id, instructions=instructions)
+        except Exception:
+            # on ne casse jamais l'exécuteur pour un échec d'annulation
+            pass
+
+    # ---------- internals ----------
+
+    def _do_place_with_retries(
+        self,
+        attempt: OrderAttempt,
+        req: dict,
+        retries: int,
+        backoff_ms: int,
+        apply_fok: bool,
+    ) -> OrderResult:
+        """Cœur commun de place_orders avec retry/backoff + logging."""
         last_exc: Optional[Exception] = None
         for attempt_idx in range(retries + 1):
             try:
@@ -137,12 +261,12 @@ class OrderExecutor:
                 ok = (status == "SUCCESS")
                 result = OrderResult(ok, status or "UNKNOWN", bet_id, matched_size, avg_price, error_code, getattr(instr_rep, "__dict__", None))
                 self._log_order_result(attempt, result)
-                self._idem.add(idem_key)
+                self._idem.add(attempt.idempotency_key)
 
-                # FOK optionnel: si rien matché au bout de fok_ms, on cancel
-                if ok and self.fok_ms and matched_size <= 0.0:
+                # FOK : uniquement pour LIMIT (LAPSE/PERSIST)
+                if ok and apply_fok and self.fok_ms and matched_size <= 0.0:
                     self._sleep_ms(self.fok_ms)
-                    self.cancel_market_orders(market_id=market_id, bet_ids=[bet_id] if bet_id else None)
+                    self.cancel_market_orders(market_id=attempt.market_id, bet_ids=[bet_id] if bet_id else None)
                 return result
 
             except APIError as e:
@@ -160,24 +284,6 @@ class OrderExecutor:
         # après retries
         self._log_order_result(attempt, OrderResult(False, "ERROR", None, 0.0, None, str(last_exc) if last_exc else "unknown_error", None))
         return OrderResult(False, "ERROR", None, 0.0, None, str(last_exc) if last_exc else "unknown_error", None)
-
-    def cancel_market_orders(self, *, market_id: str, bet_ids: Optional[List[str]] = None) -> None:
-        """Annule des ordres ouverts sur un marché (tous si bet_ids=None)."""
-        try:
-            if bet_ids:
-                instructions = [filters.cancel_instruction(bet_id=b) for b in bet_ids]
-                self.client.betting.cancel_orders(market_id=market_id, instructions=instructions)
-            else:
-                # récupère puis annule tous les ordres ouverts du marché
-                cur = self.client.betting.list_current_orders(market_ids=[market_id])
-                ids = [c.bet_id for c in getattr(cur, "current_orders", [])]
-                if ids:
-                    instructions = [filters.cancel_instruction(bet_id=b) for b in ids]
-                    self.client.betting.cancel_orders(market_id=market_id, instructions=instructions)
-        except Exception:
-            pass  # on ne fait pas crasher
-
-    # ---------- internals ----------
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

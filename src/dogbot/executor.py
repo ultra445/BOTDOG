@@ -27,7 +27,7 @@ except Exception:
 # --- AJOUTS (Staking/Stratégies) ---
 from .config import load_config
 from .staking import StakingEngine, Side
-from .strategies import build_registry, try_fire_slot, RunnerCtx
+from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
 
 # --- AJOUTS LIVE (Step 3) ---
 from .execution.orders import OrderExecutor
@@ -38,7 +38,7 @@ from .risk import ExposureManager
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-def _tz_utc(dt: Optional[datetime]) -> Optional[datetime]:
+def _tz_utc(dt: Optional[datetime]):
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -850,20 +850,55 @@ class Executor:
                                     "reason": reason,
                                 })
                             else:
-                                idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
-                                orr = self.order_executor.place_limit(
-                                    market_id=market_id,
-                                    selection_id=int(sid),
-                                    side=slot.side.value,
-                                    price=float(res.price),
-                                    size=float(res.size),
-                                    strategy=slot.tag,
-                                    persistence=os.getenv("PERSISTENCE", "LAPSE"),
-                                    idem_key=idem_key,
-                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                )
-                                if orr.ok:
+                                # Sélection du mode d'exécution selon le slot
+                                orr = None
+                                if slot.exec_mode == ExecMode.LIMIT_LTP:
+                                    idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
+                                    orr = self.order_executor.place_limit(
+                                        market_id=market_id,
+                                        selection_id=int(sid),
+                                        side=slot.side.value,
+                                        price=float(res.price),
+                                        size=float(res.size),
+                                        strategy=slot.tag,
+                                        persistence=os.getenv("PERSISTENCE", "LAPSE"),
+                                        idem_key=idem_key,
+                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                    )
+                                elif slot.exec_mode == ExecMode.SP_MOC:
+                                    # BACK: size = stake ; LAY: size_or_liability = liability
+                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
+                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
+                                    orr = self.order_executor.place_sp_market_on_close(
+                                        market_id=market_id,
+                                        selection_id=int(sid),
+                                        side=slot.side.value,
+                                        size_or_liability=qty,
+                                        strategy=slot.tag,
+                                        idem_key=idem_key,
+                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                    )
+                                elif slot.exec_mode == ExecMode.SP_LOC:
+                                    # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
+                                    sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
+                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
+                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
+                                    orr = self.order_executor.place_sp_limit_on_close(
+                                        market_id=market_id,
+                                        selection_id=int(sid),
+                                        side=slot.side.value,
+                                        size_or_liability=qty,
+                                        sp_limit_price=sp_lim,
+                                        strategy=slot.tag,
+                                        idem_key=idem_key,
+                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                    )
+
+                                if orr and orr.ok:
+                                    # Réserve l’exposition (stake pour BACK, liability pour LAY)
                                     self.exposure.on_placed(
                                         Side(slot.side.value),
                                         market_id=market_id,
