@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 import os
+from dataclasses import dataclass
 
+# ================== TON FICHIER EXISTANT (conservé) ==================
 
 class Settings(BaseModel):
     # Identifiants / certifs
@@ -65,7 +67,6 @@ class Settings(BaseModel):
     stake_formula_lay_place: Optional[str] = None
 
     # ======= Snapshots (nouveau) =======
-    # Active l’enregistrement CSV des variables à des instants clés pré-off
     snapshot_enabled: bool            # SNAPSHOT_ENABLED
     snapshot_dir: str                 # SNAPSHOT_DIR
     snapshot_fields: List[str]        # SNAPSHOT_FIELDS (liste de noms de colonnes)
@@ -175,10 +176,82 @@ class Settings(BaseModel):
             snapshot_dir=env("SNAPSHOT_DIR", "snapshots"),
             snapshot_fields=env_list(
                 "SNAPSHOT_FIELDS",
-                # par défaut un set simple et lisible
-                ["ts", "market_id", "selection_id", "runner_name", "secs_to_off",
-                 "ltp", "best_back_price", "best_lay_price", "traded_volume"]
+                ["ts","market_id","selection_id","runner_name","secs_to_off",
+                 "ltp","best_back_price","best_lay_price","traded_volume"]
             ),
-            snapshot_when_seconds=env_int_list("SNAPSHOT_WHEN_SECONDS", [300, 150, 80, 45, 2]),
+            snapshot_when_seconds=env_int_list("SNAPSHOT_WHEN_SECONDS", [300,150,80,45,2]),
             snapshot_runner_limit=int(env("SNAPSHOT_RUNNER_LIMIT", "0")) or None,
         )
+
+# ================== AJOUT POUR LA BRIQUE MISES ==================
+
+FAMILIES = ["BACK_WIN", "BACK_PLACE", "LAY_WIN", "LAY_PLACE"]
+SLOTS = list(range(1, 11))  # 1..10
+
+@dataclass
+class RiskLimits:
+    min_stake: float
+    min_liability: float
+    max_market_stake: float
+    max_daily_exposure: float
+    one_bet_per_market: bool
+
+@dataclass
+class AppConfig:
+    capital: float
+    risk: RiskLimits
+    edges: Dict[str, float]               # ex: {"EDGE_BACK_WIN_1": 0.02, ...}
+    max_runner_stake: float               # plafond global par chien
+    per_slot_runner_caps: Dict[str, float]  # ex: {"MAX_RUNNER_STAKE_BACK_WIN_1": 6.0, ...}
+
+def _get_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    try:
+        return float(v) if v is not None else default
+    except Exception:
+        return default
+
+def _get_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1","true","yes","on","y"}
+
+def load_config() -> AppConfig:
+    """
+    Mini-config dédiée au moteur de mises.
+    N'impacte pas Settings.load() (conservée pour le reste de l'app).
+    """
+    capital = _get_float("CAPITAL", 1000.0)
+    risk = RiskLimits(
+        min_stake=_get_float("MIN_STAKE", 2.0),
+        min_liability=_get_float("MIN_LIABILITY", 10.0),
+        max_market_stake=_get_float("MAX_MARKET_STAKE", 25.0),      # réutilise la même clé
+        max_daily_exposure=_get_float("MAX_DAILY_EXPOSURE", 250.0), # réutilise la même clé
+        one_bet_per_market=_get_bool("ONE_BET_PER_MARKET", True),
+    )
+
+    edges: Dict[str, float] = {}
+    per_slot_runner_caps: Dict[str, float] = {}
+    for fam in FAMILIES:
+        for s in SLOTS:
+            edge_key = f"EDGE_{fam}_{s}"
+            cap_key  = f"MAX_RUNNER_STAKE_{fam}_{s}"
+            edges[edge_key] = _get_float(edge_key, 0.0)
+            # on ne stocke le cap par slot que s'il est bien présent dans l'env
+            val = os.getenv(cap_key)
+            if val is not None and val != "":
+                try:
+                    per_slot_runner_caps[cap_key] = float(val)
+                except Exception:
+                    pass
+
+    max_runner_stake = _get_float("MAX_RUNNER_STAKE", 999999.0)  # par défaut: pas de plafond strict
+
+    return AppConfig(
+        capital=capital,
+        risk=risk,
+        edges=edges,
+        max_runner_stake=max_runner_stake,
+        per_slot_runner_caps=per_slot_runner_caps,
+    )

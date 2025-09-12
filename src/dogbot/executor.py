@@ -10,7 +10,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional, Dict, List, Tuple
+from typing import Any, Iterable, Optional, Dict, List, Tuple, Set
 from collections import defaultdict, deque
 import csv, math, os, re
 
@@ -23,6 +23,11 @@ try:
     from .plackett import odds_to_win_probs, place_probabilities, fair_place_odds
 except Exception:
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
+
+# --- AJOUTS (Staking/Stratégies) ---
+from .config import load_config
+from .staking import StakingEngine
+from .strategies import build_registry, try_fire_slot, RunnerCtx
 
 
 # ---------- utilitaires généraux ----------
@@ -262,6 +267,15 @@ class Executor:
             self._moyltp_tol = float(os.getenv("MOYLTP_TOLERANCE_PCT", "30"))
         except Exception:
             self._moyltp_tol = 30.0
+
+        # --- AJOUTS (init Staking/Stratégies + dossier trades) ---
+        self.cfg = load_config()
+        self.staking_engine = StakingEngine(self.cfg)
+        self.strategy_registry = build_registry()
+        self.trades_dir = self.data_dir  # on réutilise ./data pour trades_YYYYMMDD.csv
+
+        # --- AJOUT: mémoire "un pari par marché" par slot ---
+        self._slot_market_fired: Set[tuple[str,int,str]] = set()  # {(family, slot, market_id)}
 
     def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
@@ -506,7 +520,6 @@ class Executor:
             moyltp = self._trusted_moyltp(lpt, mid)
 
             # SP / BSP via feed (REST: SP_AVAILABLE; STREAM: SP_EST)
-            # On passe par un dict temporaire pour ne pas polluer les colonnes hors header.
             tmp = {}
             self.price_feed.enrich_runner_row(tmp, "WIN" if is_win else "PLACE", r)
             if is_win:
@@ -541,7 +554,6 @@ class Executor:
 
             # BASE_WIN pour Plackett-Luce (uniquement marché WIN)
             if is_win:
-                # WINPROB = (BSP_WIN + LTP) / 2 si dispo, sinon None
                 winprob = ((bsp_win + lpt)/2.0) if (bsp_win is not None and lpt is not None) else None
                 base_win = winprob or moyltp or lpt or bb  # hiérarchie
                 cache[sid]["WINPROB"] = winprob
@@ -614,7 +626,7 @@ class Executor:
             if is_place and lpt is not None:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
-            def _get(msdict, ms): 
+            def _get(msdict, ms):
                 return msdict.get(market_id, {}).get(sid, {}).get(ms)
             def ratio(a: Optional[float], b: Optional[float]) -> Optional[float]:
                 if a is None or b is None or b == 0: return None
@@ -666,7 +678,7 @@ class Executor:
                     place_theo_place = cached.get(sid)
 
             # Milestones PLACE LTP
-            def _get_place(ms): 
+            def _get_place(ms):
                 return self._ltp_place_ms.get(market_id, {}).get(sid, {}).get(ms)
             ltp_300_p = _get_place(300) if is_place else None
             ltp_150_p = _get_place(150) if is_place else None
@@ -674,7 +686,8 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
-            base = [
+            row = [
+                # base
                 _now_utc_iso(),
                 None,  # COURSE_ID (optionnel)
                 info["venue"],
@@ -688,9 +701,7 @@ class Executor:
                 trap, vtrap,
                 (getattr(rm, "sort_priority", None) if rm else None),
                 n_active, n_places,
-            ]
-
-            win_block = [
+                # WIN block
                 (lpt if is_win else None),
                 (bb if is_win else None),
                 (bs if is_win else None),
@@ -725,10 +736,7 @@ class Executor:
                 ((bs or 0.0) + (ls or 0.0) if is_win else None),
                 (((rk_bb or 0) == 1) if is_win else None),
                 (place_theo_win if is_win else None),
-            ]
-
-            placeprob = ((bsp_place + lpt)/2.0) if (is_place and bsp_place is not None and lpt is not None) else None
-            place_block = [
+                # PLACE block
                 (lpt if is_place else None),
                 (bb if is_place else None),
                 (bs if is_place else None),
@@ -741,7 +749,7 @@ class Executor:
                 (total_matched_runner if is_place else None),
                 (bsp_place if is_place else None),
                 (sp_av_place if is_place else None),
-                (placeprob if is_place else None),
+                (((bsp_place + lpt)/2.0) if (is_place and bsp_place is not None and lpt is not None) else None),
                 (place_theo_place if is_place else None),
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
@@ -749,11 +757,77 @@ class Executor:
                 (ltp_45_p  if is_place else None),
                 (ltp_2_p   if is_place else None),
             ]
-
-            row = base + win_block + place_block
             self._append(self.runner_csv, row)
 
+            # --- AJOUT : déclenchement staking par runner ---
+            try:
+                # course_id simple: VENUE-YYYYMMDDHHMM
+                start_utc = info.get("start_utc")
+                venue = (info.get("venue") or "NA")
+                if start_utc is not None:
+                    course_id = f"{venue}-{start_utc:%Y%m%d%H%M}"
+                else:
+                    course_id = str(info.get("event_id") or market_id)
+
+                ltp_val = cache.get(sid, {}).get("LTP")
+                if ltp_val is not None and ltp_val >= 1.01:
+                    ctx = RunnerCtx(
+                        market_id=market_id,
+                        market_type=(market_type or ""),
+                        selection_id=int(sid),
+                        course_id=str(course_id),
+                        ltp=float(ltp_val),
+                        milestone=milestone,                           # <- on passe le jalon
+                        secs_to_off=float(tto) if tto is not None else None,  # <- optionnel
+                    )
+                    for slot in self.strategy_registry:
+                        # Bet per market (par slot)
+                        key = (slot.family, slot.slot, market_id)
+                        if slot.bet_per_market and key in self._slot_market_fired:
+                            continue
+
+                        res = try_fire_slot(self.staking_engine, slot, ctx)
+                        if not res:
+                            continue
+
+                        status = "DRYRUN" if self.dry_run else "LIVE"
+                        self._log_trade_row({
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                            "market_id": market_id,
+                            "market_type": (market_type or ""),
+                            "selection_id": int(sid),
+                            "course_id": str(course_id),
+                            "side": slot.side.value,
+                            "price_req": res.price,
+                            "size_req": res.size,
+                            "liability": round(res.liability or 0.0, 2),
+                            "strategy": slot.tag,
+                            "status": status,
+                            "reason": res.reason,
+                        })
+
+                        if slot.bet_per_market:
+                            self._slot_market_fired.add(key)
+
+                        # NOTE: placer l'ordre live ici plus tard (LIMIT + LAPSE)
+            except Exception:
+                # On ne casse jamais le snapshotting pour une erreur staking
+                pass
+
     # ----- helpers -----
+    def _log_trade_row(self, row: dict) -> None:
+        fname = self.trades_dir / f"trades_{datetime.now(timezone.utc):%Y%m%d}.csv"
+        new_file = not fname.exists()
+        with fname.open("a", newline="", encoding="utf-8") as f:
+            import csv as _csv
+            w = _csv.DictWriter(f, fieldnames=[
+                "ts","market_id","market_type","selection_id","course_id",
+                "side","price_req","size_req","liability","strategy","status","reason"
+            ])
+            if new_file:
+                w.writeheader()
+            w.writerow(row)
+
     def _extract_catalogue_info(self, mie: Any, md: Any) -> Dict[str, Any]:
         info: Dict[str, Any] = {
             "event_id": None, "event_name": None, "venue": None, "country_code": None,

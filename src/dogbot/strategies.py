@@ -1,162 +1,123 @@
 ﻿from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Tuple
-import os
+from typing import Callable, Dict, List, Optional, Set
 
-from betfairlightweight import filters
-from .formulas import compute_stake
+# Registre de stratégies par slots (aligne avec executor.py)
+# 4 familles × 10 slots : BACK_WIN / BACK_PLACE / LAY_WIN / LAY_PLACE
 
+from .staking import StakingEngine, StakingResult, Side  # types côté staking
 
-# ---------- Base ----------
+# --------- Contexte runner passé aux conditions ---------
 
 @dataclass
-class StrategyBase:
-    name: str
-    side: str            # "BACK" ou "LAY"
-    market_type: str     # "WIN" ou "PLACE"
-    unit_stake: float = 2.0
+class RunnerCtx:
+    market_id: str
+    market_type: str    # "WIN" | "PLACE"
+    selection_id: int
+    course_id: str
+    ltp: float          # LTP instantané
+    milestone: Optional[int] = None       # ex: 300,150,80,45,2
+    secs_to_off: Optional[float] = None   # T- en secondes (approx)
 
-    def decide(
-        self,
-        market_book,
-        market_index_entry: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Retourne une place_instruction (dict) OU None."""
-        return None
+ConditionFn = Callable[[RunnerCtx], bool]
 
+@dataclass
+class StrategySlot:
+    family: str                 # ex "BACK_WIN"
+    slot: int                   # 1..10
+    side: Side                  # Side.BACK | Side.LAY
+    condition: ConditionFn
+    tag: str                    # pour le logging / CSV trades
+    # -------- options nouvelles --------
+    bet_per_market: bool = False                     # True = une seule fois par marché pour ce slot
+    allowed_milestones: Optional[Set[int]] = None    # ex {150,45,2} si tu veux restreindre
 
-# ---------- Démo concrète (BACK WIN slot 1) ----------
+# --------- Placeholders (à remplacer par tes vraies règles) ---------
 
-class BackWinDemo(StrategyBase):
-    """BACK WIN: back le favori si LTP < 3.0 (démo)."""
+def _false(_: RunnerCtx) -> bool:
+    return False
 
-    def decide(self, market_book, market_index_entry=None):
-        runners = getattr(market_book, "runners", []) or []
-        if not runners:
-            return None
+# EXEMPLE de condition : BACK_WIN_1, joue si 1.8 <= LTP <= 4.5
+def cond_back_win_1(ctx: RunnerCtx) -> bool:
+    return 1.8 <= ctx.ltp <= 4.5
 
-        def lpt(r):
-            v = getattr(r, "last_price_traded", None)
-            return v if v is not None else 999.0
+# --------- Construction du registre ---------
 
-        fav = min(runners, key=lpt)
-        last = lpt(fav)
-        if last >= 3.0:
-            return None
+def build_registry() -> List[StrategySlot]:
+    reg: List[StrategySlot] = []
 
-        # Mise dynamique via .env (STAKE_FORMULA_BACK_WIN) avec repli sur STAKE_BACK_WIN puis unit_stake
-        stake = compute_stake(side="BACK", market_type="WIN", odds=last, default_unit=self.unit_stake)
-        if stake <= 0:
-            return None
-
-        # Prix limite simple (à ajuster selon ta logique de prise de prix)
-        price = max(1.01, round(last - 0.10, 2))
-
-        return filters.place_instruction(
-            order_type="LIMIT",
-            selection_id=fav.selection_id,
-            side="BACK",
-            limit_order=filters.limit_order(
-                price=price,
-                size=stake,
-                persistence_type="LAPSE",
-            ),
-        )
-
-
-# ---------- Stratégie vide (slots à remplir plus tard) ----------
-
-class NoOp(StrategyBase):
-    """Placeholder : ne place rien pour l'instant."""
-    def decide(self, market_book, market_index_entry=None):
-        return None
-
-
-# ---------- Manager ----------
-
-class StrategyManager:
-    def __init__(self, strategies: List[StrategyBase]):
-        self.strategies = strategies
-
-    def decide_all(
-        self,
-        market_book,
-        market_index_entry: Optional[Dict[str, Any]],
-    ) -> List[Tuple[StrategyBase, Dict[str, Any]]]:
-        """Renvoie [(strategy, instruction_dict), ...] limité au type de marché courant."""
-        mtype = None
-        if market_index_entry:
-            mtype = (market_index_entry.get("market_type") or "").upper() or None
-        if not mtype:
-            mtype = "WIN"
-
-        out: List[Tuple[StrategyBase, Dict[str, Any]]] = []
-        for s in self.strategies:
-            if s.market_type.upper() != mtype:
-                continue
-            instr = s.decide(market_book, market_index_entry)
-            if instr:
-                out.append((s, instr))
-        return out
-
-
-# ---------- Helpers lecture .env ----------
-
-def _flag(key: str, default: bool = False) -> bool:
-    val = os.getenv(key, "true" if default else "false").strip().lower()
-    return val in ("1", "true", "yes", "on")
-
-def _stake(key: str, fallback: float) -> float:
-    raw = os.getenv(key, "").strip()
-    if not raw:
-        return fallback
-    try:
-        return float(raw)
-    except Exception:
-        return fallback
-
-
-# ---------- Construction depuis .env ----------
-
-def _build_slots(enable_cat: bool, cat_prefix: str, market_type: str, side: str, unit: float) -> List[StrategyBase]:
-    """
-    Crée jusqu’à 10 slots par catégorie.
-    - Slot 1 de BACK_WIN utilise la démo concrète (BackWinDemo).
-    - Tous les autres slots sont des NoOp, prêts à être codés plus tard.
-    - Le flag ENABLE_{cat_prefix}_{i} pilote chaque slot.
-    """
-    strategies: List[StrategyBase] = []
-    if not enable_cat:
-        return strategies
-
+    # BACK WIN 1..10
     for i in range(1, 11):
-        if _flag(f"ENABLE_{cat_prefix}_{i}", i == 1):
-            name = f"{cat_prefix}_{i}"
-            if cat_prefix == "BACK_WIN" and i == 1:
-                strategies.append(BackWinDemo(name=name, side=side, market_type=market_type, unit_stake=unit))
-            else:
-                strategies.append(NoOp(name=name, side=side, market_type=market_type, unit_stake=unit))
-    return strategies
+        reg.append(StrategySlot(
+            family="BACK_WIN",
+            slot=i,
+            side=Side.BACK,
+            condition=cond_back_win_1 if i == 1 else _false,
+            tag=f"BW_{i}",
+            # EXEMPLE: limiter BW_1 aux jalons 150/45/2 et un pari max par marché
+            bet_per_market=True if i == 1 else False,
+            allowed_milestones={150, 45, 2} if i == 1 else None,
+        ))
 
+    # BACK PLACE 1..10
+    for i in range(1, 11):
+        reg.append(StrategySlot(
+            family="BACK_PLACE",
+            slot=i,
+            side=Side.BACK,
+            condition=_false,
+            tag=f"BP_{i}",
+            # bet_per_market / allowed_milestones désactivés par défaut
+        ))
 
-def build_strategies_from_env(default_unit: float = 2.0) -> StrategyManager:
-    # Master switches (catégories)
-    enable_back_win   = _flag("ENABLE_BACK_WIN",   True)
-    enable_lay_win    = _flag("ENABLE_LAY_WIN",    True)
-    enable_back_place = _flag("ENABLE_BACK_PLACE", True)
-    enable_lay_place  = _flag("ENABLE_LAY_PLACE",  True)
+    # LAY WIN 1..10
+    for i in range(1, 11):
+        reg.append(StrategySlot(
+            family="LAY_WIN",
+            slot=i,
+            side=Side.LAY,
+            condition=_false,
+            tag=f"LW_{i}",
+        ))
 
-    # Stakes fixes par catégorie (seulement comme *repli* si pas de STAKE_FORMULA_*)
-    stake_back_win   = _stake("STAKE_BACK_WIN",   default_unit)
-    stake_lay_win    = _stake("STAKE_LAY_WIN",    default_unit)
-    stake_back_place = _stake("STAKE_BACK_PLACE", default_unit)
-    stake_lay_place  = _stake("STAKE_LAY_PLACE",  default_unit)
+    # LAY PLACE 1..10
+    for i in range(1, 11):
+        reg.append(StrategySlot(
+            family="LAY_PLACE",
+            slot=i,
+            side=Side.LAY,
+            condition=_false,
+            tag=f"LP_{i}",
+        ))
 
-    strategies: List[StrategyBase] = []
-    strategies += _build_slots(enable_back_win,   "BACK_WIN",   "WIN",   "BACK", stake_back_win)
-    strategies += _build_slots(enable_lay_win,    "LAY_WIN",    "WIN",   "LAY",  stake_lay_win)
-    strategies += _build_slots(enable_back_place, "BACK_PLACE", "PLACE", "BACK", stake_back_place)
-    strategies += _build_slots(enable_lay_place,  "LAY_PLACE",  "PLACE", "LAY",  stake_lay_place)
+    return reg
 
-    return StrategyManager(strategies)
+# --------- Déclencheur d'un slot ---------
+
+def try_fire_slot(engine: StakingEngine, slot: StrategySlot, ctx: RunnerCtx) -> Optional[StakingResult]:
+    # Cohérence marché/famille
+    if "WIN" in slot.family and ctx.market_type != "WIN":
+        return None
+    if "PLACE" in slot.family and ctx.market_type != "PLACE":
+        return None
+
+    # Filtre jalons si demandé
+    if slot.allowed_milestones is not None:
+        if ctx.milestone not in slot.allowed_milestones:
+            return None
+
+    # Condition de slot
+    if not slot.condition(ctx):
+        return None
+
+    # Calcul de mise via StakingEngine (CAPITAL/LTP/EDGE)
+    return engine.compute(
+        side=slot.side,
+        price_ltp=ctx.ltp,
+        family=slot.family,
+        slot=slot.slot,
+        market_id=ctx.market_id,
+        selection_id=ctx.selection_id,
+        course_id=ctx.course_id,
+        strategy_tag=slot.tag,
+    )
