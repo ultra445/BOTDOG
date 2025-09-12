@@ -26,8 +26,12 @@ except Exception:
 
 # --- AJOUTS (Staking/Stratégies) ---
 from .config import load_config
-from .staking import StakingEngine
+from .staking import StakingEngine, Side
 from .strategies import build_registry, try_fire_slot, RunnerCtx
+
+# --- AJOUTS LIVE (Step 3) ---
+from .execution.orders import OrderExecutor
+from .risk import ExposureManager
 
 
 # ---------- utilitaires généraux ----------
@@ -277,6 +281,16 @@ class Executor:
         # --- AJOUT: mémoire "un pari par marché" par slot ---
         self._slot_market_fired: Set[tuple[str,int,str]] = set()  # {(family, slot, market_id)}
 
+        # --- AJOUTS LIVE (OrderExecutor + ExposureManager) ---
+        self.order_executor = OrderExecutor(
+            client=self.client,
+            data_dir=str(self.data_dir),
+            throttle_max_per_minute=int(os.getenv("THROTTLE_MAX_PER_MIN", "25")),
+            default_persistence=os.getenv("PERSISTENCE", "LAPSE"),
+            fok_ms=int(os.getenv("FOK_MS", "0")) or None,
+        )
+        self.exposure = ExposureManager(self.cfg)
+
     def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
         if fetch_latency_ms is not None:
@@ -404,7 +418,7 @@ class Executor:
         if milestone is not None:
             self._write_runner_rows(book, info, market_type, t_to_off_s, milestone, runners, rank_ltp, rank_back)
 
-        # stratégie (dry-run)
+        # stratégie (legacy)
         try:
             instructions = self.strategy.decide_all(book, mie, datetime.now(timezone.utc)) or []
         except Exception as e:
@@ -759,7 +773,7 @@ class Executor:
             ]
             self._append(self.runner_csv, row)
 
-            # --- AJOUT : déclenchement staking par runner ---
+            # --- AJOUT : déclenchement staking + LIVE ---
             try:
                 # course_id simple: VENUE-YYYYMMDDHHMM
                 start_utc = info.get("start_utc")
@@ -777,13 +791,13 @@ class Executor:
                         selection_id=int(sid),
                         course_id=str(course_id),
                         ltp=float(ltp_val),
-                        milestone=milestone,                           # <- on passe le jalon
-                        secs_to_off=float(tto) if tto is not None else None,  # <- optionnel
+                        milestone=milestone,                           # jalon courant
+                        secs_to_off=float(tto) if tto is not None else None,
                     )
                     for slot in self.strategy_registry:
                         # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
-                        if slot.bet_per_market and key in self._slot_market_fired:
+                        if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
                             continue
 
                         res = try_fire_slot(self.staking_engine, slot, ctx)
@@ -806,12 +820,60 @@ class Executor:
                             "reason": res.reason,
                         })
 
-                        if slot.bet_per_market:
+                        # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
+                        if getattr(slot, "bet_per_market", False):
                             self._slot_market_fired.add(key)
 
-                        # NOTE: placer l'ordre live ici plus tard (LIMIT + LAPSE)
+                        # ---- LIVE : place_orders sécurisé ----
+                        if not self.dry_run:
+                            can, reason = self.exposure.can_place(
+                                Side(slot.side.value),
+                                market_id=market_id,
+                                selection_id=int(sid),
+                                planned_stake=float(res.size),
+                                planned_liability=float(res.liability or 0.0),
+                            )
+                            if not can:
+                                # trace claire d’un blocage live
+                                self._log_trade_row({
+                                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                                    "market_id": market_id,
+                                    "market_type": (market_type or ""),
+                                    "selection_id": int(sid),
+                                    "course_id": str(course_id),
+                                    "side": slot.side.value,
+                                    "price_req": res.price,
+                                    "size_req": res.size,
+                                    "liability": round(res.liability or 0.0, 2),
+                                    "strategy": slot.tag,
+                                    "status": "LIVE_BLOCKED",
+                                    "reason": reason,
+                                })
+                            else:
+                                idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
+                                orr = self.order_executor.place_limit(
+                                    market_id=market_id,
+                                    selection_id=int(sid),
+                                    side=slot.side.value,
+                                    price=float(res.price),
+                                    size=float(res.size),
+                                    strategy=slot.tag,
+                                    persistence=os.getenv("PERSISTENCE", "LAPSE"),
+                                    idem_key=idem_key,
+                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                )
+                                if orr.ok:
+                                    self.exposure.on_placed(
+                                        Side(slot.side.value),
+                                        market_id=market_id,
+                                        selection_id=int(sid),
+                                        stake=float(res.size),
+                                        liability=float(res.liability or 0.0),
+                                    )
+
             except Exception:
-                # On ne casse jamais le snapshotting pour une erreur staking
+                # Ne jamais casser le snapshotting pour une erreur staking/ordre
                 pass
 
     # ----- helpers -----
