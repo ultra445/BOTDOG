@@ -19,6 +19,7 @@ class RunnerCtx:
     ltp: float          # LTP instantané
     milestone: Optional[int] = None       # ex: 300,150,80,45,2
     secs_to_off: Optional[float] = None   # T- en secondes (approx)
+    region: Optional[str] = None          # "UK" | "ROW" (renseigné par executor.py)
 
 ConditionFn = Callable[[RunnerCtx], bool]
 
@@ -41,6 +42,7 @@ class StrategySlot:
     allowed_milestones: Optional[Set[int]] = None    # ex {150,45,2} si tu veux restreindre
     exec_mode: ExecMode = ExecMode.LIMIT_LTP         # LTP par défaut (rien ne change si tu ne touches pas)
     sp_limit: Optional[float] = None                 # pour SP_LOC : BACK=min SP ; LAY=max SP
+    allowed_regions: Optional[Set[str]] = None       # {"UK"} | {"ROW"} | {"UK","ROW"} ; None = pas de filtre
 
 # --------- Placeholders (à remplacer par tes vraies règles) ---------
 
@@ -77,6 +79,7 @@ def build_registry() -> List[StrategySlot]:
             allowed_milestones={150, 45, 2} if i == 1 else None,
             exec_mode=ExecMode.LIMIT_LTP,   # par défaut: prix de marché (LTP)
             # sp_limit=None,                # (utilisé seulement si exec_mode=SP_LOC)
+            # allowed_regions={"UK"},       # exemple: ne tirer que sur GB/IE
         ))
 
     # BACK PLACE 1..10
@@ -88,6 +91,7 @@ def build_registry() -> List[StrategySlot]:
             condition=_false,
             tag=f"BP_{i}",
             exec_mode=ExecMode.LIMIT_LTP,
+            # allowed_regions={"ROW"},      # exemple: ne tirer que sur AU/NZ
         ))
 
     # LAY WIN 1..10
@@ -115,7 +119,7 @@ def build_registry() -> List[StrategySlot]:
     # ------------------------
     # EXEMPLES (désactivés par défaut) ─ à activer si tu veux tester le BSP :
     # ------------------------
-    # # BACK WIN, jouer AU BSP sans limite (MARKET_ON_CLOSE)
+    # # BACK WIN, jouer AU BSP sans limite (MARKET_ON_CLOSE), UK-only
     # reg.append(StrategySlot(
     #     family="BACK_WIN",
     #     slot=2,
@@ -124,9 +128,10 @@ def build_registry() -> List[StrategySlot]:
     #     tag="BW_2_BSP",
     #     bet_per_market=True,
     #     exec_mode=ExecMode.SP_MOC, # BSP sans limite
+    #     allowed_regions={"UK"},    # filtre régional
     # ))
     #
-    # # BACK WIN, jouer AU BSP AVEC limite min 2.6 (LIMIT_ON_CLOSE)
+    # # BACK WIN, jouer AU BSP AVEC limite min 2.6 (LIMIT_ON_CLOSE), ROW-only
     # reg.append(StrategySlot(
     #     family="BACK_WIN",
     #     slot=3,
@@ -136,6 +141,7 @@ def build_registry() -> List[StrategySlot]:
     #     bet_per_market=True,
     #     exec_mode=ExecMode.SP_LOC, # BSP avec limite
     #     sp_limit=2.6,              # BACK=min SP ; LAY=max SP
+    #     allowed_regions={"ROW"},   # filtre régional
     # ))
 
     return reg
@@ -153,6 +159,10 @@ def try_fire_slot(engine: StakingEngine, slot: StrategySlot, ctx: RunnerCtx) -> 
     if slot.allowed_milestones is not None:
         if ctx.milestone not in slot.allowed_milestones:
             return None
+
+    # Filtre régional si demandé
+    if slot.allowed_regions is not None and ctx.region not in slot.allowed_regions:
+        return None
 
     # Condition de slot
     if not slot.condition(ctx):

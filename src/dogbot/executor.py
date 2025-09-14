@@ -5,7 +5,7 @@
 # - MID/MOYLTP avec seuil de confiance MOYLTP_TOLERANCE_PCT (%.env)
 # - DIFF/MOM sur BASE_WIN = (WINPROB -> MOYLTP_WIN -> LTP_WIN -> BEST_BACK)
 # - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
-# - Duplication : PLACETHEORIQUE_PLACE (même valeur que sur WIN) affichée sur les lignes PLACE
+# - Gap features @ T−2s (WIN/LTP) : GOR + bornes de binning GAPMIN/GAPMAX ; duplication vers PLACE
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -18,23 +18,23 @@ from .types import Instruction, RunnerMeta
 from .indexer import MarketIndex
 from .feeds import create_price_feed_from_env
 
-# --- import Plackett–Luce (supporte plackett OU placket pour éviter la confusion) ---
+# --- import Plackett–Luce ---
 try:
     from .plackett import odds_to_win_probs, place_probabilities, fair_place_odds
 except Exception:
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
 
-# --- AJOUTS (Staking/Stratégies) ---
+# --- Staking/Stratégies ---
 from .config import load_config
 from .staking import StakingEngine, Side
-from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
+from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode
 
-# --- AJOUTS LIVE (Step 3) ---
+# --- LIVE ---
 from .execution.orders import OrderExecutor
 from .risk import ExposureManager
 
 
-# ---------- utilitaires généraux ----------
+# ---------- utilitaires ----------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -185,6 +185,9 @@ class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
 
+    # Bins GOR (gauche fermée / droite ouverte) pour GapMin/GapMax sur LTP @ T−2s
+    GOR_BINS = [1.00, 1.10, 1.25, 1.50, 2.00, 3.00, float("inf")]
+
     MARKET_HEADER = [
         "SNAP_TS_UTC","MARKET_ID","COURSE_ID","MARKET_TYPE",
         "EVENT_ID","EVENT_NAME","VENUE","COUNTRY_CODE",
@@ -222,6 +225,8 @@ class Executor:
         "BSP_PLACE","SP_AVAILABLE_PLACE","PLACEPROB",
         "PLACETHEORIQUE_PLACE",
         "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
+        # NEW: simples (gap @ T−2s)
+        "GAPMIN","GAPMAX","GOR",
     ]
 
     ENTRY_MIN_T_S = 120
@@ -257,7 +262,11 @@ class Executor:
         # Cache PLACETHEORIQUE -> duplication PLACE
         self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
 
-        # BSP / SP feed (REST aujourd'hui, STREAM demain sans toucher l'executor)
+        # Gap bounds & ratio @ T−2s par WIN market
+        self._gap_bounds_by_win: Dict[str, Dict[int, Tuple[Optional[float], Optional[float]]]] = defaultdict(dict)
+        self._gor_by_win: Dict[str, Dict[int, Optional[float]]] = defaultdict(dict)
+
+        # BSP / SP feed
         self.price_feed = create_price_feed_from_env()
 
         # Diag
@@ -266,22 +275,20 @@ class Executor:
         self._diag_throttle_weight: Optional[float] = None
         self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
 
-        # Tolérance MOYLTP (% sur LTP)
+        # Tolérance MOYLTP
         try:
             self._moyltp_tol = float(os.getenv("MOYLTP_TOLERANCE_PCT", "30"))
         except Exception:
             self._moyltp_tol = 30.0
 
-        # --- AJOUTS (init Staking/Stratégies + dossier trades) ---
+        # Staking/strats
         self.cfg = load_config()
         self.staking_engine = StakingEngine(self.cfg)
         self.strategy_registry = build_registry()
-        self.trades_dir = self.data_dir  # on réutilise ./data pour trades_YYYYMMDD.csv
+        self.trades_dir = self.data_dir
+        self._slot_market_fired: Set[tuple[str,int,str]] = set()
 
-        # --- AJOUT: mémoire "un pari par marché" par slot ---
-        self._slot_market_fired: Set[tuple[str,int,str]] = set()  # {(family, slot, market_id)}
-
-        # --- AJOUTS LIVE (OrderExecutor + ExposureManager) ---
+        # LIVE
         self.order_executor = OrderExecutor(
             client=self.client,
             data_dir=str(self.data_dir),
@@ -380,6 +387,18 @@ class Executor:
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
 
+    # --------- binning GOR -> (gapmin, gapmax), avec bornes [a,b) ---------
+    def _gap_bounds_from_gor(self, gor: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+        if gor is None or gor != gor:  # NaN
+            return (None, None)
+        x = float(gor)
+        bins = self.GOR_BINS
+        for i in range(len(bins)-1):
+            a, b = bins[i], bins[i+1]
+            if x >= a and (x < b or math.isinf(b)):
+                return (float(a), (float(b) if not math.isinf(b) else float("inf")))
+        return (float(bins[-2]), float("inf"))
+
     # ---------- cœur ----------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
@@ -403,7 +422,7 @@ class Executor:
             self._last_tto[market_id] = t_to_off_s if t_to_off_s is not None else 0.0
             return
 
-        # Historique LTP pour d5/d30/vol (WIN uniquement, indicatif)
+        # Historique LTP pour d5/d30/vol (WIN uniquement)
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None: continue
@@ -418,7 +437,7 @@ class Executor:
         if milestone is not None:
             self._write_runner_rows(book, info, market_type, t_to_off_s, milestone, runners, rank_ltp, rank_back)
 
-        # stratégie (legacy)
+        # stratégie legacy
         try:
             instructions = self.strategy.decide_all(book, mie, datetime.now(timezone.utc)) or []
         except Exception as e:
@@ -566,16 +585,16 @@ class Executor:
                 "SP_AV_PLACE": float(sp_av_place),
             }
 
-            # BASE_WIN pour Plackett-Luce (uniquement marché WIN)
+            # BASE_WIN pour Plackett-Luce (uniquement WIN)
             if is_win:
                 winprob = ((bsp_win + lpt)/2.0) if (bsp_win is not None and lpt is not None) else None
-                base_win = winprob or moyltp or lpt or bb  # hiérarchie
+                base_win = winprob or moyltp or lpt or bb
                 cache[sid]["WINPROB"] = winprob
                 cache[sid]["BASE_WIN"] = base_win
                 if base_win and base_win > 1.0:
                     sid_prices_for_pl.append((sid, float(base_win)))
 
-        # PLACETHEORIQUE via Plackett–Luce (cote = 1/q) pour WIN
+        # PLACETHEORIQUE via Plackett–Luce (cote = 1/q)
         place_theo_by_sid: Dict[int, Optional[float]] = {}
         if is_win and len(sid_prices_for_pl) >= max(2, min(5, n_active)):
             sid_prices_for_pl.sort(key=lambda t: t[0])
@@ -588,16 +607,41 @@ class Executor:
                 fair_list = list(fair) if not hasattr(fair, "tolist") else fair.tolist()
                 for sid, odd_place in zip(sids, fair_list):
                     place_theo_by_sid[sid] = float(odd_place)
-            except Exception as e:
-                print(f"[PL_ERR] {market_id}: {e}")
+            except Exception:
                 place_theo_by_sid = {sid: None for sid,_ in sid_prices_for_pl}
-
-            # cache duplication pour PLACE
             cache_key = (win_id or market_id)
             if cache_key:
                 self._last_place_theo_by_market[str(cache_key)] = {
                     sid: v for sid, v in place_theo_by_sid.items() if v is not None
                 }
+
+        # ------ Gap @ T−2s (WIN/LTP): calcule GOR + GAPMIN/GAPMAX, et duplique vers PLACE ------
+        gapmap: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+        gormap: Dict[int, Optional[float]] = {}
+        if is_win and milestone == 2:
+            pairs: List[Tuple[int, float]] = []
+            for r in runners:
+                if (getattr(r, "status", None) or "ACTIVE").upper() != "ACTIVE":
+                    continue
+                sid = int(getattr(r, "selection_id", 0) or 0)
+                if sid == 0:
+                    continue
+                ltp_val = cache.get(sid, {}).get("LTP")
+                if ltp_val is not None and ltp_val > 1.0:
+                    pairs.append((sid, float(ltp_val)))
+            pairs.sort(key=lambda t: t[1])  # tri croissant
+            n = len(pairs)
+            for i, (sid, price) in enumerate(pairs):
+                if i + 1 < n and price > 0:
+                    gor = pairs[i+1][1] / price
+                    gapmin, gapmax = self._gap_bounds_from_gor(gor)
+                else:
+                    gor = None
+                    gapmin, gapmax = (None, None)
+                gormap[sid] = (float(gor) if gor is not None else None)
+                gapmap[sid] = (gapmin, gapmax)
+            self._gor_by_win[str(market_id)] = gormap
+            self._gap_bounds_by_win[str(market_id)] = gapmap
 
         # Écriture des lignes runners
         rank_ltp, rank_back = _rankings(runners)
@@ -700,10 +744,21 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
+            # --- GapMin/GapMax/GOR remplis seulement au jalon 2s ; duplication sur PLACE ---
+            gapmin = gapmax = gor_val = None
+            if milestone == 2:
+                if is_win:
+                    gapmin, gapmax = self._gap_bounds_by_win.get(str(market_id), {}).get(sid, (None, None))
+                    gor_val = self._gor_by_win.get(str(market_id), {}).get(sid)
+                else:
+                    if win_id:
+                        gapmin, gapmax = self._gap_bounds_by_win.get(str(win_id), {}).get(sid, (None, None))
+                        gor_val = self._gor_by_win.get(str(win_id), {}).get(sid)
+
             row = [
                 # base
                 _now_utc_iso(),
-                None,  # COURSE_ID (optionnel)
+                None,
                 info["venue"],
                 (info["start_utc"].isoformat().replace("+00:00","Z") if info["start_utc"] else None),
                 float(tto) if tto is not None else None,
@@ -726,17 +781,17 @@ class Executor:
                 (ladder_b if is_win else None),
                 (ladder_l if is_win else None),
                 (total_matched_runner if is_win else None),
-                (rk_ltp if is_win else None),
-                (rk_bb  if is_win else None),
-                (implied if is_win else None),
+                (rank_ltp.get(sid) if is_win else None),
+                (rank_back.get(sid) if is_win else None),
+                ((1.0 / (bb or lpt)) if (is_win and (bb or lpt)) else None),
                 (bsp_win if is_win else None),
                 (sp_av_win if is_win else None),
                 (winprob if is_win else None),
-                (base_300 if is_win else None),
-                (base_150 if is_win else None),
-                (base_80  if is_win else None),
-                (base_45  if is_win else None),
-                (base_2   if is_win else None),
+                (_get(self._base_win_ms, 300) if is_win else None),
+                (_get(self._base_win_ms, 150) if is_win else None),
+                (_get(self._base_win_ms, 80)  if is_win else None),
+                (_get(self._base_win_ms, 45)  if is_win else None),
+                (_get(self._base_win_ms, 2)   if is_win else None),
                 (diff150_300 if is_win else None),
                 (diff80_150  if is_win else None),
                 (diff45_80   if is_win else None),
@@ -748,7 +803,7 @@ class Executor:
                 (d30 if is_win else None),
                 (vol if is_win else None),
                 ((bs or 0.0) + (ls or 0.0) if is_win else None),
-                (((rk_bb or 0) == 1) if is_win else None),
+                (((rank_back.get(sid) or 0) == 1) if is_win else None),
                 (place_theo_win if is_win else None),
                 # PLACE block
                 (lpt if is_place else None),
@@ -768,14 +823,15 @@ class Executor:
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
                 (ltp_80_p  if is_place else None),
-                (ltp_45_p  if is_place else None),
-                (ltp_2_p   if is_place else None),
+                (ltp_45_p if is_place else None),
+                (ltp_2_p  if is_place else None),
+                # NEW:
+                gapmin, gapmax, gor_val,
             ]
             self._append(self.runner_csv, row)
 
-            # --- AJOUT : déclenchement staking + LIVE ---
+            # --- staking + LIVE (inchangé) ---
             try:
-                # course_id simple: VENUE-YYYYMMDDHHMM
                 start_utc = info.get("start_utc")
                 venue = (info.get("venue") or "NA")
                 if start_utc is not None:
@@ -791,11 +847,10 @@ class Executor:
                         selection_id=int(sid),
                         course_id=str(course_id),
                         ltp=float(ltp_val),
-                        milestone=milestone,                           # jalon courant
+                        milestone=milestone,
                         secs_to_off=float(tto) if tto is not None else None,
                     )
                     for slot in self.strategy_registry:
-                        # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
                         if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
                             continue
@@ -820,11 +875,9 @@ class Executor:
                             "reason": res.reason,
                         })
 
-                        # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
                         if getattr(slot, "bet_per_market", False):
                             self._slot_market_fired.add(key)
 
-                        # ---- LIVE : place_orders sécurisé ----
                         if not self.dry_run:
                             can, reason = self.exposure.can_place(
                                 Side(slot.side.value),
@@ -834,7 +887,6 @@ class Executor:
                                 planned_liability=float(res.liability or 0.0),
                             )
                             if not can:
-                                # trace claire d’un blocage live
                                 self._log_trade_row({
                                     "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
                                     "market_id": market_id,
@@ -850,7 +902,6 @@ class Executor:
                                     "reason": reason,
                                 })
                             else:
-                                # Sélection du mode d'exécution selon le slot
                                 orr = None
                                 if slot.exec_mode == ExecMode.LIMIT_LTP:
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
@@ -867,7 +918,6 @@ class Executor:
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
                                 elif slot.exec_mode == ExecMode.SP_MOC:
-                                    # BACK: size = stake ; LAY: size_or_liability = liability
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
                                     orr = self.order_executor.place_sp_market_on_close(
@@ -881,7 +931,6 @@ class Executor:
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
                                 elif slot.exec_mode == ExecMode.SP_LOC:
-                                    # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
                                     sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
@@ -898,7 +947,6 @@ class Executor:
                                     )
 
                                 if orr and orr.ok:
-                                    # Réserve l’exposition (stake pour BACK, liability pour LAY)
                                     self.exposure.on_placed(
                                         Side(slot.side.value),
                                         market_id=market_id,
@@ -908,7 +956,6 @@ class Executor:
                                     )
 
             except Exception:
-                # Ne jamais casser le snapshotting pour une erreur staking/ordre
                 pass
 
     # ----- helpers -----
