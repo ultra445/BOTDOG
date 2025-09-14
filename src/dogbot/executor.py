@@ -588,11 +588,11 @@ class Executor:
             # BASE_WIN pour Plackett-Luce (uniquement WIN)
             if is_win:
                 winprob = ((bsp_win + lpt)/2.0) if (bsp_win is not None and lpt is not None) else None
-                base_win = winprob or moyltp or lpt or bb
+                base_win_val = winprob or moyltp or lpt or bb
                 cache[sid]["WINPROB"] = winprob
-                cache[sid]["BASE_WIN"] = base_win
-                if base_win and base_win > 1.0:
-                    sid_prices_for_pl.append((sid, float(base_win)))
+                cache[sid]["BASE_WIN"] = base_win_val
+                if base_win_val and base_win_val > 1.0:
+                    sid_prices_for_pl.append((sid, float(base_win_val)))
 
         # PLACETHEORIQUE via Plackett–Luce (cote = 1/q)
         place_theo_by_sid: Dict[int, Optional[float]] = {}
@@ -676,11 +676,11 @@ class Executor:
             sp_av_place = cache[sid].get("SP_AV_PLACE") if is_place else None
 
             winprob = cache[sid].get("WINPROB") if is_win else None
-            base_win = cache[sid].get("BASE_WIN") if is_win else None
+            base_win_val = cache[sid].get("BASE_WIN") if is_win else None
 
             # Milestones:
-            if is_win and base_win is not None:
-                self._base_win_ms[market_id][sid][milestone] = float(base_win)
+            if is_win and base_win_val is not None:
+                self._base_win_ms[market_id][sid][milestone] = float(base_win_val)
             if is_place and lpt is not None:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
@@ -704,29 +704,6 @@ class Executor:
             mom150 = ratio(base_2,  base_150) if is_win else None
             mom300 = ratio(base_2,  base_300) if is_win else None
 
-            # deltas/vol (info) sur LTP côté WIN
-            d5 = d30 = vol = None
-            if is_win:
-                dq = self._hist.get(market_id, {}).get(sid)
-                if dq:
-                    now_ts = datetime.now(timezone.utc).timestamp()
-                    for window, varname in ((5.0, "d5"), (30.0, "d30")):
-                        target = now_ts - window
-                        older = None
-                        for ts, p in reversed(dq):
-                            older = (ts, p)
-                            if ts <= target:
-                                break
-                        if older is not None:
-                            p_now = dq[-1][1]; p_old = older[1]
-                            if varname == "d5": d5 = p_now - p_old
-                            else: d30 = p_now - p_old
-                    vals = [p for ts, p in dq if ts >= now_ts - 60.0]
-                    if len(vals) >= 3:
-                        m = sum(vals)/len(vals)
-                        var = sum((x-m)**2 for x in vals)/(len(vals)-1)
-                        vol = math.sqrt(var)
-
             # PLACETHEORIQUE (cote) :
             place_theo_win = place_theo_by_sid.get(sid) if is_win else None
             place_theo_place = None
@@ -744,7 +721,7 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
-            # --- GapMin/GapMax/GOR remplis seulement au jalon 2s ; duplication sur PLACE ---
+            # --- GapMin/GapMax/GOR au jalon 2s ; duplication sur PLACE ---
             gapmin = gapmax = gor_val = None
             if milestone == 2:
                 if is_win:
@@ -830,7 +807,7 @@ class Executor:
             ]
             self._append(self.runner_csv, row)
 
-            # --- staking + LIVE (inchangé) ---
+            # --- staking + LIVE ---
             try:
                 start_utc = info.get("start_utc")
                 venue = (info.get("venue") or "NA")
@@ -841,6 +818,10 @@ class Executor:
 
                 ltp_val = cache.get(sid, {}).get("LTP")
                 if ltp_val is not None and ltp_val >= 1.01:
+                    # >>>>>>> PATCH: ajoute mom45_place pour PLACE <<<<<<<
+                    mom45p = ((ltp_2_p / ltp_45_p) - 1.0) if (is_place and ltp_2_p and ltp_45_p and ltp_45_p != 0) else None
+
+                    # Construit un RunnerCtx enrichi (pour stratégies)
                     ctx = RunnerCtx(
                         market_id=market_id,
                         market_type=(market_type or ""),
@@ -849,7 +830,18 @@ class Executor:
                         ltp=float(ltp_val),
                         milestone=milestone,
                         secs_to_off=float(tto) if tto is not None else None,
+                        # enriched fields for systems/HYB:
+                        trap=trap,
+                        fav_rank_ltp=(rank_ltp.get(sid) if rank_ltp else rk_ltp),
+                        fav_rank_back=(rank_back.get(sid) if rank_back else rk_bb),
+                        gor=(self._gor_by_win.get(str(win_id or market_id), {}).get(sid) if milestone == 2 else None),
+                        mom45=(mom45 if is_win else None),
+                        mom45_place=(mom45p if is_place else None),  # <<< ajouté
+                        base_win=(base_2 if is_win else None) or base_win_val,
+                        bb=bb,
+                        bl=bl,
                     )
+
                     for slot in self.strategy_registry:
                         key = (slot.family, slot.slot, market_id)
                         if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
@@ -902,8 +894,11 @@ class Executor:
                                     "reason": reason,
                                 })
                             else:
+                                # ---- utilise le mode effectif renvoyé par la stratégie (HYB, LIMIT, SP_MOC/LOC)
+                                eff_mode = getattr(res, "exec_mode", slot.exec_mode)
+
                                 orr = None
-                                if slot.exec_mode == ExecMode.LIMIT_LTP:
+                                if eff_mode == ExecMode.LIMIT_LTP:
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
                                     orr = self.order_executor.place_limit(
                                         market_id=market_id,
@@ -917,7 +912,7 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif slot.exec_mode == ExecMode.SP_MOC:
+                                elif eff_mode == ExecMode.SP_MOC:
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
                                     orr = self.order_executor.place_sp_market_on_close(
@@ -930,8 +925,8 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif slot.exec_mode == ExecMode.SP_LOC:
-                                    sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
+                                elif eff_mode == ExecMode.SP_LOC:
+                                    sp_lim = getattr(res, "sp_limit", None) or getattr(slot, "sp_limit", None) or float(res.price)
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
                                     orr = self.order_executor.place_sp_limit_on_close(
@@ -939,7 +934,7 @@ class Executor:
                                         selection_id=int(sid),
                                         side=slot.side.value,
                                         size_or_liability=qty,
-                                        sp_limit_price=sp_lim,
+                                        sp_limit_price=float(sp_lim),
                                         strategy=slot.tag,
                                         idem_key=idem_key,
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),

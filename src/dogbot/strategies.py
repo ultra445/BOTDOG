@@ -1,181 +1,274 @@
 ﻿from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Set
 from enum import Enum
+from typing import Callable, List, Optional, Dict, Any
+import os
 
-# Registre de stratégies par slots (aligne avec executor.py)
-# 4 familles × 10 slots : BACK_WIN / BACK_PLACE / LAY_WIN / LAY_PLACE
+from .staking import Side, StakingResult  # type: ignore
 
-from .staking import StakingEngine, StakingResult, Side  # types côté staking
+# ================= Execution modes =================
 
-# --------- Contexte runner passé aux conditions ---------
+class ExecMode(str, Enum):
+    LIMIT_LTP = "LIMIT_LTP"   # limit at top-of-book (aggressive/passive resolved in strategy)
+    SP_MOC    = "SP_MOC"      # Betfair SP: Market on Close
+    SP_LOC    = "SP_LOC"      # Betfair SP: Limit on Close
+    HYB       = "HYB"         # Hybrid: decide at runtime from policy file
+
+class LimitStyle(str, Enum):
+    AGGRESSIVE = "AGGRESSIVE"  # cross the spread to get filled now
+    PASSIVE    = "PASSIVE"     # post at current best on our side
+
+
+# ================= Context passed from executor =================
 
 @dataclass
 class RunnerCtx:
     market_id: str
-    market_type: str    # "WIN" | "PLACE"
+    market_type: str  # "WIN" | "PLACE"
     selection_id: int
     course_id: str
-    ltp: float          # LTP instantané
-    milestone: Optional[int] = None       # ex: 300,150,80,45,2
-    secs_to_off: Optional[float] = None   # T- en secondes (approx)
-    region: Optional[str] = None          # "UK" | "ROW" (renseigné par executor.py)
+    ltp: float
+    milestone: Optional[int] = None
+    secs_to_off: Optional[float] = None
+
+    # Enriched fields for conditions/decisions
+    trap: Optional[int] = None
+    fav_rank_ltp: Optional[int] = None
+    fav_rank_back: Optional[int] = None
+    gor: Optional[float] = None          # gap odds ratio with next @ T-2s (WIN only)
+    mom45: Optional[float] = None        # momentum (WIN) from 45s -> 2s on BASE_WIN
+    mom45_place: Optional[float] = None  # momentum (PLACE) from 45s -> 2s on LTP
+    base_win: Optional[float] = None     # our price hierarchy value (for bounds)
+    bb: Optional[float] = None           # best back price at tick
+    bl: Optional[float] = None           # best lay price at tick
+
+# Result of a fired slot (sizing already computed)
+@dataclass
+class FireResult:
+    price: float
+    size: float
+    liability: Optional[float]
+    reason: str
+    exec_mode: ExecMode
+    sp_limit: Optional[float] = None
+
+
+# ================= Slot declaration =================
 
 ConditionFn = Callable[[RunnerCtx], bool]
 
-# --------- Mode d'exécution par slot (prix LTP vs BSP) ---------
-
-class ExecMode(str, Enum):
-    LIMIT_LTP = "LIMIT_LTP"   # Ordre LIMIT au prix de marché (LTP arrondi tick)
-    SP_MOC    = "SP_MOC"      # Betfair SP sans limite (MARKET_ON_CLOSE)
-    SP_LOC    = "SP_LOC"      # Betfair SP avec limite (LIMIT_ON_CLOSE)
-
 @dataclass
-class StrategySlot:
-    family: str                 # ex "BACK_WIN"
-    slot: int                   # 1..10
-    side: Side                  # Side.BACK | Side.LAY
+class Slot:
+    family: str           # e.g. "LAY_WIN", "BACK_WIN", "BACK_PLACE", "LAY_PLACE"
+    slot: int             # 1..10
+    side: Side
     condition: ConditionFn
-    tag: str                    # pour le logging / CSV trades
-    # -------- options d'éxécution / sécurité --------
-    bet_per_market: bool = False                     # True = une seule fois par marché pour ce slot
-    allowed_milestones: Optional[Set[int]] = None    # ex {150,45,2} si tu veux restreindre
-    exec_mode: ExecMode = ExecMode.LIMIT_LTP         # LTP par défaut (rien ne change si tu ne touches pas)
-    sp_limit: Optional[float] = None                 # pour SP_LOC : BACK=min SP ; LAY=max SP
-    allowed_regions: Optional[Set[str]] = None       # {"UK"} | {"ROW"} | {"UK","ROW"} ; None = pas de filtre
+    exec_mode: ExecMode = ExecMode.LIMIT_LTP
+    limit_style: LimitStyle = LimitStyle.AGGRESSIVE
+    price_for_bounds: str = "BASE"       # "BASE" or "LTP"
+    bet_per_market: bool = True          # fire at most once per market
+    sp_limit: Optional[float] = None     # for SP_LOC if fixed
+    tag: Optional[str] = None            # computed automatically if None
 
-# --------- Placeholders (à remplacer par tes vraies règles) ---------
+    # Staking params
+    edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_1)
+    max_runner_stake_env: Optional[str] = None  # cap per runner env (e.g. MAX_RUNNER_STAKE_LAY_WIN_1)
 
-def _false(_: RunnerCtx) -> bool:
-    return False
+    def __post_init__(self):
+        if self.tag is None:
+            self.tag = f"{self.family}_{self.slot}"
 
-# EXEMPLE de condition : BACK_WIN_1, joue si 1.8 <= LTP <= 4.5
-def cond_back_win_1(ctx: RunnerCtx) -> bool:
-    return 1.8 <= ctx.ltp <= 4.5
 
-# (exemples supplémentaires que tu peux activer si tu veux des slots BSP)
-def cond_bw_bsp(ctx: RunnerCtx) -> bool:
-    # exemple: autoriser un slot BSP si LTP raisonnable
-    return 2.0 <= ctx.ltp <= 6.0
+# ================= Helpers =================
 
-def cond_bw_bsp_min26(ctx: RunnerCtx) -> bool:
-    # exemple: jouer BSP avec limite min 2.6 (pour BACK)
-    return ctx.ltp >= 2.2
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = float(os.getenv(name, str(default)))
+        return v
+    except Exception:
+        return default
 
-# --------- Construction du registre ---------
+def _pick_bounds_price(ctx: RunnerCtx, pref: str) -> Optional[float]:
+    if pref.upper() == "BASE":
+        return ctx.base_win if ctx.base_win and ctx.base_win > 1.0 else None
+    return ctx.ltp if ctx.ltp and ctx.ltp > 1.0 else None
 
-def build_registry() -> List[StrategySlot]:
-    reg: List[StrategySlot] = []
-
-    # BACK WIN 1..10
-    for i in range(1, 11):
-        reg.append(StrategySlot(
-            family="BACK_WIN",
-            slot=i,
-            side=Side.BACK,
-            condition=cond_back_win_1 if i == 1 else _false,
-            tag=f"BW_{i}",
-            bet_per_market=True if i == 1 else False,
-            allowed_milestones={150, 45, 2} if i == 1 else None,
-            exec_mode=ExecMode.LIMIT_LTP,   # par défaut: prix de marché (LTP)
-            # sp_limit=None,                # (utilisé seulement si exec_mode=SP_LOC)
-            # allowed_regions={"UK"},       # exemple: ne tirer que sur GB/IE
-        ))
-
-    # BACK PLACE 1..10
-    for i in range(1, 11):
-        reg.append(StrategySlot(
-            family="BACK_PLACE",
-            slot=i,
-            side=Side.BACK,
-            condition=_false,
-            tag=f"BP_{i}",
-            exec_mode=ExecMode.LIMIT_LTP,
-            # allowed_regions={"ROW"},      # exemple: ne tirer que sur AU/NZ
-        ))
-
-    # LAY WIN 1..10
-    for i in range(1, 11):
-        reg.append(StrategySlot(
-            family="LAY_WIN",
-            slot=i,
-            side=Side.LAY,
-            condition=_false,
-            tag=f"LW_{i}",
-            exec_mode=ExecMode.LIMIT_LTP,
-        ))
-
-    # LAY PLACE 1..10
-    for i in range(1, 11):
-        reg.append(StrategySlot(
-            family="LAY_PLACE",
-            slot=i,
-            side=Side.LAY,
-            condition=_false,
-            tag=f"LP_{i}",
-            exec_mode=ExecMode.LIMIT_LTP,
-        ))
-
-    # ------------------------
-    # EXEMPLES (désactivés par défaut) ─ à activer si tu veux tester le BSP :
-    # ------------------------
-    # # BACK WIN, jouer AU BSP sans limite (MARKET_ON_CLOSE), UK-only
-    # reg.append(StrategySlot(
-    #     family="BACK_WIN",
-    #     slot=2,
-    #     side=Side.BACK,
-    #     condition=cond_bw_bsp,     # ta règle
-    #     tag="BW_2_BSP",
-    #     bet_per_market=True,
-    #     exec_mode=ExecMode.SP_MOC, # BSP sans limite
-    #     allowed_regions={"UK"},    # filtre régional
-    # ))
-    #
-    # # BACK WIN, jouer AU BSP AVEC limite min 2.6 (LIMIT_ON_CLOSE), ROW-only
-    # reg.append(StrategySlot(
-    #     family="BACK_WIN",
-    #     slot=3,
-    #     side=Side.BACK,
-    #     condition=cond_bw_bsp_min26,
-    #     tag="BW_3_BSP_MIN",
-    #     bet_per_market=True,
-    #     exec_mode=ExecMode.SP_LOC, # BSP avec limite
-    #     sp_limit=2.6,              # BACK=min SP ; LAY=max SP
-    #     allowed_regions={"ROW"},   # filtre régional
-    # ))
-
-    return reg
-
-# --------- Déclencheur d'un slot ---------
-
-def try_fire_slot(engine: StakingEngine, slot: StrategySlot, ctx: RunnerCtx) -> Optional[StakingResult]:
-    # Cohérence marché/famille
-    if "WIN" in slot.family and ctx.market_type != "WIN":
+def _choose_limit_price(side: Side, style: LimitStyle, ctx: RunnerCtx) -> Optional[float]:
+    # For LIMIT_LTP, decide the actual limit price to send
+    bb, bl = ctx.bb, ctx.bl
+    if bb is None and bl is None:
         return None
-    if "PLACE" in slot.family and ctx.market_type != "PLACE":
+    if style == LimitStyle.AGGRESSIVE:
+        # cross the spread to get matched
+        if side == Side.BACK:
+            return bl or bb  # cross to best lay if available
+        else:
+            return bb or bl  # cross to best back if available
+    else:
+        # passive: post at our side's best
+        if side == Side.BACK:
+            return bb or bl
+        else:
+            return bl or bb
+
+def _hyb_decide(ctx: RunnerCtx, slot: Slot) -> Dict[str, Any]:
+    """Returns dict like {"mode": ExecMode, "limit_style": LimitStyle|None, "sp_limit": float|None, "limit_price": str|None}"""
+    try:
+        from .hybrid_policy import choose_action
+        return choose_action(ctx, slot)
+    except Exception:
+        # default fallback
+        return {"mode": ExecMode.LIMIT_LTP, "limit_style": slot.limit_style, "sp_limit": slot.sp_limit}
+
+def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, max_runner_cap: Optional[float]) -> StakingResult:
+    # Call into staking engine if possible; otherwise do a safe fallback
+    if hasattr(staking_engine, "quote"):
+        return staking_engine.quote(side, price, edge, max_runner_cap=max_runner_cap)
+    if hasattr(staking_engine, "compute"):
+        return staking_engine.compute(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
+    if hasattr(staking_engine, "size_for"):
+        r = staking_engine.size_for(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
+        if isinstance(r, StakingResult):
+            return r
+
+    # Fallback: basic proportional model (capital * edge) with sane floors/caps handled in staking engine absent
+    capital = _env_float("CAPITAL", 1000.0)
+    base = max(0.0, capital * max(0.0, edge))
+    if side == Side.BACK:
+        stake = base / max(1.01, price)
+        return StakingResult(ok=True, price=price, size=round(stake, 2), liability=None, reason="fallback")
+    else:
+        liability = base
+        stake = liability / max(0.01, price - 1.0)
+        return StakingResult(ok=True, price=price, size=round(stake, 2), liability=round(liability, 2), reason="fallback")
+
+
+# ================= Public API =================
+
+def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireResult]:
+    # Filter by family/market
+    family = slot.family.upper()
+    if "WIN" in family and ctx.market_type.upper() != "WIN":
+        return None
+    if "PLACE" in family and ctx.market_type.upper() != "PLACE":
         return None
 
-    # Filtre jalons si demandé
-    if slot.allowed_milestones is not None:
-        if ctx.milestone not in slot.allowed_milestones:
+    # Condition
+    try:
+        if not slot.condition(ctx):
             return None
-
-    # Filtre régional si demandé
-    if slot.allowed_regions is not None and ctx.region not in slot.allowed_regions:
+    except Exception:
         return None
 
-    # Condition de slot
-    if not slot.condition(ctx):
+    # Decide effective exec mode
+    mode = slot.exec_mode
+    limit_style = slot.limit_style
+    sp_limit = slot.sp_limit
+    decision: Dict[str, Any] = {}
+
+    if slot.exec_mode == ExecMode.HYB:
+        decision = _hyb_decide(ctx, slot)
+        mode = decision.get("mode", mode)
+        limit_style = decision.get("limit_style", limit_style)
+        sp_limit = decision.get("sp_limit", sp_limit)
+
+    # Price to place (for LIMIT) and price for stake bounds
+    bounds_price = _pick_bounds_price(ctx, slot.price_for_bounds)
+    if bounds_price is None:
         return None
 
-    # Calcul de mise via StakingEngine (CAPITAL/LTP/EDGE)
-    return engine.compute(
-        side=slot.side,
-        price_ltp=ctx.ltp,
-        family=slot.family,
-        slot=slot.slot,
-        market_id=ctx.market_id,
-        selection_id=ctx.selection_id,
-        course_id=ctx.course_id,
-        strategy_tag=slot.tag,
-    )
+    # Choose the actual order price
+    if mode == ExecMode.LIMIT_LTP:
+        # Priority: explicit limit price from hybrid policy ("CROSS"|"MID"|"OWN")
+        order_price: Optional[float] = None
+        lp_key = str(decision.get("limit_price", "")).upper() if decision else ""
+        if lp_key == "CROSS":
+            # BACK at best LAY; LAY at best BACK
+            order_price = (ctx.bl if slot.side == Side.BACK else ctx.bb)
+        elif lp_key == "OWN":
+            # BACK at best BACK; LAY at best LAY (post our side)
+            order_price = (ctx.bb if slot.side == Side.BACK else ctx.bl)
+        elif lp_key == "MID":
+            if ctx.bb is not None and ctx.bl is not None:
+                order_price = (ctx.bb + ctx.bl) / 2.0
+
+        # Fallback to style-based logic
+        if order_price is None:
+            order_price = _choose_limit_price(slot.side, limit_style, ctx)
+        if order_price is None:
+            return None
+    else:
+        # For SP_* we still need a price reference for stake sizing
+        order_price = _choose_limit_price(slot.side, limit_style, ctx) or bounds_price
+
+    # Edge & caps
+    edge_env = slot.edge_env or f"EDGE_{slot.family}_{slot.slot}"
+    edge = _env_float(edge_env, 0.02)
+    max_cap_env = slot.max_runner_stake_env or f"MAX_RUNNER_STAKE_{slot.family}_{slot.slot}"
+    max_runner_cap = os.getenv(max_cap_env)
+    max_runner_cap = float(max_runner_cap) if max_runner_cap not in (None, "") else None
+
+    # Compute stake
+    sr: StakingResult = _compute_stake_safe(staking_engine, slot.side, float(order_price), edge, max_runner_cap)
+
+    if not getattr(sr, "ok", False):
+        return None
+
+    reason = f"cond_ok edge={edge} bounds_price={round(bounds_price,2)}"
+    return FireResult(price=float(getattr(sr, "price", order_price)),
+                      size=float(getattr(sr, "size", 0.0)),
+                      liability=getattr(sr, "liability", None),
+                      reason=reason,
+                      exec_mode=mode,
+                      sp_limit=sp_limit)
+
+
+# ================= Registry (declare your systems here) =================
+
+def build_registry() -> List[Slot]:
+    slots: List[Slot] = []
+
+    # --- System 1: LAY WIN — Trap=8, price(BASE) in [1.5, 50], fav-rank/LTP & GOR conditions @ T-2s ---
+    def cond_lay_win_1(ctx: RunnerCtx) -> bool:
+        if ctx.market_type.upper() != "WIN":
+            return False
+        if ctx.milestone != 2:
+            return False
+        # Trap = 8 (boîte réelle)
+        if ctx.trap != 8:
+            return False
+        # Price bounds using BASE hierarchy
+        bounds_price = _pick_bounds_price(ctx, "BASE")
+        if bounds_price is None or not (1.5 <= bounds_price <= 50.0):
+            return False
+        # Fav rank by LTP
+        r = ctx.fav_rank_ltp
+        if r is None:
+            return False
+        # Logic:
+        # ((r not in {1,5,8}) OR ((r == 5 and GOR <= 1.7) OR (r == 1 and GOR >= 1.1)))
+        if r not in (1,5,8):
+            return True
+        if r == 5 and (ctx.gor is not None) and (ctx.gor <= 1.7):
+            return True
+        if r == 1 and (ctx.gor is not None) and (ctx.gor >= 1.1):
+            return True
+        return False
+
+    slots.append(Slot(
+        family="LAY_WIN",
+        slot=1,
+        side=Side.LAY,
+        condition=cond_lay_win_1,
+        exec_mode=ExecMode.HYB,              # choose at runtime via policy
+        limit_style=LimitStyle.AGGRESSIVE,   # default if policy doesn't override
+        price_for_bounds="BASE",
+        bet_per_market=True,
+        edge_env="EDGE_LAY_WIN_1",
+        max_runner_stake_env="MAX_RUNNER_STAKE_LAY_WIN_1",
+    ))
+
+    # You can append more slots here…
+
+    return slots
