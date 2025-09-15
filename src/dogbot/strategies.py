@@ -39,7 +39,7 @@ class RunnerCtx:
     trap: Optional[int] = None
     fav_rank_ltp: Optional[int] = None
     fav_rank_back: Optional[int] = None
-    gor: Optional[float] = None          # gap odds ratio with next @ T-2s (WIN only)
+    gor: Optional[float] = None          # gap odds ratio with next @ T-2s (WIN only; PLACE via cache)
     mom45: Optional[float] = None        # momentum (WIN) from 45s -> 2s on BASE_WIN
     mom45_place: Optional[float] = None  # momentum (PLACE) from 45s -> 2s on LTP
     # micro-momentum WIN
@@ -132,8 +132,8 @@ def _hyb_decide(ctx: RunnerCtx, slot: Slot) -> Dict[str, Any]:
         from .hybrid_policy import choose_action
         return choose_action(ctx, slot)
     except Exception:
-        # default fallback
-        return {"mode": ExecMode.LIMIT_LTP, "limit_style": slot.limit_style, "sp_limit": slot.sp_limit}
+        # Si la policy HYB plante, on bascule par défaut en BSP (sécurité)
+        return {"mode": ExecMode.SP_MOC, "limit_style": slot.limit_style, "sp_limit": None}
 
 def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, max_runner_cap: Optional[float]) -> StakingResult:
     # Call into staking engine if possible; otherwise do a safe fallback
@@ -236,9 +236,7 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
             "order_price": None,
             "edge": None,
             "max_runner_cap": None,
-            "stake": None,
-            "liability": None,
-            "reason": None,
+            "stake": None, "liability": None, "reason": None,
             "note": cond_note or "condition_false"
         })
         return None
@@ -301,7 +299,6 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
                 # Use a sane price reference just for stake sizing
                 price_for_sizing = _choose_limit_price(slot.side, limit_style, ctx) or bounds_price
                 if price_for_sizing is None:
-                    # nothing to do; log and bail
                     if do_diag:
                         _diag_write(slot.tag, {
                             "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
@@ -442,19 +439,14 @@ def build_registry() -> List[Slot]:
             return False
         if ctx.milestone != 2:
             return False
-        # Trap = 8 (boîte réelle)
         if ctx.trap != 8:
             return False
-        # Price bounds using BASE hierarchy
         bounds_price = _pick_bounds_price(ctx, "BASE")
         if bounds_price is None or not (1.5 <= bounds_price <= 50.0):
             return False
-        # Fav rank by LTP
         r = ctx.fav_rank_ltp
         if r is None:
             return False
-        # Logic:
-        # ((r not in {1,5,8}) OR ((r == 5 and GOR <= 1.7) OR (r == 1 and GOR >= 1.1)))
         if r not in (1,5,8):
             return True
         if r == 5 and (ctx.gor is not None) and (ctx.gor <= 1.7):
@@ -468,12 +460,46 @@ def build_registry() -> List[Slot]:
         slot=1,
         side=Side.LAY,
         condition=cond_lay_win_1,
-        exec_mode=ExecMode.HYB,              # choose at runtime via policy
-        limit_style=LimitStyle.AGGRESSIVE,   # default if policy doesn't override
+        exec_mode=ExecMode.HYB,
+        limit_style=LimitStyle.AGGRESSIVE,
         price_for_bounds="BASE",
         bet_per_market=True,
         edge_env="EDGE_LAY_WIN_1",
         max_runner_stake_env="MAX_RUNNER_STAKE_LAY_WIN_1",
+    ))
+
+    # --- System 2: LAY PLACE — Trap=8, LTP_PLACE in [3, 40], (rank != 5) or (rank == 5 and GOR < 1.75) @ T-2s ---
+    def cond_lay_place_1(ctx: RunnerCtx) -> bool:
+        if ctx.market_type.upper() != "PLACE":
+            return False
+        if ctx.milestone != 2:
+            return False
+        if ctx.trap != 8:
+            return False
+        # Bornes sur LTP PLACE (demande utilisateur)
+        bounds_price = _pick_bounds_price(ctx, "LTP")
+        if bounds_price is None or not (3.0 <= bounds_price <= 40.0):
+            return False
+        # Fav rank par LTP (réutilisé depuis WIN via cache côté executor)
+        r = ctx.fav_rank_ltp
+        if r is None:
+            return False
+        if r != 5:
+            return True
+        # r == 5 -> contrainte GOR
+        return (ctx.gor is not None) and (ctx.gor < 1.75)
+
+    slots.append(Slot(
+        family="LAY_PLACE",
+        slot=1,
+        side=Side.LAY,
+        condition=cond_lay_place_1,
+        exec_mode=ExecMode.HYB,              # HYB + fallback SP_MOC si LIMIT impossible
+        limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="LTP",              # bornes sur LTP_PLACE
+        bet_per_market=True,
+        edge_env="EDGE_LAY_PLACE_1",
+        max_runner_stake_env="MAX_RUNNER_STAKE_LAY_PLACE_1",
     ))
 
     # You can append more slots here…
