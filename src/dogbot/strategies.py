@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Dict, Any
 import os
+from pathlib import Path
+from datetime import datetime, timezone
+import csv
 
 from .staking import Side, StakingResult  # type: ignore
 
@@ -39,6 +42,11 @@ class RunnerCtx:
     gor: Optional[float] = None          # gap odds ratio with next @ T-2s (WIN only)
     mom45: Optional[float] = None        # momentum (WIN) from 45s -> 2s on BASE_WIN
     mom45_place: Optional[float] = None  # momentum (PLACE) from 45s -> 2s on LTP
+    # micro-momentum WIN
+    d5: Optional[float] = None           # (LTP_now / LTP_5s_ago) - 1
+    d30: Optional[float] = None          # (LTP_now / LTP_30s_ago) - 1
+    vol60: Optional[float] = None        # std dev of returns over ~60s
+    # Prix/context
     base_win: Optional[float] = None     # our price hierarchy value (for bounds)
     bb: Optional[float] = None           # best back price at tick
     bl: Optional[float] = None           # best lay price at tick
@@ -88,6 +96,12 @@ def _env_float(name: str, default: float) -> float:
         return v
     except Exception:
         return default
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name, "")
+    if raw == "":
+        return default
+    return str(raw).strip().lower() in ("1","true","yes","y","on")
 
 def _pick_bounds_price(ctx: RunnerCtx, pref: str) -> Optional[float]:
     if pref.upper() == "BASE":
@@ -144,6 +158,40 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
         return StakingResult(ok=True, price=price, size=round(stake, 2), liability=round(liability, 2), reason="fallback")
 
 
+# ================= Diagnostics (CSV per-day) =================
+
+_DIAG_HEADERS = [
+    "ts","tag","market_id","selection_id","market_type","milestone","secs_to_off",
+    "trap","fav_rank_ltp","gor","base_price","bb","bl","mom45","d5","d30","vol60",
+    "cond_pass","exec_mode","limit_price_choice","order_price","edge","max_runner_cap",
+    "stake","liability","reason","note"
+]
+
+def _diag_enabled(slot_tag: str, ctx: RunnerCtx) -> bool:
+    # Active par défaut pour LAY_WIN_1, à T-2s uniquement (évite le spam)
+    env = os.getenv("DIAG_SLOTS", "LAY_WIN_1")
+    tags = [t.strip() for t in env.split(",") if t.strip()]
+    if slot_tag not in tags and "ALL" not in [t.upper() for t in tags]:
+        return False
+    return (ctx.milestone == 2)
+
+def _diag_path(slot_tag: str) -> Path:
+    d = Path("./data"); d.mkdir(parents=True, exist_ok=True)
+    fname = f"diag_{slot_tag}_{datetime.now(timezone.utc):%Y%m%d}.csv"
+    return d / fname
+
+def _diag_write(slot_tag: str, row: Dict[str, Any]) -> None:
+    path = _diag_path(slot_tag)
+    new = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=_DIAG_HEADERS)
+        if new:
+            w.writeheader()
+        # cast simple types for csv
+        row2 = {k: (v if (isinstance(v, (int,float,str)) or v is None) else str(v)) for k,v in row.items()}
+        w.writerow(row2)
+
+
 # ================= Public API =================
 
 def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireResult]:
@@ -154,11 +202,48 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     if "PLACE" in family and ctx.market_type.upper() != "PLACE":
         return None
 
-    # Condition
+    # Pre-diagnostics context
+    do_diag = _diag_enabled(slot.tag or f"{slot.family}_{slot.slot}", ctx)
+
+    # Evaluate condition with protection
+    cond_pass = False
+    cond_note = ""
     try:
-        if not slot.condition(ctx):
-            return None
-    except Exception:
+        cond_pass = bool(slot.condition(ctx))
+    except Exception as e:
+        cond_pass = False
+        cond_note = f"cond_error={e!r}"
+
+    # If condition fails and we want diag, log why at T-2s
+    if do_diag and not cond_pass:
+        _diag_write(slot.tag, {
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+            "tag": slot.tag,
+            "market_id": ctx.market_id,
+            "selection_id": ctx.selection_id,
+            "market_type": ctx.market_type,
+            "milestone": ctx.milestone,
+            "secs_to_off": ctx.secs_to_off,
+            "trap": ctx.trap,
+            "fav_rank_ltp": ctx.fav_rank_ltp,
+            "gor": ctx.gor,
+            "base_price": _pick_bounds_price(ctx, slot.price_for_bounds),
+            "bb": ctx.bb, "bl": ctx.bl,
+            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+            "cond_pass": False,
+            "exec_mode": None,
+            "limit_price_choice": None,
+            "order_price": None,
+            "edge": None,
+            "max_runner_cap": None,
+            "stake": None,
+            "liability": None,
+            "reason": None,
+            "note": cond_note or "condition_false"
+        })
+        return None
+
+    if not cond_pass:
         return None
 
     # Decide effective exec mode
@@ -176,6 +261,19 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     # Price to place (for LIMIT) and price for stake bounds
     bounds_price = _pick_bounds_price(ctx, slot.price_for_bounds)
     if bounds_price is None:
+        if do_diag:
+            _diag_write(slot.tag, {
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                "base_price": None, "bb": ctx.bb, "bl": ctx.bl,
+                "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                "cond_pass": True,
+                "exec_mode": mode, "limit_price_choice": decision.get("limit_price"),
+                "order_price": None, "edge": None, "max_runner_cap": None,
+                "stake": None, "liability": None, "reason": "no_bounds_price", "note": ""
+            })
         return None
 
     # Choose the actual order price
@@ -196,13 +294,93 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
         # Fallback to style-based logic
         if order_price is None:
             order_price = _choose_limit_price(slot.side, limit_style, ctx)
+
+        # --- HYB fallback: if still None, optionally switch to SP_MOC (BSP) ---
         if order_price is None:
+            if _env_bool("HYB_FALLBACK_TO_SP_MOC", True):
+                # Use a sane price reference just for stake sizing
+                price_for_sizing = _choose_limit_price(slot.side, limit_style, ctx) or bounds_price
+                if price_for_sizing is None:
+                    # nothing to do; log and bail
+                    if do_diag:
+                        _diag_write(slot.tag, {
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                            "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                            "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                            "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                            "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                            "cond_pass": True,
+                            "exec_mode": mode, "limit_price_choice": lp_key or limit_style.value,
+                            "order_price": None, "edge": None, "max_runner_cap": None,
+                            "stake": None, "liability": None, "reason": "no_order_price", "note": "fallback_sp_moc_but_no_price_ref"
+                        })
+                    return None
+                # compute sizing for SP_MOC
+                edge_env = slot.edge_env or f"EDGE_{slot.family}_{slot.slot}"
+                edge = _env_float(edge_env, 0.02)
+                max_cap_env = slot.max_runner_stake_env or f"MAX_RUNNER_STAKE_{slot.family}_{slot.slot}"
+                max_runner_cap = os.getenv(max_cap_env)
+                max_runner_cap = float(max_runner_cap) if max_runner_cap not in (None, "") else None
+
+                sr: StakingResult = _compute_stake_safe(staking_engine, slot.side, float(price_for_sizing), edge, max_runner_cap)
+                if not getattr(sr, "ok", False):
+                    if do_diag:
+                        _diag_write(slot.tag, {
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                            "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                            "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                            "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                            "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                            "cond_pass": True,
+                            "exec_mode": "SP_MOC", "limit_price_choice": lp_key or limit_style.value,
+                            "order_price": None, "edge": edge, "max_runner_cap": max_runner_cap,
+                            "stake": None, "liability": None, "reason": getattr(sr, "reason", "stake_not_ok"), "note": "fallback_sp_moc"
+                        })
+                    return None
+
+                if do_diag:
+                    _diag_write(slot.tag, {
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                        "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                        "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                        "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                        "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                        "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                        "cond_pass": True,
+                        "exec_mode": "SP_MOC", "limit_price_choice": lp_key or limit_style.value,
+                        "order_price": None, "edge": edge, "max_runner_cap": max_runner_cap,
+                        "stake": getattr(sr, "size", None), "liability": getattr(sr, "liability", None),
+                        "reason": getattr(sr, "reason", "ok"), "note": "fallback_sp_moc"
+                    })
+
+                return FireResult(price=float(getattr(sr, "price", price_for_sizing)),
+                                  size=float(getattr(sr, "size", 0.0)),
+                                  liability=getattr(sr, "liability", None),
+                                  reason="fallback_sp_moc",
+                                  exec_mode=ExecMode.SP_MOC,
+                                  sp_limit=None)
+            # Fallback disabled: log & stop
+            if do_diag:
+                _diag_write(slot.tag, {
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                    "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                    "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                    "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                    "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                    "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                    "cond_pass": True,
+                    "exec_mode": mode, "limit_price_choice": lp_key or limit_style.value,
+                    "order_price": None, "edge": None, "max_runner_cap": None,
+                    "stake": None, "liability": None, "reason": "no_order_price", "note": ""
+                })
             return None
     else:
         # For SP_* we still need a price reference for stake sizing
         order_price = _choose_limit_price(slot.side, limit_style, ctx) or bounds_price
 
-    # Edge & caps
+    # Edge & caps (normal path)
     edge_env = slot.edge_env or f"EDGE_{slot.family}_{slot.slot}"
     edge = _env_float(edge_env, 0.02)
     max_cap_env = slot.max_runner_stake_env or f"MAX_RUNNER_STAKE_{slot.family}_{slot.slot}"
@@ -213,7 +391,36 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     sr: StakingResult = _compute_stake_safe(staking_engine, slot.side, float(order_price), edge, max_runner_cap)
 
     if not getattr(sr, "ok", False):
+        if do_diag:
+            _diag_write(slot.tag, {
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                "cond_pass": True,
+                "exec_mode": mode, "limit_price_choice": decision.get("limit_price"),
+                "order_price": order_price, "edge": edge, "max_runner_cap": max_runner_cap,
+                "stake": None, "liability": None, "reason": getattr(sr, "reason", "stake_not_ok"), "note": ""
+            })
         return None
+
+    # Success path
+    if do_diag:
+        _diag_write(slot.tag, {
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+            "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+            "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+            "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+            "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+            "cond_pass": True,
+            "exec_mode": mode, "limit_price_choice": decision.get("limit_price"),
+            "order_price": getattr(sr, "price", order_price), "edge": edge, "max_runner_cap": max_runner_cap,
+            "stake": getattr(sr, "size", None), "liability": getattr(sr, "liability", None),
+            "reason": getattr(sr, "reason", "ok"), "note": "ok"
+        })
 
     reason = f"cond_ok edge={edge} bounds_price={round(bounds_price,2)}"
     return FireResult(price=float(getattr(sr, "price", order_price)),

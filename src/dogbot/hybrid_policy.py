@@ -11,8 +11,10 @@ DEFAULT_POLICY = {
     "rules": [
         # Exemples :
         # {"if": {"side":"BACK","market_type":"WIN","mom45_ge":0.02}, "then":"SP_MOC"},
-        # {"if": {"side":"LAY","market_type":"WIN","mom45_le":-0.01}, "then":"SP_LOC", "sp_limit_mult":1.05}
-        # {"if": {"side":"BACK","market_type":"PLACE","mom45p_ge":0.00,"mom45p_le":0.10}, "then":"LIMIT_LTP", "limit_price":"CROSS"}
+        # {"if": {"side":"LAY","market_type":"WIN","mom45_le":-0.01}, "then":"SP_LOC", "sp_limit_mult":1.05},
+        # {"if": {"side":"BACK","market_type":"PLACE","mom45p_ge":0.00,"mom45p_le":0.10}, "then":"LIMIT_LTP", "limit_price":"CROSS"},
+        # {"if": {"side":"BACK","market_type":"WIN","d5_ge":0.01}, "then":"LIMIT_LTP", "limit_price":"CROSS"},
+        # {"if": {"side":"LAY","market_type":"WIN","vol_ge":0.05}, "then":"SP_MOC"}
     ]
 }
 
@@ -32,8 +34,11 @@ def _match(ctx, cond: Dict[str, Any]) -> bool:
     """
     Clés supportées dans cond:
       - market_type: "WIN" | "PLACE"
-      - mom45_ge / mom45_le       (WIN; ctx.mom45)
-      - mom45p_ge / mom45p_le     (PLACE; ctx.mom45_place)
+      - mom45_ge / mom45_le         (WIN;   ctx.mom45)
+      - mom45p_ge / mom45p_le       (PLACE; ctx.mom45_place)
+      - d5_ge / d5_le               (WIN;   ctx.d5)
+      - d30_ge / d30_le             (WIN;   ctx.d30)
+      - vol_ge / vol_le             (WIN;   ctx.vol60)
       - fav_rank_ltp_eq / _ge / _le
       - secs_to_off_ge / _le
     Le filtre 'side' est géré en amont dans choose_action (via slot.side).
@@ -59,6 +64,20 @@ def _match(ctx, cond: Dict[str, Any]) -> bool:
     if "mom45p_le" in cond and not le(getattr(ctx, "mom45_place", None), float(cond["mom45p_le"])):
         return False
 
+    # Micro-momentum & volatilité (WIN)
+    if "d5_ge" in cond and not ge(getattr(ctx, "d5", None), float(cond["d5_ge"])):
+        return False
+    if "d5_le" in cond and not le(getattr(ctx, "d5", None), float(cond["d5_le"])):
+        return False
+    if "d30_ge" in cond and not ge(getattr(ctx, "d30", None), float(cond["d30_ge"])):
+        return False
+    if "d30_le" in cond and not le(getattr(ctx, "d30", None), float(cond["d30_le"])):
+        return False
+    if "vol_ge" in cond and not ge(getattr(ctx, "vol60", None), float(cond["vol_ge"])):
+        return False
+    if "vol_le" in cond and not le(getattr(ctx, "vol60", None), float(cond["vol_le"])):
+        return False
+
     # Fav rank LTP
     if "fav_rank_ltp_eq" in cond:
         if ctx.fav_rank_ltp is None or int(ctx.fav_rank_ltp) != int(cond["fav_rank_ltp_eq"]):
@@ -69,9 +88,9 @@ def _match(ctx, cond: Dict[str, Any]) -> bool:
         return False
 
     # time to off
-    if "secs_to_off_le" in cond and not le(getattr(ctx, "secs_to_off", None), float(cond["secs_to_off_le"])):
+    if "secs_to_off_le" in cond and not le(getattr(ctx, "secs_to_off", None), float(cond["secs_to_off_le"])):  # noqa
         return False
-    if "secs_to_off_ge" in cond and not ge(getattr(ctx, "secs_to_off", None), float(cond["secs_to_off_ge"])):
+    if "secs_to_off_ge" in cond and not ge(getattr(ctx, "secs_to_off", None), float(cond["secs_to_off_ge"])):  # noqa
         return False
 
     return True
@@ -106,7 +125,7 @@ def choose_action(ctx, slot) -> Dict[str, Any]:
     # Scan des règles
     for rule in pol.get("rules", []):
         cond = rule.get("if", {})
-        # 'side' : filtré par rapport au slot courrant
+        # 'side' : filtré par rapport au slot courant
         if "side" in cond:
             try:
                 if Side(str(cond["side"]).upper()) != slot.side:
