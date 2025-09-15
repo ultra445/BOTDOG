@@ -6,6 +6,7 @@
 # - DIFF/MOM sur BASE_WIN = (WINPROB -> MOYLTP_WIN -> LTP_WIN -> BEST_BACK)
 # - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
 # - Gap features @ T−2s (WIN/LTP) : GOR + bornes de binning GAPMIN/GAPMAX ; duplication vers PLACE
+# - d5/d30/vol (WIN) : variations micro (5s, 30s) + volatilité 60s à partir de l'historique LTP
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -721,6 +722,41 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
+            # --- d5, d30, vol (WIN seulement) ---
+            d5 = d30 = vol = None
+            if is_win:
+                hist = self._hist.get(market_id, {}).get(sid)
+                if hist and len(hist) >= 2:
+                    now_ts, now_p = hist[-1]
+                    # prix il y a 5s / 30s
+                    p5 = p30 = None
+                    for ts, p in reversed(hist):
+                        dt = now_ts - ts
+                        if p5 is None and dt >= 5.0:
+                            p5 = p
+                        if p30 is None and dt >= 30.0:
+                            p30 = p
+                            # on peut sortir si on a déjà p30
+                            if p5 is not None:
+                                break
+                    if p5 and p5 > 0:
+                        d5 = (now_p / p5) - 1.0
+                    if p30 and p30 > 0:
+                        d30 = (now_p / p30) - 1.0
+                    # vol 60s : écart-type des retours sur ~60s
+                    rets = []
+                    prev_ts, prev_p = None, None
+                    for ts, p in reversed(hist):
+                        if now_ts - ts > 60.0:
+                            break
+                        if prev_p is not None and prev_p > 0 and p > 0:
+                            rets.append((p / prev_p) - 1.0)
+                        prev_ts, prev_p = ts, p
+                    if len(rets) >= 2:
+                        m = sum(rets) / len(rets)
+                        var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
+                        vol = var ** 0.5
+
             # --- GapMin/GapMax/GOR au jalon 2s ; duplication sur PLACE ---
             gapmin = gapmax = gor_val = None
             if milestone == 2:
@@ -818,7 +854,7 @@ class Executor:
 
                 ltp_val = cache.get(sid, {}).get("LTP")
                 if ltp_val is not None and ltp_val >= 1.01:
-                    # >>>>>>> PATCH: ajoute mom45_place pour PLACE <<<<<<<
+                    # mom45_place pour PLACE (LTP 45s -> 2s)
                     mom45p = ((ltp_2_p / ltp_45_p) - 1.0) if (is_place and ltp_2_p and ltp_45_p and ltp_45_p != 0) else None
 
                     # Construit un RunnerCtx enrichi (pour stratégies)
@@ -836,7 +872,7 @@ class Executor:
                         fav_rank_back=(rank_back.get(sid) if rank_back else rk_bb),
                         gor=(self._gor_by_win.get(str(win_id or market_id), {}).get(sid) if milestone == 2 else None),
                         mom45=(mom45 if is_win else None),
-                        mom45_place=(mom45p if is_place else None),  # <<< ajouté
+                        mom45_place=(mom45p if is_place else None),
                         base_win=(base_2 if is_win else None) or base_win_val,
                         bb=bb,
                         bl=bl,
