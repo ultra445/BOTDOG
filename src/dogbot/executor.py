@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, Dict, List, Tuple, Set
 from collections import defaultdict, deque
-import csv, math, os, re
+import csv
+import os, math, os, re
 
 from .types import Instruction, RunnerMeta
 from .indexer import MarketIndex
@@ -199,6 +200,236 @@ class _MetaStub:
         self.trap = trap
 
 
+
+class IntentAggregator:
+    """Collect per-slot intentions and aggregate by (market_id, selection_id, side).
+    - LIMIT_LTP: sum sizes, choose a single price (BACK=min, LAY=max)
+    - SP_MOC: sum sizes (BACK) or liabilities (LAY)
+    - SP_LOC: grouped per sp_limit (optional aggregation)
+    Apply optional per-runner caps after aggregation.
+    Place orders (live) or log DRYRUN via executor helpers.
+    """
+    def __init__(self, executor):
+        self.exec = executor
+        # key: (market_id, selection_id, side_str) -> bucket dict
+        self._buckets = {}
+
+    def _key(self, market_id, selection_id, side):
+        side_s = side.value if hasattr(side, "value") else str(side)
+        return (str(market_id), int(selection_id), side_s)
+
+    def reset_market(self, market_id: str):
+        # remove all entries for this market id
+        keys = [k for k in self._buckets.keys() if k[0] == str(market_id)]
+        for k in keys:
+            self._buckets.pop(k, None)
+
+    def add_intent(self, *, market_id: str, market_type: str, selection_id: int, course_id: str,
+                   side, exec_mode, price: float, size: float, liability: float|None,
+                   tag: str, reason: str, sp_limit: float|None = None):
+        k = self._key(market_id, selection_id, side)
+        b = self._buckets.get(k)
+        if b is None:
+            b = {
+                "market_type": market_type,
+                "course_id": course_id,
+                "side": side,
+                "limit_contribs": [],        # list of {price,size,liability,tag,reason}
+                "sp_moc": {"back_size": 0.0, "lay_liab": 0.0, "tags": []},
+                "sp_loc": {},                # sp_limit -> {"back_size":..., "lay_liab":..., "tags":[...]}
+                "intents": []                # flat log for audit
+            }
+            self._buckets[k] = b
+
+        # store flat intent for audit
+        b["intents"].append({
+            "exec_mode": getattr(exec_mode, "value", str(exec_mode)),
+            "price": float(price) if price is not None else None,
+            "size": float(size) if size is not None else None,
+            "liability": float(liability) if liability is not None else None,
+            "sp_limit": float(sp_limit) if sp_limit is not None else None,
+            "tag": tag, "reason": reason
+        })
+
+        mode_s = getattr(exec_mode, "value", str(exec_mode))
+        if mode_s == "LIMIT_LTP":
+            b["limit_contribs"].append({
+                "price": float(price), "size": float(size or 0.0),
+                "liability": float(liability or 0.0), "tag": tag, "reason": reason
+            })
+        elif mode_s == "SP_MOC":
+            if str(side).upper().endswith("BACK"):
+                b["sp_moc"]["back_size"] += float(size or 0.0)
+            else:
+                b["sp_moc"]["lay_liab"] += float(liability or 0.0)
+            b["sp_moc"]["tags"].append(tag)
+        elif mode_s == "SP_LOC":
+            lim = float(sp_limit or 0.0)
+            d = b["sp_loc"].get(lim) or {"back_size": 0.0, "lay_liab": 0.0, "tags": []}
+            if str(side).upper().endswith("BACK"):
+                d["back_size"] += float(size or 0.0)
+            else:
+                d["lay_liab"] += float(liability or 0.0)
+            d["tags"].append(tag)
+            b["sp_loc"][lim] = d
+        else:
+            # unknown -> treat as SP_MOC conservative
+            if str(side).upper().endswith("BACK"):
+                b["sp_moc"]["back_size"] += float(size or 0.0)
+            else:
+                b["sp_moc"]["lay_liab"] += float(liability or 0.0)
+            b["sp_moc"]["tags"].append(tag)
+
+    def _cap_values(self, side_s: str, total_stake: float, total_liab: float) -> tuple[float,float]:
+        # Aggregate caps (optional)
+        def _getf(name, default=None):
+            raw = os.getenv(name, "")
+            try:
+                return float(raw) if raw != "" else (default if default is not None else None)
+            except Exception:
+                return default
+        cap_back = _getf("AGGR_MAX_RUNNER_STAKE_BACK", None)
+        cap_lay  = _getf("AGGR_MAX_RUNNER_LIABILITY_LAY", None)
+        if side_s == "BACK" and cap_back is not None and total_stake > cap_back:
+            scale = cap_back / total_stake if total_stake > 0 else 0.0
+            return (scale, 1.0)
+        if side_s == "LAY" and cap_lay is not None and total_liab > cap_lay:
+            scale = cap_lay / total_liab if total_liab > 0 else 0.0
+            return (1.0, scale)
+        return (1.0, 1.0)
+
+    def flush_market(self, market_id: str, dry_run: bool):
+        # For all keys in the given market, aggregate and send/log
+        to_process = [ (k, v) for k,v in self._buckets.items() if k[0] == str(market_id) ]
+        for (mid, sid, side_s), b in to_process:
+            side = b["side"]
+            # --- Aggregate LIMIT ---
+            lim_size = 0.0
+            lim_liab = 0.0
+            lim_price = None
+            if b["limit_contribs"]:
+                for c in b["limit_contribs"]:
+                    lim_size += float(c["size"] or 0.0)
+                    lim_liab += float(c["liability"] or 0.0)
+                    p = float(c["price"])
+                    if lim_price is None:
+                        lim_price = p
+                    else:
+                        if side_s == "BACK":
+                            lim_price = min(lim_price, p)  # aggressive (lower)
+                        else:
+                            lim_price = max(lim_price, p)  # aggressive (higher)
+
+            # --- Aggregate SP_MOC ---
+            if side_s == "BACK":
+                sp_moc_qty = float(b["sp_moc"]["back_size"] or 0.0)
+            else:
+                sp_moc_qty = float(b["sp_moc"]["lay_liab"] or 0.0)
+
+            # TODO SP_LOC (grouped per sp_limit) - optional for later, not critical now
+            sp_loc_groups = b["sp_loc"]  # dict
+
+            # --- Apply caps after aggregation ---
+            total_stake = lim_size + (sp_moc_qty if side_s == "BACK" else 0.0)
+            total_liab  = lim_liab + (sp_moc_qty if side_s == "LAY" else 0.0)
+            scale_stake, scale_liab = self._cap_values(side_s, total_stake, total_liab)
+
+            # Scale aggregated numbers
+            if side_s == "BACK":
+                lim_size *= scale_stake
+                sp_moc_qty *= scale_stake
+            else:
+                lim_liab  *= scale_liab
+                sp_moc_qty *= scale_liab
+
+            # --- Emit aggregated orders / logs ---
+            course_id = b["course_id"]
+            mtype = b["market_type"]
+
+            # 1) LIMIT
+            if lim_price is not None and (lim_size > 0.0 or (side_s == "LAY" and lim_liab > 0.0)):
+                self.exec._log_trade_row({
+                    "ts": datetime.utcnow().isoformat(),
+                    "market_id": mid, "market_type": mtype, "selection_id": int(sid), "course_id": course_id,
+                    "side": side_s, "price_req": lim_price, "size_req": round(lim_size, 2),
+                    "liability": round(lim_liab, 2), "strategy": "AGGR_LIMIT", "status": ("DRYRUN" if dry_run else "LIVE"),
+                    "reason": "aggregated_limit"
+                })
+                if not dry_run and hasattr(self.exec, "order_executor"):
+                    idem_key = f"{mid}:{sid}:AGGR_LIMIT:{lim_price}"
+                    try:
+                        orr = self.exec.order_executor.place_limit(
+                            market_id=mid, selection_id=int(sid), side=side_s,
+                            price=float(lim_price), size=float(lim_size),
+                            strategy="AGGR_LIMIT", persistence=os.getenv("PERSISTENCE", "LAPSE"),
+                            idem_key=idem_key, retries=int(os.getenv("ORDER_RETRIES", "2")),
+                            backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                        )
+                        if orr and getattr(orr, "ok", False) and hasattr(self.exec, "exposure"):
+                            self.exec.exposure.on_placed(
+                                Side(side_s), market_id=mid, selection_id=int(sid),
+                                stake=float(lim_size), liability=float(lim_liab or 0.0)
+                            )
+                    except Exception:
+                        pass
+
+            # 2) SP_MOC
+            if sp_moc_qty and sp_moc_qty > 0.0:
+                self.exec._log_trade_row({
+                    "ts": datetime.utcnow().isoformat(),
+                    "market_id": mid, "market_type": mtype, "selection_id": int(sid), "course_id": course_id,
+                    "side": side_s, "price_req": None, "size_req": round(sp_moc_qty, 2),
+                    "liability": None if side_s == "BACK" else round(sp_moc_qty, 2),
+                    "strategy": "AGGR_SP_MOC", "status": ("DRYRUN" if dry_run else "LIVE"),
+                    "reason": "aggregated_sp_moc"
+                })
+                if not dry_run and hasattr(self.exec, "order_executor"):
+                    idem_key = f"{mid}:{sid}:AGGR_SP_MOC"
+                    try:
+                        orr = self.exec.order_executor.place_sp_market_on_close(
+                            market_id=mid, selection_id=int(sid), side=side_s,
+                            size_or_liability=float(sp_moc_qty), strategy="AGGR_SP_MOC",
+                            idem_key=idem_key, retries=int(os.getenv("ORDER_RETRIES", "2")),
+                            backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                        )
+                        if orr and getattr(orr, "ok", False) and hasattr(self.exec, "exposure"):
+                            self.exec.exposure.on_placed(
+                                Side(side_s), market_id=mid, selection_id=int(sid),
+                                stake=float(sp_moc_qty if side_s=="BACK" else 0.0),
+                                liability=float(sp_moc_qty if side_s=="LAY" else 0.0)
+                            )
+                    except Exception:
+                        pass
+
+            # 3) Log intents details (for audit)
+            self._log_intents(mid, sid, side_s, b)
+
+        # finally clear this market's buckets
+        self.reset_market(market_id)
+
+    def _intents_log_path(self):
+        today = datetime.utcnow().strftime("%Y%m%d")
+        return Path(self.exec.data_dir) / f"trades_intents_{today}.csv"
+
+    def _log_intents(self, market_id, selection_id, side_s, bucket):
+        path = self._intents_log_path()
+        new = not path.exists()
+        headers = ["ts","market_id","selection_id","side","exec_mode","price","size","liability","sp_limit","tag","reason"]
+        with path.open("a", newline="", encoding="utf-8") as f:
+            import csv
+import os as _csv
+            w = _csv.DictWriter(f, fieldnames=headers)
+            if new:
+                w.writeheader()
+            for it in bucket["intents"]:
+                row = {
+                    "ts": datetime.utcnow().isoformat(),
+                    "market_id": market_id, "selection_id": int(selection_id), "side": side_s,
+                    **it
+                }
+                w.writerow(row)
+
+
 class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
@@ -316,6 +547,9 @@ class Executor:
             fok_ms=int(os.getenv("FOK_MS", "0")) or None,
         )
         self.exposure = ExposureManager(self.cfg)
+
+        # Aggregation of slot intentions per market/runner
+        self.aggregator = IntentAggregator(self)
 
     def set_diagnostics(self, fetch_latency_ms: Optional[float] = None, retry_count: Optional[int] = None,
                         throttle_weight: Optional[float] = None, code_version: Optional[str] = None) -> None:
@@ -862,6 +1096,8 @@ class Executor:
             ]
             self._append(self.runner_csv, row)
 
+            # (intents collected; actual orders will be issued after the loop)
+
             # --- AJOUT : déclenchement staking + LIVE ---
             try:
                 # course_id simple: VENUE-YYYYMMDDHHMM
@@ -886,7 +1122,7 @@ class Executor:
                         trap=(int(trap) if trap is not None else None),
                         fav_rank_ltp=(rk_ltp if is_win else None),
                         fav_rank_back=(rk_bb if is_win else None),
-                        gor=(gor_val if (is_win and milestone == 2) else None),
+                        gor=(gor_val if (milestone == 2) else None),
                         mom45=(mom45 if is_win else None),
                         mom45_place=(mom45p if is_place else None),
                         d5=(d5 if is_win else None),
@@ -896,129 +1132,42 @@ class Executor:
                         bb=bb,
                         bl=bl,
                     )
-                    for slot in self.strategy_registry:
-                        # Bet per market (par slot)
-                        key = (slot.family, slot.slot, market_id)
-                        if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
-                            continue
+                    
+for slot in self.strategy_registry:
+    key = (slot.family, slot.slot, market_id)
+    if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
+        continue
+    res = try_fire_slot(self.staking_engine, slot, ctx)
+    if not res:
+        continue
 
-                        res = try_fire_slot(self.staking_engine, slot, ctx)
-                        if not res:
-                            continue
+    # push into aggregator (defer actual send until end of market)
+    self.aggregator.add_intent(
+        market_id=market_id,
+        market_type=(market_type or ""),
+        selection_id=int(sid),
+        course_id=str(course_id),
+        side=slot.side,
+        exec_mode=res.exec_mode,
+        price=float(res.price),
+        size=float(res.size),
+        liability=float(res.liability or 0.0) if res.liability is not None else None,
+        tag=slot.tag,
+        reason=res.reason,
+        sp_limit=(res.sp_limit if hasattr(res, "sp_limit") else None),
+    )
 
-                        status = "DRYRUN" if self.dry_run else "LIVE"
-                        self._log_trade_row({
-                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                            "market_id": market_id,
-                            "market_type": (market_type or ""),
-                            "selection_id": int(sid),
-                            "course_id": str(course_id),
-                            "side": slot.side.value,
-                            "price_req": res.price,
-                            "size_req": res.size,
-                            "liability": round(res.liability or 0.0, 2),
-                            "strategy": slot.tag,
-                            "status": status,
-                            "reason": res.reason,
-                        })
+    if getattr(slot, "bet_per_market", False):
+        self._slot_market_fired.add(key)
 
-                        # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
-                        if getattr(slot, "bet_per_market", False):
-                            self._slot_market_fired.add(key)
-
-                        # ---- LIVE : place_orders sécurisé ----
-                        if not self.dry_run:
-                            can, reason = self.exposure.can_place(
-                                Side(slot.side.value),
-                                market_id=market_id,
-                                selection_id=int(sid),
-                                planned_stake=float(res.size),
-                                planned_liability=float(res.liability or 0.0),
-                            )
-                            if not can:
-                                # trace claire d’un blocage live
-                                self._log_trade_row({
-                                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                                    "market_id": market_id,
-                                    "market_type": (market_type or ""),
-                                    "selection_id": int(sid),
-                                    "course_id": str(course_id),
-                                    "side": slot.side.value,
-                                    "price_req": res.price,
-                                    "size_req": res.size,
-                                    "liability": round(res.liability or 0.0, 2),
-                                    "strategy": slot.tag,
-                                    "status": "LIVE_BLOCKED",
-                                    "reason": reason,
-                                })
-                            else:
-                                # Sélection du mode d'exécution selon le slot
-                                orr = None
-                                if slot.exec_mode == ExecMode.LIMIT_LTP:
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
-                                    orr = self.order_executor.place_limit(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        price=float(res.price),
-                                        size=float(res.size),
-                                        strategy=slot.tag,
-                                        persistence=os.getenv("PERSISTENCE", "LAPSE"),
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-                                elif slot.exec_mode == ExecMode.SP_MOC:
-                                    # BACK: size = stake ; LAY: size_or_liability = liability
-                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
-                                    orr = self.order_executor.place_sp_market_on_close(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        size_or_liability=qty,
-                                        strategy=slot.tag,
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-                                elif slot.exec_mode == ExecMode.SP_LOC:
-                                    # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
-                                    sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
-                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
-                                    orr = self.order_executor.place_sp_limit_on_close(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        size_or_liability=qty,
-                                        sp_limit_price=sp_lim,
-                                        strategy=slot.tag,
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-
-                                if orr and orr.ok:
-                                    # Réserve l’exposition (stake pour BACK, liability pour LAY)
-                                    self.exposure.on_placed(
-                                        Side(slot.side.value),
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        stake=float(res.size),
-                                        liability=float(res.liability or 0.0),
-                                    )
-
-            except Exception:
-                # Ne jamais casser le snapshotting pour une erreur staking/ordre
-                pass
 
     # ----- helpers -----
     def _log_trade_row(self, row: dict) -> None:
         fname = self.trades_dir / f"trades_{datetime.now(timezone.utc):%Y%m%d}.csv"
         new_file = not fname.exists()
         with fname.open("a", newline="", encoding="utf-8") as f:
-            import csv as _csv
+            import csv
+import os as _csv
             w = _csv.DictWriter(f, fieldnames=[
                 "ts","market_id","market_type","selection_id","course_id",
                 "side","price_req","size_req","liability","strategy","status","reason"
