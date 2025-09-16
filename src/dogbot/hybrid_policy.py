@@ -5,13 +5,6 @@ from typing import Any, Dict, Optional
 
 CONFIG_PATH = os.environ.get("HYBRID_POLICY_PATH", "./config/hybrid_policy.json")
 
-@dataclass
-class Action:
-    mode: str              # 'LIMIT_LTP' | 'SP_MOC' | 'SP_LOC'
-    limit_price: Optional[str] = None    # 'CROSS' | 'MID' | 'OWN'
-    sp_limit: Optional[float] = None
-    sp_limit_mult: Optional[float] = None
-
 def _load_config() -> Dict[str, Any]:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -40,13 +33,20 @@ def _effective_mom(ctx) -> Optional[float]:
                 continue
     return None
 
-def _match(ctx, cond: Dict[str, Any]) -> bool:
+\
+        def _match(ctx, cond: Dict[str, Any]) -> bool:
     # side
     if "side" in cond and not _eq(cond["side"], getattr(ctx, "side", None)):
         return False
     # market_type
     if "market_type" in cond and not _eq(cond["market_type"], getattr(ctx, "market_type", None)):
         return False
+    # region ("UK" or "ROW")
+            if "region" in cond:
+                want = str(cond["region"]).upper()
+                have = str(getattr(ctx, "region", "") or "").upper()
+                if want and have and want != have:
+                    return False
 
     mom = _effective_mom(ctx)
 
@@ -66,7 +66,7 @@ def _match(ctx, cond: Dict[str, Any]) -> bool:
                 pass
     return True
 
-def choose_action(ctx, slot) -> Action:
+def choose_action(ctx, slot) -> dict:
     cfg = _load_config()
     rules = cfg.get("rules") or []
 
@@ -77,7 +77,14 @@ def choose_action(ctx, slot) -> Action:
             lp = rule.get("limit_price", None)
             splim = rule.get("sp_limit")
             splimm = rule.get("sp_limit_mult")
-            return Action(then, lp, splim, splimm)
+            return {"mode": then, "limit_price": lp, "sp_limit": splim, "sp_limit_mult": splimm}
+
+    # default
+    default_mode = str(cfg.get("default", "LIMIT_LTP")).upper()
+    limit_style = cfg.get("limit_style", None)
+    lp = "CROSS" if (default_mode == "LIMIT_LTP" and str(limit_style or "").upper() == "AGGRESSIVE") else None
+    return {"mode": default_mode, "limit_price": lp, "sp_limit": None, "sp_limit_mult": None}
+
 
     # default
     default_mode = str(cfg.get("default", "LIMIT_LTP")).upper()

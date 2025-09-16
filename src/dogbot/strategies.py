@@ -49,7 +49,8 @@ class RunnerCtx:
     # Prix/context
     base_win: Optional[float] = None     # our price hierarchy value (for bounds)
     bb: Optional[float] = None           # best back price at tick
-    bl: Optional[float] = None           # best lay price at tick
+    bl: Optional[float] = None
+    region: Optional[str] = None  # 'UK' or 'ROW'           # best lay price at tick
 
 # Result of a fired slot (sizing already computed)
 @dataclass
@@ -127,12 +128,31 @@ def _choose_limit_price(side: Side, style: LimitStyle, ctx: RunnerCtx) -> Option
             return bl or bb
 
 def _hyb_decide(ctx: RunnerCtx, slot: Slot) -> Dict[str, Any]:
-    """Returns dict like {"mode": ExecMode, "limit_style": LimitStyle|None, "sp_limit": float|None, "limit_price": str|None}"""
+    """Returns a plain dict even if hybrid_policy.choose_action returns a dataclass."""
     try:
         from .hybrid_policy import choose_action
-        return choose_action(ctx, slot)
+        act = choose_action(ctx, slot)
+        # Normalize to dict
+        if isinstance(act, dict):
+            d = dict(act)
+        else:
+            # dataclass-like object
+            d = {
+                "mode": getattr(act, "mode", "LIMIT_LTP"),
+                "limit_price": getattr(act, "limit_price", None),
+                "sp_limit": getattr(act, "sp_limit", None),
+                "sp_limit_mult": getattr(act, "sp_limit_mult", None),
+                "limit_style": getattr(act, "limit_style", None),  # may be None
+            }
+        # Ensure mode is ExecMode, not str
+        try:
+            if isinstance(d.get("mode"), str):
+                d["mode"] = ExecMode(d["mode"])
+        except Exception:
+            d["mode"] = ExecMode.LIMIT_LTP
+        return d
     except Exception:
-        # Si la policy HYB plante, on bascule par défaut en BSP (sécurité)
+        # Safe fallback: BSP
         return {"mode": ExecMode.SP_MOC, "limit_style": slot.limit_style, "sp_limit": None}
 
 def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, max_runner_cap: Optional[float]) -> StakingResult:
