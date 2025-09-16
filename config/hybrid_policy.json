@@ -2,20 +2,93 @@
   "default": "LIMIT_LTP",
   "limit_style": "AGGRESSIVE",
   "rules": [
-    { "if": { "side": "BACK", "market_type": "WIN",   "mom45_ge": 0.0,  "mom45_le": 0.10 }, "then": "LIMIT_LTP", "limit_price": "CROSS" },
-    { "if": { "side": "BACK", "market_type": "WIN",   "mom45_ge": 0.10 },                 "then": "LIMIT_LTP", "limit_price": "MID"   },
-    { "if": { "side": "BACK", "market_type": "WIN",   "mom45_le": -0.0000001 },           "then": "SP_MOC"                          },
-
-    { "if": { "side": "LAY",  "market_type": "WIN",   "mom45_le": 0.0,  "mom45_ge": -0.10 }, "then": "LIMIT_LTP", "limit_price": "CROSS" },
-    { "if": { "side": "LAY",  "market_type": "WIN",   "mom45_le": -0.10 },                   "then": "LIMIT_LTP", "limit_price": "MID"   },
-    { "if": { "side": "LAY",  "market_type": "WIN",   "mom45_ge":  0.0000001 },              "then": "SP_MOC"                          },
-
-    { "if": { "side": "BACK", "market_type": "PLACE", "mom45p_ge": 0.0,  "mom45p_le": 0.10 }, "then": "LIMIT_LTP", "limit_price": "CROSS" },
-    { "if": { "side": "BACK", "market_type": "PLACE", "mom45p_ge": 0.10 },                   "then": "LIMIT_LTP", "limit_price": "MID"   },
-    { "if": { "side": "BACK", "market_type": "PLACE", "mom45p_le": -0.0000001 },             "then": "SP_MOC"                          },
-
-    { "if": { "side": "LAY",  "market_type": "PLACE", "mom45p_le": 0.0,  "mom45p_ge": -0.10 }, "then": "LIMIT_LTP", "limit_price": "CROSS" },
-    { "if": { "side": "LAY",  "market_type": "PLACE", "mom45p_le": -0.10 },                    "then": "LIMIT_LTP", "limit_price": "MID"   },
-    { "if": { "side": "LAY",  "market_type": "PLACE", "mom45p_ge":  0.0000001 },               "then": "SP_MOC"                          }
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "WIN",
+        "mom45_ge": 0.0,
+        "mom45_le": 0.1
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "CROSS"
+    },
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "WIN",
+        "mom45_ge": 0.1
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "MID"
+    },
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "WIN",
+        "mom45_le": -1e-07
+      },
+      "then": "SP_MOC"
+    },
+    {
+      "if": {
+        "side": "LAY",
+        "market_type": "WIN",
+        "mom45_le": 0.0
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "CROSS"
+    },
+    {
+      "if": {
+        "side": "LAY",
+        "market_type": "WIN",
+        "mom45_ge": 1e-07
+      },
+      "then": "SP_MOC"
+    },
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "PLACE",
+        "mom45_ge": 0.0,
+        "mom45_le": 0.1
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "CROSS"
+    },
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "PLACE",
+        "mom45_ge": 0.1
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "MID"
+    },
+    {
+      "if": {
+        "side": "BACK",
+        "market_type": "PLACE",
+        "mom45_le": -1e-07
+      },
+      "then": "SP_MOC"
+    },
+    {
+      "if": {
+        "side": "LAY",
+        "market_type": "PLACE",
+        "mom45_le": 0.0
+      },
+      "then": "LIMIT_LTP",
+      "limit_price": "CROSS"
+    },
+    {
+      "if": {
+        "side": "LAY",
+        "market_type": "PLACE",
+        "mom45_ge": 1e-07
+      },
+      "then": "SP_MOC"
+    }
   ]
 }
