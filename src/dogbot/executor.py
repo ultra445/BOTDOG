@@ -877,8 +877,10 @@ class Executor:
                         bb=bb,
                         bl=bl,
                     )
-
-                    ctx.region = _region_from_book(book)
+                    try:
+                        ctx.region = _region_from_book(book)
+                    except Exception:
+                        ctx.region = None
 
                     for slot in self.strategy_registry:
                         key = (slot.family, slot.slot, market_id)
