@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
@@ -39,7 +39,7 @@ class RunnerCtx:
     trap: Optional[int] = None
     fav_rank_ltp: Optional[int] = None
     fav_rank_back: Optional[int] = None
-    gor: Optional[float] = None          # gap odds ratio with next @ T-2s (WIN only; PLACE via cache)
+    gor: Optional[float] = None          # gap odds ratio with next @ T−2s (WIN only; PLACE via cache)
     mom45: Optional[float] = None        # momentum (WIN) from 45s -> 2s on BASE_WIN
     mom45_place: Optional[float] = None  # momentum (PLACE) from 45s -> 2s on LTP
     # micro-momentum WIN
@@ -49,8 +49,8 @@ class RunnerCtx:
     # Prix/context
     base_win: Optional[float] = None     # our price hierarchy value (for bounds)
     bb: Optional[float] = None           # best back price at tick
-    bl: Optional[float] = None
-    region: Optional[str] = None  # 'UK' or 'ROW'           # best lay price at tick
+    bl: Optional[float] = None           # best lay price at tick
+    region: Optional[str] = None         # 'UK' or 'ROW'
 
 # Result of a fired slot (sizing already computed)
 @dataclass
@@ -61,32 +61,6 @@ class FireResult:
     reason: str
     exec_mode: ExecMode
     sp_limit: Optional[float] = None
-
-
-# ================= Slot declaration =================
-
-ConditionFn = Callable[[RunnerCtx], bool]
-
-@dataclass
-class Slot:
-    family: str           # e.g. "LAY_WIN", "BACK_WIN", "BACK_PLACE", "LAY_PLACE"
-    slot: int             # 1..10
-    side: Side
-    condition: ConditionFn
-    exec_mode: ExecMode = ExecMode.LIMIT_LTP
-    limit_style: LimitStyle = LimitStyle.AGGRESSIVE
-    price_for_bounds: str = "BASE"       # "BASE" or "LTP"
-    bet_per_market: bool = True          # fire at most once per market
-    sp_limit: Optional[float] = None     # for SP_LOC if fixed
-    tag: Optional[str] = None            # computed automatically if None
-
-    # Staking params
-    edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_1)
-    max_runner_stake_env: Optional[str] = None  # cap per runner env (e.g. MAX_RUNNER_STAKE_LAY_WIN_1)
-
-    def __post_init__(self):
-        if self.tag is None:
-            self.tag = f"{self.family}_{self.slot}"
 
 
 # ================= Helpers =================
@@ -178,6 +152,24 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
         return StakingResult(ok=True, price=price, size=round(stake, 2), liability=round(liability, 2), reason="fallback")
 
 
+# ---- Region helper -----------------------------------------------------------
+
+def _region_from_book(book) -> Optional[str]:
+    """
+    Helper for executor: determine 'UK' / 'ROW' from MarketBook.market_definition.country_code.
+    Call it in the executor right after building RunnerCtx: `ctx.region = _region_from_book(book)`.
+    """
+    try:
+        md = getattr(book, "market_definition", None)
+        cc = getattr(md, "country_code", None) or getattr(md, "countryCode", None)
+        if not cc:
+            return None
+        cc = str(cc).upper()
+        return "UK" if cc in ("GB", "IE") else "ROW"
+    except Exception:
+        return None
+
+
 # ================= Diagnostics (CSV per-day) =================
 
 _DIAG_HEADERS = [
@@ -188,7 +180,7 @@ _DIAG_HEADERS = [
 ]
 
 def _diag_enabled(slot_tag: str, ctx: RunnerCtx) -> bool:
-    # Active par défaut pour LAY_WIN_1, à T-2s uniquement (évite le spam)
+    # Active par défaut pour LAY_WIN_1, à T−2s uniquement (évite le spam)
     env = os.getenv("DIAG_SLOTS", "LAY_WIN_1")
     tags = [t.strip() for t in env.split(",") if t.strip()]
     if slot_tag not in tags and "ALL" not in [t.upper() for t in tags]:
@@ -234,7 +226,7 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
         cond_pass = False
         cond_note = f"cond_error={e!r}"
 
-    # If condition fails and we want diag, log why at T-2s
+    # If condition fails and we want diag, log why at T−2s
     if do_diag and not cond_pass:
         _diag_write(slot.tag, {
             "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
@@ -448,12 +440,38 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
                       sp_limit=sp_limit)
 
 
+# ================= Slot declaration =================
+
+ConditionFn = Callable[[RunnerCtx], bool]
+
+@dataclass
+class Slot:
+    family: str           # e.g. "LAY_WIN", "BACK_WIN", "BACK_PLACE", "LAY_PLACE"
+    slot: int             # 1..10
+    side: Side
+    condition: ConditionFn
+    exec_mode: ExecMode = ExecMode.LIMIT_LTP
+    limit_style: LimitStyle = LimitStyle.AGGRESSIVE
+    price_for_bounds: str = "BASE"       # "BASE" or "LTP"
+    bet_per_market: bool = True          # fire at most once per market
+    sp_limit: Optional[float] = None     # for SP_LOC if fixed
+    tag: Optional[str] = None            # computed automatically if None
+
+    # Staking params
+    edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_1)
+    max_runner_stake_env: Optional[str] = None  # cap per runner env (e.g. MAX_RUNNER_STAKE_LAY_WIN_1)
+
+    def __post_init__(self):
+        if self.tag is None:
+            self.tag = f"{self.family}_{self.slot}"
+
+
 # ================= Registry (declare your systems here) =================
 
 def build_registry() -> List[Slot]:
     slots: List[Slot] = []
 
-    # --- System 1: LAY WIN — Trap=8, price(BASE) in [1.5, 50], fav-rank/LTP & GOR conditions @ T-2s ---
+    # --- System 1: LAY WIN — Trap=8, price(BASE) in [1.5, 50], fav-rank/LTP & GOR conditions @ T−2s ---
     def cond_lay_win_1(ctx: RunnerCtx) -> bool:
         if ctx.market_type.upper() != "WIN":
             return False
@@ -480,7 +498,7 @@ def build_registry() -> List[Slot]:
         slot=1,
         side=Side.LAY,
         condition=cond_lay_win_1,
-        exec_mode=ExecMode.HYB,
+        exec_mode=ExecMode.HYB,                 # HYB rules via hybrid_policy.json
         limit_style=LimitStyle.AGGRESSIVE,
         price_for_bounds="BASE",
         bet_per_market=True,
@@ -488,7 +506,7 @@ def build_registry() -> List[Slot]:
         max_runner_stake_env="MAX_RUNNER_STAKE_LAY_WIN_1",
     ))
 
-    # --- System 2: LAY PLACE — Trap=8, LTP_PLACE in [3, 40], (rank != 5) or (rank == 5 and GOR < 1.75) @ T-2s ---
+    # --- System 2: LAY PLACE — Trap=8, LTP_PLACE in [3, 40], (rank != 5) or (rank == 5 and GOR < 1.75) @ T−2s ---
     def cond_lay_place_1(ctx: RunnerCtx) -> bool:
         if ctx.market_type.upper() != "PLACE":
             return False
@@ -514,9 +532,9 @@ def build_registry() -> List[Slot]:
         slot=1,
         side=Side.LAY,
         condition=cond_lay_place_1,
-        exec_mode=ExecMode.HYB,              # HYB + fallback SP_MOC si LIMIT impossible
+        exec_mode=ExecMode.HYB,                 # HYB + fallback SP_MOC si LIMIT impossible
         limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="LTP",              # bornes sur LTP_PLACE
+        price_for_bounds="LTP",                 # bornes sur LTP_PLACE
         bet_per_market=True,
         edge_env="EDGE_LAY_PLACE_1",
         max_runner_stake_env="MAX_RUNNER_STAKE_LAY_PLACE_1",

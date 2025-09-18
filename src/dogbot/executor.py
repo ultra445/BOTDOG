@@ -28,7 +28,7 @@ except Exception:
 # --- Staking/Stratégies ---
 from .config import load_config
 from .staking import StakingEngine, Side
-from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode
+from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode, _region_from_book
 
 # --- LIVE ---
 from .execution.orders import OrderExecutor
@@ -877,6 +877,8 @@ class Executor:
                         bb=bb,
                         bl=bl,
                     )
+
+                    ctx.region = _region_from_book(book)
 
                     for slot in self.strategy_registry:
                         key = (slot.family, slot.slot, market_id)
