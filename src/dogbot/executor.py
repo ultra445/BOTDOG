@@ -205,6 +205,7 @@ class Executor:
 
     RUNNER_HEADER = [
         
+        
         "SNAP_TS_UTC",
         "COURSE_ID",
         "VENUE",
@@ -280,7 +281,10 @@ class Executor:
         "GAPMIN",
         "GAPMAX",
         "GOR",
+        "WINTRUE",
+        "WINBET",
         "WINTRADE",
+    
     
     ]
 
@@ -895,12 +899,42 @@ class Executor:
                 # NEW:
                 gapmin, gapmax, gor_val,
             ]
-            # ----- WINTRADE (intermediate): MOYLTP_WIN if present else LTP_WIN -----
-            _wintrade = None
+            # ----- WINTRUE / WINBET (WIN only; PLACE untouched) -----
+            _wintrue = None
+            _winbet  = None
             if is_win:
-                _wintrade = (moyltp if (moyltp is not None) else lpt)
-            # add as final CSV column (WIN rows only)
-            row.append(_wintrade if is_win else None)
+                _ref_win = (moyltp if (moyltp is not None) else lpt)
+                a = _ref_win
+                b = bsp_win
+                if a is not None and b is not None:
+                    _wintrue = (float(a) + float(b)) / 2.0
+                else:
+                    _wintrue = float(a) if a is not None else (float(b) if b is not None else None)
+                _winbet = _wintrue if _wintrue is not None else _ref_win
+
+            # Extend CSV row with WINTRUE, WINBET (added at end)
+            row.extend([
+                (_wintrue if is_win else None),
+                (_winbet  if is_win else None),
+            ])
+            # ----- WINTRADE & WINBET (for WIN rows only) -----
+            # WINTRADE = MOYLTP_WIN if present else LTP_WIN
+            _wintrade = (moyltp if (moyltp is not None) else lpt) if is_win else None
+            # WINBET = avg(BSP_WIN, WINTRADE) if BSP known, else WINTRADE
+            if is_win:
+                if bsp_win is not None:
+                    _winbet = ((float(bsp_win) + float(_wintrade)) / 2.0) if (_wintrade is not None) else float(bsp_win)
+                else:
+                    _winbet = _wintrade
+            else:
+                _winbet = None
+
+            # Extend CSV row with the new columns at the end
+            row.extend([
+                (_wintrade if is_win else None),
+                (_winbet   if is_win else None),
+            ])
+
 
             self._append(self.runner_csv, row)
 
@@ -922,6 +956,7 @@ class Executor:
                     ctx = RunnerCtx(
                         market_id=market_id,
                         market_type=(market_type or ""),
+                    # Expose WIN barometers to strategies (WIN only)
                         selection_id=int(sid),
                         course_id=str(course_id),
                         ltp=float(ltp_val),
@@ -938,6 +973,9 @@ class Executor:
                         bb=bb,
                         bl=bl,
                     )
+                    # Expose WINBET to strategies (WIN only)
+                    ctx.winbet = _winbet if is_win else None
+
                     try:
                         ctx.region = _region_from_book(book)
                     except Exception:
