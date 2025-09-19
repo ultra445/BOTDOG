@@ -204,30 +204,84 @@ class Executor:
     ]
 
     RUNNER_HEADER = [
-        "SNAP_TS_UTC","COURSE_ID","VENUE","MARKET_START_TIME_UTC","SECONDS_TO_OFF","MILESTONE_S",
-        "WIN_MARKET_ID","PLACE_MARKET_ID","MARKET_ID","MARKET_TYPE",
-        "SELECTION_ID","RUNNER_NAME","RUNNER_STATUS","DRAW","TRAP","VIRTUAL_TRAP","SORT_PRIORITY",
-        "N_RUNNERS_ACTIVE","N_PLACES",
-        # WIN
-        "LTP_WIN","BEST_BACK_PRICE_1_WIN","BEST_BACK_SIZE_1_WIN","BEST_LAY_PRICE_1_WIN","BEST_LAY_SIZE_1_WIN",
-        "MID_WIN","MOYLTP_WIN",
-        "BACK_LADDER_WIN","LAY_LADDER_WIN","RUNNER_TOTAL_MATCHED_WIN",
-        "FAV_RANK_LTP_WIN","FAV_RANK_BACK_WIN","WIN_IMPLIED_PROB_WIN",
-        "BSP_WIN","SP_AVAILABLE_WIN","WINPROB",
-        "LTP_300_WIN","LTP_150_WIN","LTP_80_WIN","LTP_45_WIN","LTP_2_WIN",
-        "DIFF150_300_WIN","DIFF80_150_WIN","DIFF45_80_WIN",
-        "MOM45_WIN","MOM80_WIN","MOM150_WIN","MOM300_WIN",
-        "PRICE_DELTA_5S_WIN","PRICE_DELTA_30S_WIN","VOLATILITY_60S_WIN","LIQUIDITY_SCORE_WIN",
-        "IS_FAVOURITE_WIN","PLACETHEORIQUE",
-        # PLACE
-        "LTP_PLACE","BEST_BACK_PRICE_1_PLACE","BEST_BACK_SIZE_1_PLACE","BEST_LAY_PRICE_1_PLACE","BEST_LAY_SIZE_1_PLACE",
-        "MID_PLACE","MOYLTP_PLACE",
-        "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
-        "BSP_PLACE","SP_AVAILABLE_PLACE","PLACEPROB",
+        
+        "SNAP_TS_UTC",
+        "COURSE_ID",
+        "VENUE",
+        "MARKET_START_TIME_UTC",
+        "SECONDS_TO_OFF",
+        "MILESTONE_S",
+        "WIN_MARKET_ID",
+        "PLACE_MARKET_ID",
+        "MARKET_ID",
+        "MARKET_TYPE",
+        "SELECTION_ID",
+        "RUNNER_NAME",
+        "RUNNER_STATUS",
+        "DRAW",
+        "TRAP",
+        "VIRTUAL_TRAP",
+        "SORT_PRIORITY",
+        "N_RUNNERS_ACTIVE",
+        "N_PLACES",
+        "LTP_WIN",
+        "BEST_BACK_PRICE_1_WIN",
+        "BEST_BACK_SIZE_1_WIN",
+        "BEST_LAY_PRICE_1_WIN",
+        "BEST_LAY_SIZE_1_WIN",
+        "MID_WIN",
+        "MOYLTP_WIN",
+        "BACK_LADDER_WIN",
+        "LAY_LADDER_WIN",
+        "RUNNER_TOTAL_MATCHED_WIN",
+        "FAV_RANK_LTP_WIN",
+        "FAV_RANK_BACK_WIN",
+        "WIN_IMPLIED_PROB_WIN",
+        "BSP_WIN",
+        "SP_AVAILABLE_WIN",
+        "WINPROB",
+        "LTP_300_WIN",
+        "LTP_150_WIN",
+        "LTP_80_WIN",
+        "LTP_45_WIN",
+        "LTP_2_WIN",
+        "DIFF150_300_WIN",
+        "DIFF80_150_WIN",
+        "DIFF45_80_WIN",
+        "MOM45_WIN",
+        "MOM80_WIN",
+        "MOM150_WIN",
+        "MOM300_WIN",
+        "PRICE_DELTA_5S_WIN",
+        "PRICE_DELTA_30S_WIN",
+        "VOLATILITY_60S_WIN",
+        "LIQUIDITY_SCORE_WIN",
+        "IS_FAVOURITE_WIN",
+        "PLACETHEORIQUE",
+        "LTP_PLACE",
+        "BEST_BACK_PRICE_1_PLACE",
+        "BEST_BACK_SIZE_1_PLACE",
+        "BEST_LAY_PRICE_1_PLACE",
+        "BEST_LAY_SIZE_1_PLACE",
+        "MID_PLACE",
+        "MOYLTP_PLACE",
+        "BACK_LADDER_PLACE",
+        "LAY_LADDER_PLACE",
+        "RUNNER_TOTAL_MATCHED_PLACE",
+        "BSP_PLACE",
+        "SP_AVAILABLE_PLACE",
+        "PLACEPROB",
         "PLACETHEORIQUE_PLACE",
-        "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
-        # NEW: simples (gap @ T−2s)
-        "GAPMIN","GAPMAX","GOR",
+        "LTP_300_PLACE",
+        "LTP_150_PLACE",
+        "LTP_80_PLACE",
+        "LTP_45_PLACE",
+        "LTP_2_PLACE",
+        "GAPMIN",
+        "GAPMAX",
+        "GOR",
+        "WINTRADE",
+    
     ]
 
     ENTRY_MIN_T_S = 120
@@ -841,6 +895,13 @@ class Executor:
                 # NEW:
                 gapmin, gapmax, gor_val,
             ]
+            # ----- WINTRADE (intermediate): MOYLTP_WIN if present else LTP_WIN -----
+            _wintrade = None
+            if is_win:
+                _wintrade = (moyltp if (moyltp is not None) else lpt)
+            # add as final CSV column (WIN rows only)
+            row.append(_wintrade if is_win else None)
+
             self._append(self.runner_csv, row)
 
             # --- staking + LIVE ---
