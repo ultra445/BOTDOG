@@ -1,12 +1,11 @@
-﻿# src/dogbot/executor.py
+# src/dogbot/executor.py
 # Snapshots WIN + PLACE, jalons 300/150/80/45/2
 # - BSP_WIN / BSP_PLACE (priorité: SP_EST si dispo, sinon NEAR) + SP_AVAILABLE_* (1/0)
 # - WINPROB=(BSP_WIN+LTP_WIN)/2 ; PLACEPROB=(BSP_PLACE+LTP_PLACE)/2
 # - MID/MOYLTP avec seuil de confiance MOYLTP_TOLERANCE_PCT (%.env)
 # - DIFF/MOM sur BASE_WIN = (WINPROB -> MOYLTP_WIN -> LTP_WIN -> BEST_BACK)
 # - PLACETHEORIQUE = cote (1/q) via Plackett–Luce (Top-K) à partir des prix WIN
-# - Gap features @ T−2s (WIN/LTP) : GOR + bornes de binning GAPMIN/GAPMAX ; duplication vers PLACE
-# - d5/d30/vol (WIN) : variations micro (5s, 30s) + volatilité 60s à partir de l'historique LTP
+# - Duplication : PLACETHEORIQUE_PLACE (même valeur que sur WIN) affichée sur les lignes PLACE
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -19,23 +18,23 @@ from .types import Instruction, RunnerMeta
 from .indexer import MarketIndex
 from .feeds import create_price_feed_from_env
 
-# --- import Plackett–Luce ---
+# --- import Plackett–Luce (supporte plackett OU placket pour éviter la confusion) ---
 try:
     from .plackett import odds_to_win_probs, place_probabilities, fair_place_odds
 except Exception:
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
 
-# --- Staking/Stratégies ---
+# --- AJOUTS (Staking/Stratégies) ---
 from .config import load_config
 from .staking import StakingEngine, Side
-from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode, _region_from_book
+from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
 
-# --- LIVE ---
+# --- AJOUTS LIVE (Step 3) ---
 from .execution.orders import OrderExecutor
 from .risk import ExposureManager
 
 
-# ---------- utilitaires ----------
+# ---------- utilitaires généraux ----------
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -152,6 +151,24 @@ def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
     return ({sid:i+1 for i,(sid,_) in enumerate(arr_ltp)},
             {sid:i+1 for i,(sid,_) in enumerate(arr_bb)})
 
+
+def _gor_bin(gor: float | None) -> tuple[float | None, float | None, float | None]:
+    """Return (gapmin, gapmax, gor) per bin rules. Bins: [1.00,1.10,1.25,1.50,2.00,3.00,inf)
+    If gor is None -> (None,None,None).
+    """
+    if gor is None:
+        return (None, None, None)
+    edges = [1.0, 1.10, 1.25, 1.50, 2.00, 3.00]
+    if gor < edges[0]:
+        return (edges[0], edges[0], gor)  # shouldn't happen, clamp
+    for i in range(len(edges)-1):
+        left, right = edges[i], edges[i+1]
+        # left-closed, right-open
+        if gor >= left and gor < right:
+            return (left, right, gor)
+    # last bin: >= 3.00
+    return (edges[-1], float('inf'), gor)
+
 # -------- TRAP parsing --------
 _TRAP_PATTS = [
     re.compile(r"^\s*(?:TRAP|T)\s*([1-9]\d?)\b", re.I),
@@ -186,9 +203,6 @@ class Executor:
     MILESTONES = [300, 150, 80, 45, 2]
     TOLERANCE_S = 1.5
 
-    # Bins GOR (gauche fermée / droite ouverte) pour GapMin/GapMax sur LTP @ T−2s
-    GOR_BINS = [1.00, 1.10, 1.25, 1.50, 2.00, 3.00, float("inf")]
-
     MARKET_HEADER = [
         "SNAP_TS_UTC","MARKET_ID","COURSE_ID","MARKET_TYPE",
         "EVENT_ID","EVENT_NAME","VENUE","COUNTRY_CODE",
@@ -204,89 +218,32 @@ class Executor:
     ]
 
     RUNNER_HEADER = [
-        
-        
-        "SNAP_TS_UTC",
-        "COURSE_ID",
-        "VENUE",
-        "MARKET_START_TIME_UTC",
-        "SECONDS_TO_OFF",
-        "MILESTONE_S",
-        "WIN_MARKET_ID",
-        "PLACE_MARKET_ID",
-        "MARKET_ID",
-        "MARKET_TYPE",
-        "SELECTION_ID",
-        "RUNNER_NAME",
-        "RUNNER_STATUS",
-        "DRAW",
-        "TRAP",
-        "VIRTUAL_TRAP",
-        "SORT_PRIORITY",
-        "N_RUNNERS_ACTIVE",
-        "N_PLACES",
-        "LTP_WIN",
-        "BEST_BACK_PRICE_1_WIN",
-        "BEST_BACK_SIZE_1_WIN",
-        "BEST_LAY_PRICE_1_WIN",
-        "BEST_LAY_SIZE_1_WIN",
-        "MID_WIN",
-        "MOYLTP_WIN",
-        "BACK_LADDER_WIN",
-        "LAY_LADDER_WIN",
-        "RUNNER_TOTAL_MATCHED_WIN",
-        "FAV_RANK_LTP_WIN",
-        "FAV_RANK_BACK_WIN",
-        "WIN_IMPLIED_PROB_WIN",
-        "BSP_WIN",
-        "SP_AVAILABLE_WIN",
-        "WINPROB",
-        "LTP_300_WIN",
-        "LTP_150_WIN",
-        "LTP_80_WIN",
-        "LTP_45_WIN",
-        "LTP_2_WIN",
-        "DIFF150_300_WIN",
-        "DIFF80_150_WIN",
-        "DIFF45_80_WIN",
-        "MOM45_WIN",
-        "MOM80_WIN",
-        "MOM150_WIN",
-        "MOM300_WIN",
-        "PRICE_DELTA_5S_WIN",
-        "PRICE_DELTA_30S_WIN",
-        "VOLATILITY_60S_WIN",
-        "LIQUIDITY_SCORE_WIN",
-        "IS_FAVOURITE_WIN",
-        "PLACETHEORIQUE",
-        "LTP_PLACE",
-        "BEST_BACK_PRICE_1_PLACE",
-        "BEST_BACK_SIZE_1_PLACE",
-        "BEST_LAY_PRICE_1_PLACE",
-        "BEST_LAY_SIZE_1_PLACE",
-        "MID_PLACE",
-        "MOYLTP_PLACE",
-        "BACK_LADDER_PLACE",
-        "LAY_LADDER_PLACE",
-        "RUNNER_TOTAL_MATCHED_PLACE",
-        "BSP_PLACE",
-        "SP_AVAILABLE_PLACE",
-        "PLACEPROB",
-        "PLACETHEORIQUE_PLACE",
-        "LTP_300_PLACE",
-        "LTP_150_PLACE",
-        "LTP_80_PLACE",
-        "LTP_45_PLACE",
-        "LTP_2_PLACE",
-        "GAPMIN",
-        "GAPMAX",
-        "GOR",
-        "WINTRUE",
-        "WINBET",
-        "WINTRADE",
-    
-    
-    ]
+    "SNAP_TS_UTC","COURSE_ID","VENUE","MARKET_START_TIME_UTC","SECONDS_TO_OFF","MILESTONE_S",
+    "WIN_MARKET_ID","PLACE_MARKET_ID","MARKET_ID","MARKET_TYPE",
+    "SELECTION_ID","RUNNER_NAME","RUNNER_STATUS","DRAW","TRAP","VIRTUAL_TRAP","SORT_PRIORITY",
+    "N_RUNNERS_ACTIVE","N_PLACES",
+    # WIN
+    "LTP_WIN","BEST_BACK_PRICE_1_WIN","BEST_BACK_SIZE_1_WIN","BEST_LAY_PRICE_1_WIN","BEST_LAY_SIZE_1_WIN",
+    "MID_WIN","MOYLTP_WIN",
+    "BACK_LADDER_WIN","LAY_LADDER_WIN","RUNNER_TOTAL_MATCHED_WIN",
+    "FAV_RANK_LTP_WIN","FAV_RANK_BACK_WIN","WIN_IMPLIED_PROB_WIN",
+    "BSP_WIN","SP_AVAILABLE_WIN","WINPROB",
+    "LTP_300_WIN","LTP_150_WIN","LTP_80_WIN","LTP_45_WIN","LTP_2_WIN",
+    "DIFF150_300_WIN","DIFF80_150_WIN","DIFF45_80_WIN",
+    "MOM45_WIN","MOM80_WIN","MOM150_WIN","MOM300_WIN",
+    "PRICE_DELTA_5S_WIN","PRICE_DELTA_30S_WIN","VOLATILITY_60S_WIN","LIQUIDITY_SCORE_WIN",
+    "IS_FAVOURITE_WIN","PLACETHEORIQUE",
+    # PLACE
+    "LTP_PLACE","BEST_BACK_PRICE_1_PLACE","BEST_BACK_SIZE_1_PLACE","BEST_LAY_PRICE_1_PLACE","BEST_LAY_SIZE_1_PLACE",
+    "MID_PLACE","MOYLTP_PLACE",
+    "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
+    "BSP_PLACE","SP_AVAILABLE_PLACE","PLACEPROB",
+    "PLACETHEORIQUE_PLACE",
+    "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
+    # NEW: gap @ T−2s (WIN; dupliqué sur PLACE depuis le WIN lié)
+    "GAPMIN","GAPMAX","GOR",
+]
+
 
     ENTRY_MIN_T_S = 120
     ENTRY_MAX_T_S = 7200
@@ -321,11 +278,12 @@ class Executor:
         # Cache PLACETHEORIQUE -> duplication PLACE
         self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
 
-        # Gap bounds & ratio @ T−2s par WIN market
-        self._gap_bounds_by_win: Dict[str, Dict[int, Tuple[Optional[float], Optional[float]]]] = defaultdict(dict)
-        self._gor_by_win: Dict[str, Dict[int, Optional[float]]] = defaultdict(dict)
+        # Cache TRAP & GAP by race (shared between WIN/PLACE)
+        self._trap_by_race: dict[tuple[str,int], int] = {}
+        self._gap_by_race: dict[tuple[str,int], tuple[float|None,float|None,float|None]] = {}
 
-        # BSP / SP feed
+
+        # BSP / SP feed (REST aujourd'hui, STREAM demain sans toucher l'executor)
         self.price_feed = create_price_feed_from_env()
 
         # Diag
@@ -334,20 +292,22 @@ class Executor:
         self._diag_throttle_weight: Optional[float] = None
         self._code_version: Optional[str] = os.environ.get("CODE_VERSION")
 
-        # Tolérance MOYLTP
+        # Tolérance MOYLTP (% sur LTP)
         try:
             self._moyltp_tol = float(os.getenv("MOYLTP_TOLERANCE_PCT", "30"))
         except Exception:
             self._moyltp_tol = 30.0
 
-        # Staking/strats
+        # --- AJOUTS (init Staking/Stratégies + dossier trades) ---
         self.cfg = load_config()
         self.staking_engine = StakingEngine(self.cfg)
         self.strategy_registry = build_registry()
-        self.trades_dir = self.data_dir
-        self._slot_market_fired: Set[tuple[str,int,str]] = set()
+        self.trades_dir = self.data_dir  # on réutilise ./data pour trades_YYYYMMDD.csv
 
-        # LIVE
+        # --- AJOUT: mémoire "un pari par marché" par slot ---
+        self._slot_market_fired: Set[tuple[str,int,str]] = set()  # {(family, slot, market_id)}
+
+        # --- AJOUTS LIVE (OrderExecutor + ExposureManager) ---
         self.order_executor = OrderExecutor(
             client=self.client,
             data_dir=str(self.data_dir),
@@ -446,18 +406,6 @@ class Executor:
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
 
-    # --------- binning GOR -> (gapmin, gapmax), avec bornes [a,b) ---------
-    def _gap_bounds_from_gor(self, gor: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
-        if gor is None or gor != gor:  # NaN
-            return (None, None)
-        x = float(gor)
-        bins = self.GOR_BINS
-        for i in range(len(bins)-1):
-            a, b = bins[i], bins[i+1]
-            if x >= a and (x < b or math.isinf(b)):
-                return (float(a), (float(b) if not math.isinf(b) else float("inf")))
-        return (float(bins[-2]), float("inf"))
-
     # ---------- cœur ----------
     def process_book(self, book: Any) -> None:
         market_id = str(getattr(book, "market_id", ""))
@@ -481,7 +429,7 @@ class Executor:
             self._last_tto[market_id] = t_to_off_s if t_to_off_s is not None else 0.0
             return
 
-        # Historique LTP pour d5/d30/vol (WIN uniquement)
+        # Historique LTP pour d5/d30/vol (WIN uniquement, indicatif)
         for r in runners:
             sid = getattr(r, "selection_id", None)
             if sid is None: continue
@@ -496,7 +444,7 @@ class Executor:
         if milestone is not None:
             self._write_runner_rows(book, info, market_type, t_to_off_s, milestone, runners, rank_ltp, rank_back)
 
-        # stratégie legacy
+        # stratégie (legacy)
         try:
             instructions = self.strategy.decide_all(book, mie, datetime.now(timezone.utc)) or []
         except Exception as e:
@@ -593,7 +541,29 @@ class Executor:
 
         is_win  = (market_type == "WIN")
         is_place = (market_type == "PLACE")
+        race_key = (win_id or place_id or market_id)
 
+
+        # GOR map at T-2s on WIN: ratio of next favourite's price / current price
+        gor_map: dict[int, float | None] = {}
+        if is_win and milestone == 2:
+            arr = []
+            for rr in (runners or []):
+                if (getattr(rr, "status", None) or "ACTIVE").upper() != "ACTIVE":
+                    continue
+                sid2 = getattr(rr, "selection_id", None)
+                if sid2 is None: continue
+                lpt2 = _runner_lpt_or_back(rr)
+                if lpt2 is None or lpt2 <= 1.0:  # skip invalid
+                    continue
+                arr.append((int(sid2), float(lpt2)))
+            arr.sort(key=lambda t: t[1])  # favourite -> outsider
+            for i, (sid2, p2) in enumerate(arr):
+                if i+1 < len(arr):
+                    p_next = arr[i+1][1]
+                    gor_map[sid2] = (p_next / p2) if p2 > 0 else None
+                else:
+                    gor_map[sid2] = None  # last = NO_NEXT
         # Prépare prix + caches
         sid_prices_for_pl: List[Tuple[int,float]] = []  # (sid, BASE_WIN)
         cache: Dict[int, Dict[str, Optional[float]]] = {}
@@ -644,16 +614,16 @@ class Executor:
                 "SP_AV_PLACE": float(sp_av_place),
             }
 
-            # BASE_WIN pour Plackett-Luce (uniquement WIN)
+            # BASE_WIN pour Plackett-Luce (uniquement marché WIN)
             if is_win:
                 winprob = ((bsp_win + lpt)/2.0) if (bsp_win is not None and lpt is not None) else None
-                base_win_val = winprob or moyltp or lpt or bb
+                base_win = winprob or moyltp or lpt or bb  # hiérarchie
                 cache[sid]["WINPROB"] = winprob
-                cache[sid]["BASE_WIN"] = base_win_val
-                if base_win_val and base_win_val > 1.0:
-                    sid_prices_for_pl.append((sid, float(base_win_val)))
+                cache[sid]["BASE_WIN"] = base_win
+                if base_win and base_win > 1.0:
+                    sid_prices_for_pl.append((sid, float(base_win)))
 
-        # PLACETHEORIQUE via Plackett–Luce (cote = 1/q)
+        # PLACETHEORIQUE via Plackett–Luce (cote = 1/q) pour WIN
         place_theo_by_sid: Dict[int, Optional[float]] = {}
         if is_win and len(sid_prices_for_pl) >= max(2, min(5, n_active)):
             sid_prices_for_pl.sort(key=lambda t: t[0])
@@ -666,41 +636,16 @@ class Executor:
                 fair_list = list(fair) if not hasattr(fair, "tolist") else fair.tolist()
                 for sid, odd_place in zip(sids, fair_list):
                     place_theo_by_sid[sid] = float(odd_place)
-            except Exception:
+            except Exception as e:
+                print(f"[PL_ERR] {market_id}: {e}")
                 place_theo_by_sid = {sid: None for sid,_ in sid_prices_for_pl}
+
+            # cache duplication pour PLACE
             cache_key = (win_id or market_id)
             if cache_key:
                 self._last_place_theo_by_market[str(cache_key)] = {
                     sid: v for sid, v in place_theo_by_sid.items() if v is not None
                 }
-
-        # ------ Gap @ T−2s (WIN/LTP): calcule GOR + GAPMIN/GAPMAX, et duplique vers PLACE ------
-        gapmap: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
-        gormap: Dict[int, Optional[float]] = {}
-        if is_win and milestone == 2:
-            pairs: List[Tuple[int, float]] = []
-            for r in runners:
-                if (getattr(r, "status", None) or "ACTIVE").upper() != "ACTIVE":
-                    continue
-                sid = int(getattr(r, "selection_id", 0) or 0)
-                if sid == 0:
-                    continue
-                ltp_val = cache.get(sid, {}).get("LTP")
-                if ltp_val is not None and ltp_val > 1.0:
-                    pairs.append((sid, float(ltp_val)))
-            pairs.sort(key=lambda t: t[1])  # tri croissant
-            n = len(pairs)
-            for i, (sid, price) in enumerate(pairs):
-                if i + 1 < n and price > 0:
-                    gor = pairs[i+1][1] / price
-                    gapmin, gapmax = self._gap_bounds_from_gor(gor)
-                else:
-                    gor = None
-                    gapmin, gapmax = (None, None)
-                gormap[sid] = (float(gor) if gor is not None else None)
-                gapmap[sid] = (gapmin, gapmax)
-            self._gor_by_win[str(market_id)] = gormap
-            self._gap_bounds_by_win[str(market_id)] = gapmap
 
         # Écriture des lignes runners
         rank_ltp, rank_back = _rankings(runners)
@@ -713,6 +658,17 @@ class Executor:
             runner_name = (rm.runner_name if rm else None)
             trap = _parse_trap(rm, runner_name)
             vtrap = vmap.get(sid, trap)
+            # trap cache & optional vtrap fallback
+            key_r = (race_key, sid)
+            if trap is None:
+                trap = self._trap_by_race.get(key_r)
+            if trap is None and str(os.getenv("ALLOW_VTRAP_AS_TRAP", "false")).lower() in ("1","true","yes","y") and vtrap is not None:
+                trap = vtrap
+            if trap is not None:
+                try:
+                    self._trap_by_race[key_r] = int(trap)
+                except Exception:
+                    pass
 
             lpt = cache[sid].get("LTP")
             ex = getattr(r, "ex", None)
@@ -735,11 +691,11 @@ class Executor:
             sp_av_place = cache[sid].get("SP_AV_PLACE") if is_place else None
 
             winprob = cache[sid].get("WINPROB") if is_win else None
-            base_win_val = cache[sid].get("BASE_WIN") if is_win else None
+            base_win = cache[sid].get("BASE_WIN") if is_win else None
 
             # Milestones:
-            if is_win and base_win_val is not None:
-                self._base_win_ms[market_id][sid][milestone] = float(base_win_val)
+            if is_win and base_win is not None:
+                self._base_win_ms[market_id][sid][milestone] = float(base_win)
             if is_place and lpt is not None:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
@@ -763,6 +719,29 @@ class Executor:
             mom150 = ratio(base_2,  base_150) if is_win else None
             mom300 = ratio(base_2,  base_300) if is_win else None
 
+            # deltas/vol (info) sur LTP côté WIN
+            d5 = d30 = vol = None
+            if is_win:
+                dq = self._hist.get(market_id, {}).get(sid)
+                if dq:
+                    now_ts = datetime.now(timezone.utc).timestamp()
+                    for window, varname in ((5.0, "d5"), (30.0, "d30")):
+                        target = now_ts - window
+                        older = None
+                        for ts, p in reversed(dq):
+                            older = (ts, p)
+                            if ts <= target:
+                                break
+                        if older is not None:
+                            p_now = dq[-1][1]; p_old = older[1]
+                            if varname == "d5": d5 = p_now - p_old
+                            else: d30 = p_now - p_old
+                    vals = [p for ts, p in dq if ts >= now_ts - 60.0]
+                    if len(vals) >= 3:
+                        m = sum(vals)/len(vals)
+                        var = sum((x-m)**2 for x in vals)/(len(vals)-1)
+                        vol = math.sqrt(var)
+
             # PLACETHEORIQUE (cote) :
             place_theo_win = place_theo_by_sid.get(sid) if is_win else None
             place_theo_place = None
@@ -780,56 +759,38 @@ class Executor:
             ltp_45_p  = _get_place(45)  if is_place else None
             ltp_2_p   = _get_place(2)   if is_place else None
 
-            # --- d5, d30, vol (WIN seulement) ---
-            d5 = d30 = vol = None
-            if is_win:
-                hist = self._hist.get(market_id, {}).get(sid)
-                if hist and len(hist) >= 2:
-                    now_ts, now_p = hist[-1]
-                    # prix il y a 5s / 30s
-                    p5 = p30 = None
-                    for ts, p in reversed(hist):
-                        dt = now_ts - ts
-                        if p5 is None and dt >= 5.0:
-                            p5 = p
-                        if p30 is None and dt >= 30.0:
-                            p30 = p
-                            # on peut sortir si on a déjà p30
-                            if p5 is not None:
-                                break
-                    if p5 and p5 > 0:
-                        d5 = (now_p / p5) - 1.0
-                    if p30 and p30 > 0:
-                        d30 = (now_p / p30) - 1.0
-                    # vol 60s : écart-type des retours sur ~60s
-                    rets = []
-                    prev_ts, prev_p = None, None
-                    for ts, p in reversed(hist):
-                        if now_ts - ts > 60.0:
-                            break
-                        if prev_p is not None and prev_p > 0 and p > 0:
-                            rets.append((p / prev_p) - 1.0)
-                        prev_ts, prev_p = ts, p
-                    if len(rets) >= 2:
-                        m = sum(rets) / len(rets)
-                        var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
-                        vol = var ** 0.5
 
-            # --- GapMin/GapMax/GOR au jalon 2s ; duplication sur PLACE ---
-            gapmin = gapmax = gor_val = None
-            if milestone == 2:
-                if is_win:
-                    gapmin, gapmax = self._gap_bounds_by_win.get(str(market_id), {}).get(sid, (None, None))
-                    gor_val = self._gor_by_win.get(str(market_id), {}).get(sid)
-                else:
-                    if win_id:
-                        gapmin, gapmax = self._gap_bounds_by_win.get(str(win_id), {}).get(sid, (None, None))
-                        gor_val = self._gor_by_win.get(str(win_id), {}).get(sid)
+            # PLACE momentum 45s->2s
+            mom45p = None
+            if is_place and (ltp_2_p is not None) and (ltp_45_p is not None) and (ltp_45_p != 0):
+                try:
+                    mom45p = (ltp_2_p / ltp_45_p) - 1.0
+                except Exception:
+                    mom45p = None
+
+            # GOR & gap bins (@ WIN T-2s) and duplicate to PLACE from cache
+            gapmin = gapmax = None
+            gor_val = None
+            key_r = (race_key, sid)
+            if is_win and milestone == 2:
+                gor_val = gor_map.get(sid)
+                gm, gM, g = _gor_bin(gor_val)
+                gapmin, gapmax = gm, gM
+                # store for PLACE duplication
+                try:
+                    self._gap_by_race[key_r] = (gapmin, gapmax, gor_val)
+                except Exception:
+                    pass
+            else:
+                # try from cache (PLACE rows or WIN non-2s)
+                tpl = self._gap_by_race.get(key_r)
+                if tpl:
+                    gapmin, gapmax, gor_val = tpl
 
             row = [
                 # base
                 _now_utc_iso(),
-                None,
+                None,  # COURSE_ID (optionnel)
                 info["venue"],
                 (info["start_utc"].isoformat().replace("+00:00","Z") if info["start_utc"] else None),
                 float(tto) if tto is not None else None,
@@ -852,17 +813,17 @@ class Executor:
                 (ladder_b if is_win else None),
                 (ladder_l if is_win else None),
                 (total_matched_runner if is_win else None),
-                (rank_ltp.get(sid) if is_win else None),
-                (rank_back.get(sid) if is_win else None),
-                ((1.0 / (bb or lpt)) if (is_win and (bb or lpt)) else None),
+                (rk_ltp if is_win else None),
+                (rk_bb  if is_win else None),
+                (implied if is_win else None),
                 (bsp_win if is_win else None),
                 (sp_av_win if is_win else None),
                 (winprob if is_win else None),
-                (_get(self._base_win_ms, 300) if is_win else None),
-                (_get(self._base_win_ms, 150) if is_win else None),
-                (_get(self._base_win_ms, 80)  if is_win else None),
-                (_get(self._base_win_ms, 45)  if is_win else None),
-                (_get(self._base_win_ms, 2)   if is_win else None),
+                (base_300 if is_win else None),
+                (base_150 if is_win else None),
+                (base_80  if is_win else None),
+                (base_45  if is_win else None),
+                (base_2   if is_win else None),
                 (diff150_300 if is_win else None),
                 (diff80_150  if is_win else None),
                 (diff45_80   if is_win else None),
@@ -874,7 +835,7 @@ class Executor:
                 (d30 if is_win else None),
                 (vol if is_win else None),
                 ((bs or 0.0) + (ls or 0.0) if is_win else None),
-                (((rank_back.get(sid) or 0) == 1) if is_win else None),
+                (((rk_bb or 0) == 1) if is_win else None),
                 (place_theo_win if is_win else None),
                 # PLACE block
                 (lpt if is_place else None),
@@ -894,52 +855,16 @@ class Executor:
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
                 (ltp_80_p  if is_place else None),
-                (ltp_45_p if is_place else None),
-                (ltp_2_p  if is_place else None),
-                # NEW:
+                (ltp_45_p  if is_place else None),
+                (ltp_2_p   if is_place else None),
+                # NEW: gap outputs
                 gapmin, gapmax, gor_val,
             ]
-            # ----- WINTRUE / WINBET (WIN only; PLACE untouched) -----
-            _wintrue = None
-            _winbet  = None
-            if is_win:
-                _ref_win = (moyltp if (moyltp is not None) else lpt)
-                a = _ref_win
-                b = bsp_win
-                if a is not None and b is not None:
-                    _wintrue = (float(a) + float(b)) / 2.0
-                else:
-                    _wintrue = float(a) if a is not None else (float(b) if b is not None else None)
-                _winbet = _wintrue if _wintrue is not None else _ref_win
-
-            # Extend CSV row with WINTRUE, WINBET (added at end)
-            row.extend([
-                (_wintrue if is_win else None),
-                (_winbet  if is_win else None),
-            ])
-            # ----- WINTRADE & WINBET (for WIN rows only) -----
-            # WINTRADE = MOYLTP_WIN if present else LTP_WIN
-            _wintrade = (moyltp if (moyltp is not None) else lpt) if is_win else None
-            # WINBET = avg(BSP_WIN, WINTRADE) if BSP known, else WINTRADE
-            if is_win:
-                if bsp_win is not None:
-                    _winbet = ((float(bsp_win) + float(_wintrade)) / 2.0) if (_wintrade is not None) else float(bsp_win)
-                else:
-                    _winbet = _wintrade
-            else:
-                _winbet = None
-
-            # Extend CSV row with the new columns at the end
-            row.extend([
-                (_wintrade if is_win else None),
-                (_winbet   if is_win else None),
-            ])
-
-
             self._append(self.runner_csv, row)
 
-            # --- staking + LIVE ---
+            # --- AJOUT : déclenchement staking + LIVE ---
             try:
+                # course_id simple: VENUE-YYYYMMDDHHMM
                 start_utc = info.get("start_utc")
                 venue = (info.get("venue") or "NA")
                 if start_utc is not None:
@@ -949,39 +874,30 @@ class Executor:
 
                 ltp_val = cache.get(sid, {}).get("LTP")
                 if ltp_val is not None and ltp_val >= 1.01:
-                    # mom45_place pour PLACE (LTP 45s -> 2s)
-                    mom45p = ((ltp_2_p / ltp_45_p) - 1.0) if (is_place and ltp_2_p and ltp_45_p and ltp_45_p != 0) else None
-
-                    # Construit un RunnerCtx enrichi (pour stratégies)
                     ctx = RunnerCtx(
                         market_id=market_id,
                         market_type=(market_type or ""),
-                    # Expose WIN barometers to strategies (WIN only)
                         selection_id=int(sid),
                         course_id=str(course_id),
                         ltp=float(ltp_val),
-                        milestone=milestone,
+                        milestone=milestone,                           # jalon courant
                         secs_to_off=float(tto) if tto is not None else None,
-                        # enriched fields for systems/HYB:
-                        trap=trap,
-                        fav_rank_ltp=(rank_ltp.get(sid) if rank_ltp else rk_ltp),
-                        fav_rank_back=(rank_back.get(sid) if rank_back else rk_bb),
-                        gor=(self._gor_by_win.get(str(win_id or market_id), {}).get(sid) if milestone == 2 else None),
+                        # enrich
+                        trap=(int(trap) if trap is not None else None),
+                        fav_rank_ltp=(rk_ltp if is_win else None),
+                        fav_rank_back=(rk_bb if is_win else None),
+                        gor=(gor_val if (is_win and milestone == 2) else None),
                         mom45=(mom45 if is_win else None),
                         mom45_place=(mom45p if is_place else None),
-                        base_win=(base_2 if is_win else None) or base_win_val,
+                        d5=(d5 if is_win else None),
+                        d30=(d30 if is_win else None),
+                        vol60=(vol if is_win else None),
+                        base_win=(base_win if is_win else None),
                         bb=bb,
                         bl=bl,
                     )
-                    # Expose WINBET to strategies (WIN only)
-                    ctx.winbet = _winbet if is_win else None
-
-                    try:
-                        ctx.region = _region_from_book(book)
-                    except Exception:
-                        ctx.region = None
-
                     for slot in self.strategy_registry:
+                        # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
                         if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
                             continue
@@ -1006,9 +922,11 @@ class Executor:
                             "reason": res.reason,
                         })
 
+                        # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
                         if getattr(slot, "bet_per_market", False):
                             self._slot_market_fired.add(key)
 
+                        # ---- LIVE : place_orders sécurisé ----
                         if not self.dry_run:
                             can, reason = self.exposure.can_place(
                                 Side(slot.side.value),
@@ -1018,6 +936,7 @@ class Executor:
                                 planned_liability=float(res.liability or 0.0),
                             )
                             if not can:
+                                # trace claire d’un blocage live
                                 self._log_trade_row({
                                     "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
                                     "market_id": market_id,
@@ -1033,11 +952,9 @@ class Executor:
                                     "reason": reason,
                                 })
                             else:
-                                # ---- utilise le mode effectif renvoyé par la stratégie (HYB, LIMIT, SP_MOC/LOC)
-                                eff_mode = getattr(res, "exec_mode", slot.exec_mode)
-
+                                # Sélection du mode d'exécution selon le slot
                                 orr = None
-                                if eff_mode == ExecMode.LIMIT_LTP:
+                                if slot.exec_mode == ExecMode.LIMIT_LTP:
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
                                     orr = self.order_executor.place_limit(
                                         market_id=market_id,
@@ -1051,7 +968,8 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif eff_mode == ExecMode.SP_MOC:
+                                elif slot.exec_mode == ExecMode.SP_MOC:
+                                    # BACK: size = stake ; LAY: size_or_liability = liability
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
                                     orr = self.order_executor.place_sp_market_on_close(
@@ -1064,8 +982,9 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif eff_mode == ExecMode.SP_LOC:
-                                    sp_lim = getattr(res, "sp_limit", None) or getattr(slot, "sp_limit", None) or float(res.price)
+                                elif slot.exec_mode == ExecMode.SP_LOC:
+                                    # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
+                                    sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
                                     orr = self.order_executor.place_sp_limit_on_close(
@@ -1073,7 +992,7 @@ class Executor:
                                         selection_id=int(sid),
                                         side=slot.side.value,
                                         size_or_liability=qty,
-                                        sp_limit_price=float(sp_lim),
+                                        sp_limit_price=sp_lim,
                                         strategy=slot.tag,
                                         idem_key=idem_key,
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
@@ -1081,6 +1000,7 @@ class Executor:
                                     )
 
                                 if orr and orr.ok:
+                                    # Réserve l’exposition (stake pour BACK, liability pour LAY)
                                     self.exposure.on_placed(
                                         Side(slot.side.value),
                                         market_id=market_id,
@@ -1090,6 +1010,7 @@ class Executor:
                                     )
 
             except Exception:
+                # Ne jamais casser le snapshotting pour une erreur staking/ordre
                 pass
 
     # ----- helpers -----

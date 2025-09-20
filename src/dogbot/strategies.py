@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Optional
 
 from dataclasses import dataclass
 from enum import Enum
@@ -52,6 +51,7 @@ class RunnerCtx:
     bb: Optional[float] = None           # best back price at tick
     bl: Optional[float] = None           # best lay price at tick
     region: Optional[str] = None         # 'UK' or 'ROW'
+    winbet: Optional[float] = None
 
 # Result of a fired slot (sizing already computed)
 @dataclass
@@ -480,8 +480,10 @@ def build_registry() -> List[Slot]:
             return False
         if ctx.trap != 8:
             return False
-        bounds_price = _pick_bounds_price(ctx, "BASE")
-        if bounds_price is None or not (1.5 <= bounds_price <= 50.0):
+        # Use WINBET as the canonical WIN price for strategy conditions
+        win_price = ctx.winbet if (ctx.winbet and ctx.winbet > 1.0) else None
+        if win_price is None or not (1.5 <= win_price <= 50.0):
+            return False
             return False
         r = ctx.fav_rank_ltp
         if r is None:
@@ -544,3 +546,191 @@ def build_registry() -> List[Slot]:
     # You can append more slots here…
 
     return slots
+
+
+# ================= UK BACK PLACE LIM strategies (EV group) =================
+
+def _uk_only(ctx: RunnerCtx) -> bool:
+    return (getattr(ctx, "region", None) == "UK")
+
+def _lim_from_place_theo(ctx: RunnerCtx, factor: float):
+    theo = getattr(ctx, "place_theo", None)
+    if theo is None:
+        return None
+    try:
+        v = float(theo) * float(factor)
+        return v if v > 1.0 else None
+    except Exception:
+        return None
+
+def _price_place(ctx: RunnerCtx):
+    return _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+
+def cond_ev1_place_uk(ctx: RunnerCtx) -> bool:
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
+
+def cond_ev2_place_uk(ctx: RunnerCtx) -> bool:
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and p >= 3.0)(_price_place(ctx)))
+
+def cond_ev1bis_place_uk(ctx: RunnerCtx) -> bool:
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
+
+def register_ev_place_uk(registry: List[Slot]):
+    registry.append(Slot(
+        family="BACK_PLACE", slot=101, side=Side.BACK,
+        condition=cond_ev1_place_uk,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1_PLACE_UK",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=102, side=Side.BACK,
+        condition=cond_ev2_place_uk,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV2_PLACE_UK",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.15),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=103, side=Side.BACK,
+        condition=cond_ev1bis_place_uk,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1BIS_PLACE_UK",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.28),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=104, side=Side.BACK,
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 3.0 <= p < 7.0)(_price_place(ctx))),
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV2BIS_PLACE_UK",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+    ))
+
+
+# ================= ROW BACK PLACE LIM strategies (EV group) =================
+
+def _row_only(ctx: RunnerCtx) -> bool:
+    return (getattr(ctx, "region", None) == "ROW")
+
+def cond_ev1_place_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 1.3 <= p < 3.0))
+
+def cond_ev2_place_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 3.0 <= p < 4.8))
+
+def cond_ev3_place_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and p >= 4.8))
+
+def register_ev_place_row(registry: List[Slot]):
+    registry.append(Slot(
+        family="BACK_PLACE", slot=201, side=Side.BACK,
+        condition=cond_ev1_place_row,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.35),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=202, side=Side.BACK,
+        condition=cond_ev2_place_row,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV2_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.30),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=203, side=Side.BACK,
+        condition=cond_ev3_place_row,
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV3_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=204, side=Side.BACK,
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1BIS_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.50),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=205, side=Side.BACK,
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and 3.0 <= p < 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV2BIS_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.45),
+    ))
+    registry.append(Slot(
+        family="BACK_PLACE", slot=206, side=Side.BACK,
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and p >= 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV3BIS_PLACE_ROW",
+        sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.40),
+    ))
+
+
+# ================= LAY PLACE LIM strategies (ROW & UK) =================
+
+def _lim_lay_from_place_theo(ctx: RunnerCtx, factor: float):
+    theo = getattr(ctx, "place_theo", None)
+    if theo is None:
+        return None
+    try:
+        v = float(theo) * float(factor)
+        return v if v > 1.0 else None
+    except Exception:
+        return None
+
+# --- ROW LAY ---
+def cond_ev1_placelay_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 1.05 <= p < 3.0))
+
+def cond_ev2_placelay_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 3.0 <= p < 4.8))
+
+def cond_ev3_placelay_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 4.8 <= p < 7.0))
+
+def cond_ev4_placelay_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 7.0 <= p < 15.0))
+
+def cond_ev5_placelay_row(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and p >= 15.0))
+
+def register_placelay_row(registry: List[Slot]):
+    registry.append(Slot(family="LAY_PLACE", slot=301, side=Side.LAY,
+        condition=cond_ev1_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1_PLACELAY_ROW",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.53)))
+    registry.append(Slot(family="LAY_PLACE", slot=302, side=Side.LAY,
+        condition=cond_ev2_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV2_PLACELAY_ROW",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.55)))
+    registry.append(Slot(family="LAY_PLACE", slot=303, side=Side.LAY,
+        condition=cond_ev3_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV3_PLACELAY_ROW",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.58)))
+    registry.append(Slot(family="LAY_PLACE", slot=304, side=Side.LAY,
+        condition=cond_ev4_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV4_PLACELAY_ROW",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.60)))
+    registry.append(Slot(family="LAY_PLACE", slot=305, side=Side.LAY,
+        condition=cond_ev5_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV5_PLACELAY_ROW",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.70)))
+
+# --- UK LAY ---
+def cond_ev1_placelay_uk(ctx: RunnerCtx) -> bool:
+    p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (p is not None and p >= 15.0))
+
+def register_placelay_uk(registry: List[Slot]):
+    registry.append(Slot(family="LAY_PLACE", slot=351, side=Side.LAY,
+        condition=cond_ev1_placelay_uk, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
+        bet_per_market=False, edge_env="EDGE_EV1_PLACELAY_UK",
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.80)))
+
