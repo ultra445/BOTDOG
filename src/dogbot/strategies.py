@@ -544,6 +544,12 @@ def build_registry() -> List[Slot]:
     ))
 
     # You can append more slots here…
+    # Append WIN LAY ROW (EV_PLACE) systems
+    register_winlay_row_ev(slots)
+    # Append WIN BACK ROW (EV_PLACE) systems
+    register_winback_row_ev(slots)
+
+
 
     return slots
 
@@ -733,4 +739,132 @@ def register_placelay_uk(registry: List[Slot]):
         condition=cond_ev1_placelay_uk, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         bet_per_market=False, edge_env="EDGE_EV1_PLACELAY_UK",
         sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.80)))
+
+
+# ================= WIN LAY HYB strategies (ROW, EV_PLACE thresholds) =================
+
+def _row_only(ctx: RunnerCtx) -> bool:
+    return (getattr(ctx, "region", None) == "ROW")
+
+def cond_ev1_winlay_row(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN":
+        return False
+    if ctx.milestone != 2:
+        return False
+    if not _row_only(ctx):
+        return False
+    wp = getattr(ctx, "winbet", None)  # WIN price reference
+    if wp is None or not (wp >= 4.5 and wp < 12.0):
+        return False
+    evp = getattr(ctx, "ev_place", None)  # use EV_PLACE as requested
+    return (evp is not None) and (evp >= 0.23)
+
+def cond_ev2_winlay_row(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN":
+        return False
+    if ctx.milestone != 2:
+        return False
+    if not _row_only(ctx):
+        return False
+    wp = getattr(ctx, "winbet", None)
+    if wp is None or not (wp >= 12.0 and wp < 50.0):
+        return False
+    evp = getattr(ctx, "ev_place", None)
+    return (evp is not None) and (evp >= 0.20)
+
+def register_winlay_row_ev(registry: List[Slot]):
+    # EV1: 4.5 <= WINBET < 12, EV_PLACE >= 0.23
+    registry.append(Slot(
+        family="LAY_WIN", slot=401, side=Side.LAY,
+        condition=cond_ev1_winlay_row,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_EV1_WINLAY_ROW",
+        max_runner_stake_env="MAX_RUNNER_STAKE_EV1_WINLAY_ROW",
+    ))
+    # EV2: 12 <= WINBET < 50, EV_PLACE >= 0.20
+    registry.append(Slot(
+        family="LAY_WIN", slot=402, side=Side.LAY,
+        condition=cond_ev2_winlay_row,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_EV2_WINLAY_ROW",
+        max_runner_stake_env="MAX_RUNNER_STAKE_EV2_WINLAY_ROW",
+    ))
+
+
+# ================= WIN BACK HYB strategies (ROW, EV_PLACE thresholds) =================
+
+def cond_ev1_winback_row(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN":
+        return False
+    if ctx.milestone != 2:
+        return False
+    if getattr(ctx, "region", None) != "ROW":
+        return False
+    wp = getattr(ctx, "winbet", None)
+    if wp is None or not (wp >= 4.5 and wp < 7.0):
+        return False
+    evp = getattr(ctx, "ev_place", None)
+    return (evp is not None) and (evp <= -0.12)
+
+def cond_ev2_winback_row(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN":
+        return False
+    if ctx.milestone != 2:
+        return False
+    if getattr(ctx, "region", None) != "ROW":
+        return False
+    wp = getattr(ctx, "winbet", None)
+    if wp is None or not (wp >= 7.0 and wp < 10.0):
+        return False
+    evp = getattr(ctx, "ev_place", None)
+    return (evp is not None) and (evp <= -0.20)
+
+def cond_ev3_winback_row(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN":
+        return False
+    if ctx.milestone != 2:
+        return False
+    if getattr(ctx, "region", None) != "ROW":
+        return False
+    wp = getattr(ctx, "winbet", None)
+    if wp is None or not (wp >= 10.0 and wp < 20.0):
+        return False
+    evp = getattr(ctx, "ev_place", None)
+    return (evp is not None) and (evp <= -0.40)
+
+def register_winback_row_ev(registry: List[Slot]):
+    # EV1: 4.5 <= WINBET < 7, EV_PLACE <= -0.12
+    registry.append(Slot(
+        family="BACK_WIN", slot=411, side=Side.BACK,
+        condition=cond_ev1_winback_row,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_EV1_WINBACK_ROW",
+        max_runner_stake_env="MAX_RUNNER_STAKE_EV1_WINBACK_ROW",
+    ))
+    # EV2: 7 <= WINBET < 10, EV_PLACE <= -0.20
+    registry.append(Slot(
+        family="BACK_WIN", slot=412, side=Side.BACK,
+        condition=cond_ev2_winback_row,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_EV2_WINBACK_ROW",
+        max_runner_stake_env="MAX_RUNNER_STAKE_EV2_WINBACK_ROW",
+    ))
+    # EV3: 10 <= WINBET < 20, EV_PLACE <= -0.40
+    registry.append(Slot(
+        family="BACK_WIN", slot=413, side=Side.BACK,
+        condition=cond_ev3_winback_row,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_EV3_WINBACK_ROW",
+        max_runner_stake_env="MAX_RUNNER_STAKE_EV3_WINBACK_ROW",
+    ))
 

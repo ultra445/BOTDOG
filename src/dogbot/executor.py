@@ -238,7 +238,7 @@ class Executor:
     "MID_PLACE","MOYLTP_PLACE",
     "BACK_LADDER_PLACE","LAY_LADDER_PLACE","RUNNER_TOTAL_MATCHED_PLACE",
     "BSP_PLACE","SP_AVAILABLE_PLACE","PLACEPROB",
-    "PLACETHEORIQUE_PLACE",
+    "PLACETHEORIQUE_PLACE","EV_PLACE",
     "LTP_300_PLACE","LTP_150_PLACE","LTP_80_PLACE","LTP_45_PLACE","LTP_2_PLACE",
     # NEW: gap @ T−2s (WIN; dupliqué sur PLACE depuis le WIN lié)
     "GAPMIN","GAPMAX","GOR",
@@ -852,6 +852,7 @@ class Executor:
                 (sp_av_place if is_place else None),
                 (((bsp_place + lpt)/2.0) if (is_place and bsp_place is not None and lpt is not None) else None),
                 (place_theo_place if is_place else None),
+                (((float(bsp_place) / float(place_theo_place)) - 1.0) if (is_place and (bsp_place is not None) and (place_theo_place is not None) and (place_theo_place > 0)) else None),
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
                 (ltp_80_p  if is_place else None),
