@@ -548,6 +548,9 @@ def build_registry() -> List[Slot]:
     register_winlay_row_ev(slots)
     # Append WIN BACK ROW (EV_PLACE) systems
     register_winback_row_ev(slots)
+    # Append UK WIN momentum systems
+    register_mom_win_uk(slots)
+
 
 
 
@@ -866,5 +869,110 @@ def register_winback_row_ev(registry: List[Slot]):
         bet_per_market=False,
         edge_env="EDGE_EV3_WINBACK_ROW",
         max_runner_stake_env="MAX_RUNNER_STAKE_EV3_WINBACK_ROW",
+    ))
+
+
+# ================= WIN (UK) momentum systems — HYB =================
+
+def _win_price_ok(p: Optional[float], lo: float, hi: float) -> bool:
+    return (p is not None and p >= lo and p < hi)
+
+def _mom_ok(m: Optional[float], lo: Optional[float] = None, hi: Optional[float] = None) -> bool:
+    if m is None:
+        return False
+    if lo is not None and not (m > lo):
+        return False
+    if hi is not None and not (m < hi):
+        return False
+    return True
+
+# BACK WIN — UK
+def cond_mom_winback_uk_1(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 2.8, 4.5) and _mom_ok(getattr(ctx, "mom45", None), lo=0.15)
+
+def cond_mom_winback_uk_2(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 4.5, 7.0) and _mom_ok(getattr(ctx, "mom45", None), lo=0.20)
+
+def cond_mom_winback_uk_3(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 7.0, 50.0) and _mom_ok(getattr(ctx, "mom45", None), lo=0.20)
+
+# LAY WIN — UK
+def cond_mom_winlay_uk_1(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 2.8, 4.5) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.15)
+
+def cond_mom_winlay_uk_2(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 4.5, 7.0) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.20)
+
+def cond_mom_winlay_uk_3(ctx: RunnerCtx) -> bool:
+    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
+        return False
+    return _win_price_ok(getattr(ctx, "winbet", None), 7.0, 50.0) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.20)
+
+def register_mom_win_uk(registry: List[Slot]):
+    # BACK — edges
+    registry.append(Slot(
+        family="BACK_WIN", slot=421, side=Side.BACK,
+        condition=cond_mom_winback_uk_1,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINBACKUK_1",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_1",
+    ))
+    registry.append(Slot(
+        family="BACK_WIN", slot=422, side=Side.BACK,
+        condition=cond_mom_winback_uk_2,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINBACKUK_2",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_2",
+    ))
+    registry.append(Slot(
+        family="BACK_WIN", slot=423, side=Side.BACK,
+        condition=cond_mom_winback_uk_3,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINBACKUK_3",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_3",
+    ))
+    # LAY — edges
+    registry.append(Slot(
+        family="LAY_WIN", slot=431, side=Side.LAY,
+        condition=cond_mom_winlay_uk_1,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINLAYUK_1",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_1",
+    ))
+    registry.append(Slot(
+        family="LAY_WIN", slot=432, side=Side.LAY,
+        condition=cond_mom_winlay_uk_2,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINLAYUK_2",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_2",
+    ))
+    registry.append(Slot(
+        family="LAY_WIN", slot=433, side=Side.LAY,
+        condition=cond_mom_winlay_uk_3,
+        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
+        price_for_bounds="WINBET",
+        bet_per_market=False,
+        edge_env="EDGE_MOMWINLAYUK_3",
+        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_3",
     ))
 
