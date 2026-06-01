@@ -14,6 +14,7 @@ from .staking import Side, StakingResult  # type: ignore
 
 class ExecMode(str, Enum):
     LIMIT_LTP = "LIMIT_LTP"   # limit at top-of-book (aggressive/passive resolved in strategy)
+    LIM       = "LIMIT_LTP"   # alias for existing LIMIT mode
     SP_MOC    = "SP_MOC"      # Betfair SP: Market on Close
     SP_LOC    = "SP_LOC"      # Betfair SP: Limit on Close
     HYB       = "HYB"         # Hybrid: decide at runtime from policy file
@@ -261,6 +262,13 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     mode = slot.exec_mode
     limit_style = slot.limit_style
     sp_limit = slot.sp_limit
+    if slot.sp_limit_fn is not None:
+        try:
+            computed_sp_limit = slot.sp_limit_fn(ctx)
+            if computed_sp_limit is not None and float(computed_sp_limit) > 1.0:
+                sp_limit = float(computed_sp_limit)
+        except Exception:
+            pass
     decision: Dict[str, Any] = {}
 
     if slot.exec_mode == ExecMode.HYB:
@@ -456,6 +464,7 @@ class Slot:
     price_for_bounds: str = "BASE"       # "BASE" or "LTP"
     bet_per_market: bool = True          # fire at most once per market
     sp_limit: Optional[float] = None     # for SP_LOC if fixed
+    sp_limit_fn: Optional[Callable[[RunnerCtx], Optional[float]]] = None
     tag: Optional[str] = None            # computed automatically if None
 
     # Staking params
@@ -550,9 +559,9 @@ def build_registry() -> List[Slot]:
     register_winback_row_ev(slots)
     # Append UK WIN momentum systems
     register_mom_win_uk(slots)
-        register_trap1_laywin(slots)
-        register_trap1_placelay(slots)
-        register_trap1_backplace(slots)
+    register_trap1_laywin(slots)
+    register_trap1_placelay(slots)
+    register_trap1_backplace(slots)
 
 
 
