@@ -244,6 +244,13 @@ class Executor:
     "GAPMIN","GAPMAX","GOR",
 ]
 
+    TRADE_HEADER = [
+        "ts","market_id","market_type","selection_id","course_id",
+        "side","price_req","size_req","liability","strategy",
+        "market_family","strategy_group","strategy_region","strategy_signal","strategy_bucket",
+        "status","reason",
+    ]
+
 
     ENTRY_MIN_T_S = 120
     ENTRY_MAX_T_S = 7200
@@ -963,6 +970,11 @@ class Executor:
                             "size_req": res.size,
                             "liability": round(res.liability or 0.0, 2),
                             "strategy": slot.tag,
+                            "market_family": getattr(slot, "market_family", None),
+                            "strategy_group": getattr(slot, "strategy_group", None),
+                            "strategy_region": getattr(slot, "strategy_region", None),
+                            "strategy_signal": getattr(slot, "strategy_signal", None),
+                            "strategy_bucket": getattr(slot, "strategy_bucket", None),
                             "status": status,
                             "reason": res.reason,
                         })
@@ -993,6 +1005,11 @@ class Executor:
                                     "size_req": res.size,
                                     "liability": round(res.liability or 0.0, 2),
                                     "strategy": slot.tag,
+                                    "market_family": getattr(slot, "market_family", None),
+                                    "strategy_group": getattr(slot, "strategy_group", None),
+                                    "strategy_region": getattr(slot, "strategy_region", None),
+                                    "strategy_signal": getattr(slot, "strategy_signal", None),
+                                    "strategy_bucket": getattr(slot, "strategy_bucket", None),
                                     "status": "LIVE_BLOCKED",
                                     "reason": reason,
                                 })
@@ -1064,17 +1081,27 @@ class Executor:
                 pass
 
     # ----- helpers -----
+    def _ensure_trade_header(self, path: Path) -> None:
+        header = list(self.TRADE_HEADER)
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    first = f.readline().strip()
+                if first.split(",") == header:
+                    return
+            except Exception:
+                first = ""
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            path.rename(path.with_name(path.stem + f"_old_{ts}" + path.suffix))
+        with path.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(header)
+
     def _log_trade_row(self, row: dict) -> None:
         fname = self.trades_dir / f"trades_{datetime.now(timezone.utc):%Y%m%d}.csv"
-        new_file = not fname.exists()
+        self._ensure_trade_header(fname)
         with fname.open("a", newline="", encoding="utf-8") as f:
             import csv as _csv
-            w = _csv.DictWriter(f, fieldnames=[
-                "ts","market_id","market_type","selection_id","course_id",
-                "side","price_req","size_req","liability","strategy","status","reason"
-            ])
-            if new_file:
-                w.writeheader()
+            w = _csv.DictWriter(f, fieldnames=self.TRADE_HEADER)
             w.writerow(row)
 
     def _extract_catalogue_info(self, mie: Any, md: Any) -> Dict[str, Any]:
