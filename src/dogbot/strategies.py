@@ -53,6 +53,9 @@ class RunnerCtx:
     bl: Optional[float] = None           # best lay price at tick
     region: Optional[str] = None         # 'UK' or 'ROW'
     winbet: Optional[float] = None
+    place_theo: Optional[float] = None
+    ev_place: Optional[float] = None
+    bsp_place: Optional[float] = None
 
 # Result of a fired slot (sizing already computed)
 @dataclass
@@ -81,8 +84,27 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return str(raw).strip().lower() in ("1","true","yes","y","on")
 
 def _pick_bounds_price(ctx: RunnerCtx, pref: str) -> Optional[float]:
-    if pref.upper() == "BASE":
+    pref = pref.upper()
+    if pref == "WINBET":
+        # WINBET = canonical WIN price hierarchy already computed by executor: WINPROB -> MOYLTP -> LTP -> BEST_BACK
+        if ctx.winbet and ctx.winbet > 1.0:
+            return ctx.winbet
+        if ctx.base_win and ctx.base_win > 1.0:
+            return ctx.base_win
+        if ctx.ltp and ctx.ltp > 1.0:
+            return ctx.ltp
+        return None
+    if pref == "PLACE_BSP_THEN_LTP":
+        # PLACE_BSP_THEN_LTP = BSP_PLACE if available, else LTP_PLACE; used only for PLACE market price bucket selection.
+        if ctx.bsp_place and ctx.bsp_place > 1.0:
+            return ctx.bsp_place
+        if ctx.ltp and ctx.ltp > 1.0:
+            return ctx.ltp
+        return None
+    if pref == "BASE":
         return ctx.base_win if ctx.base_win and ctx.base_win > 1.0 else None
+    if pref == "LTP":
+        return ctx.ltp if ctx.ltp and ctx.ltp > 1.0 else None
     return ctx.ltp if ctx.ltp and ctx.ltp > 1.0 else None
 
 def _choose_limit_price(side: Side, style: LimitStyle, ctx: RunnerCtx) -> Optional[float]:
@@ -553,6 +575,12 @@ def build_registry() -> List[Slot]:
     ))
 
     # You can append more slots here…
+    # Append PLACE EV systems
+    register_ev_place_uk(slots)
+    register_ev_place_row(slots)
+    register_placelay_row(slots)
+    register_placelay_uk(slots)
+
     # Append WIN LAY ROW (EV_PLACE) systems
     register_winlay_row_ev(slots)
     # Append WIN BACK ROW (EV_PLACE) systems

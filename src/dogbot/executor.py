@@ -277,6 +277,11 @@ class Executor:
 
         # Cache PLACETHEORIQUE -> duplication PLACE
         self._last_place_theo_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
+        self._last_base_win_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
+        self._last_ev_place_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
+        self._last_rank_ltp_by_market: Dict[str, Dict[int, int]] = defaultdict(dict)
+        self._last_rank_back_by_market: Dict[str, Dict[int, int]] = defaultdict(dict)
+        self._last_mom45_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
 
         # Cache TRAP & GAP by race (shared between WIN/PLACE)
         self._trap_by_race: dict[tuple[str,int], int] = {}
@@ -530,18 +535,22 @@ class Executor:
                            runners, rank_ltp: Dict[int,int], rank_back: Dict[int,int]) -> None:
         market_id = str(getattr(book, "market_id", ""))
         n_active = _active_count(runners)
-        n_places = (_num_winners(getattr(book, "market_definition", None))
+        md = getattr(book, "market_definition", None)
+        n_places = (_num_winners(md)
                     or (3 if n_active >= 8 else 2))
 
         meta_by_sid: Dict[int, RunnerMeta] = info.get("meta_by_sid", {}) or {}
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
         mie_current = getattr(self.market_index, "get", lambda _:_)(market_id)
-        win_id, place_id = self._resolve_link_ids(market_id, mie_current, getattr(book,"market_definition",None), market_type)
+        win_id, place_id = self._resolve_link_ids(market_id, mie_current, md, market_type)
 
         is_win  = (market_type == "WIN")
         is_place = (market_type == "PLACE")
         race_key = (win_id or place_id or market_id)
+        country_code = info.get("country_code") or getattr(md, "country_code", None) or getattr(md, "countryCode", None)
+        country_code = str(country_code).upper() if country_code else ""
+        region = "UK" if country_code in ("GB", "IE") else "ROW"
 
 
         # GOR map at T-2s on WIN: ratio of next favourite's price / current price
@@ -683,6 +692,8 @@ class Executor:
 
             rk_ltp = rank_ltp.get(sid)
             rk_bb  = rank_back.get(sid)
+            linked_rank_ltp = self._last_rank_ltp_by_market.get(str(win_id), {}).get(sid) if (is_place and win_id) else None
+            linked_rank_back = self._last_rank_back_by_market.get(str(win_id), {}).get(sid) if (is_place and win_id) else None
             implied = (1.0 / (bb or lpt)) if (bb or lpt) else None
 
             bsp_win = cache[sid].get("BSP_WIN") if is_win else None
@@ -692,10 +703,18 @@ class Executor:
 
             winprob = cache[sid].get("WINPROB") if is_win else None
             base_win = cache[sid].get("BASE_WIN") if is_win else None
+            linked_winbet = None
+            if is_place and win_id:
+                linked_winbet = self._last_base_win_by_market.get(str(win_id), {}).get(sid)
 
             # Milestones:
             if is_win and base_win is not None:
                 self._base_win_ms[market_id][sid][milestone] = float(base_win)
+                self._last_base_win_by_market[str(win_id or market_id)][sid] = float(base_win)
+            if is_win and rk_ltp is not None:
+                self._last_rank_ltp_by_market[str(win_id or market_id)][sid] = int(rk_ltp)
+            if is_win and rk_bb is not None:
+                self._last_rank_back_by_market[str(win_id or market_id)][sid] = int(rk_bb)
             if is_place and lpt is not None:
                 self._ltp_place_ms[market_id][sid][milestone] = float(lpt)
 
@@ -718,6 +737,9 @@ class Executor:
             mom80  = ratio(base_2,  base_80)  if is_win else None
             mom150 = ratio(base_2,  base_150) if is_win else None
             mom300 = ratio(base_2,  base_300) if is_win else None
+            if is_win and mom45 is not None:
+                self._last_mom45_by_market[str(win_id or market_id)][sid] = float(mom45)
+            linked_mom45 = self._last_mom45_by_market.get(str(win_id), {}).get(sid) if (is_place and win_id) else None
 
             # deltas/vol (info) sur LTP côté WIN
             d5 = d30 = vol = None
@@ -749,6 +771,7 @@ class Executor:
                 cached = self._last_place_theo_by_market.get(str(win_id))
                 if cached is not None:
                     place_theo_place = cached.get(sid)
+            place_theo_ctx = place_theo_win if is_win else place_theo_place
 
             # Milestones PLACE LTP
             def _get_place(ms):
@@ -767,6 +790,22 @@ class Executor:
                     mom45p = (ltp_2_p / ltp_45_p) - 1.0
                 except Exception:
                     mom45p = None
+
+            # EV_PLACE uses PLACE_BSP_THEN_LTP semantics: BSP_PLACE if available, else LTP_PLACE.
+            place_price_for_ev = None
+            if is_place and bsp_place is not None and bsp_place > 1.0:
+                place_price_for_ev = bsp_place
+            elif is_place and lpt is not None and lpt > 1.0:
+                place_price_for_ev = lpt
+
+            if place_theo_place is not None and place_theo_place > 1.0 and place_price_for_ev is not None:
+                ev_place = (float(place_price_for_ev) / float(place_theo_place)) - 1.0
+            else:
+                ev_place = None
+            if is_place and ev_place is not None:
+                self._last_ev_place_by_market[str(place_id or market_id)][sid] = float(ev_place)
+            linked_ev_place = self._last_ev_place_by_market.get(str(place_id), {}).get(sid) if (is_win and place_id) else None
+            ev_place_ctx = linked_ev_place if is_win else ev_place
 
             # GOR & gap bins (@ WIN T-2s) and duplicate to PLACE from cache
             gapmin = gapmax = None
@@ -852,7 +891,7 @@ class Executor:
                 (sp_av_place if is_place else None),
                 (((bsp_place + lpt)/2.0) if (is_place and bsp_place is not None and lpt is not None) else None),
                 (place_theo_place if is_place else None),
-                (((float(bsp_place) / float(place_theo_place)) - 1.0) if (is_place and (bsp_place is not None) and (place_theo_place is not None) and (place_theo_place > 0)) else None),
+                ev_place,
                 (ltp_300_p if is_place else None),
                 (ltp_150_p if is_place else None),
                 (ltp_80_p  if is_place else None),
@@ -883,12 +922,12 @@ class Executor:
                         ltp=float(ltp_val),
                         milestone=milestone,                           # jalon courant
                         secs_to_off=float(tto) if tto is not None else None,
-                        # enrich
+                        # RunnerCtx fields below mirror CSV features used by strategies.
                         trap=(int(trap) if trap is not None else None),
-                        fav_rank_ltp=(rk_ltp if is_win else None),
-                        fav_rank_back=(rk_bb if is_win else None),
-                        gor=(gor_val if (is_win and milestone == 2) else None),
-                        mom45=(mom45 if is_win else None),
+                        fav_rank_ltp=(rk_ltp if is_win else linked_rank_ltp),
+                        fav_rank_back=(rk_bb if is_win else linked_rank_back),
+                        gor=gor_val,
+                        mom45=(mom45 if is_win else linked_mom45),
                         mom45_place=(mom45p if is_place else None),
                         d5=(d5 if is_win else None),
                         d30=(d30 if is_win else None),
@@ -896,6 +935,11 @@ class Executor:
                         base_win=(base_win if is_win else None),
                         bb=bb,
                         bl=bl,
+                        region=region,
+                        winbet=(base_win if is_win else linked_winbet),
+                        place_theo=place_theo_ctx,
+                        ev_place=ev_place_ctx,
+                        bsp_place=(bsp_place if is_place else None),
                     )
                     for slot in self.strategy_registry:
                         # Bet per market (par slot)
@@ -954,8 +998,10 @@ class Executor:
                                 })
                             else:
                                 # Sélection du mode d'exécution selon le slot
+                                # Use res.exec_mode because HYB resolves to an effective execution mode in try_fire_slot().
+                                exec_mode = res.exec_mode
                                 orr = None
-                                if slot.exec_mode == ExecMode.LIMIT_LTP:
+                                if exec_mode == ExecMode.LIMIT_LTP:
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
                                     orr = self.order_executor.place_limit(
                                         market_id=market_id,
@@ -969,7 +1015,7 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif slot.exec_mode == ExecMode.SP_MOC:
+                                elif exec_mode == ExecMode.SP_MOC:
                                     # BACK: size = stake ; LAY: size_or_liability = liability
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
@@ -983,9 +1029,12 @@ class Executor:
                                         retries=int(os.getenv("ORDER_RETRIES", "2")),
                                         backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
                                     )
-                                elif slot.exec_mode == ExecMode.SP_LOC:
+                                elif exec_mode == ExecMode.SP_LOC:
                                     # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
-                                    sp_lim = float(slot.sp_limit if slot.sp_limit is not None else (res.price or 0.0))
+                                    sp_lim = res.sp_limit if res.sp_limit is not None else slot.sp_limit
+                                    if sp_lim is None:
+                                        sp_lim = res.price
+                                    sp_lim = float(sp_lim)
                                     qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
                                     idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
                                     orr = self.order_executor.place_sp_limit_on_close(
