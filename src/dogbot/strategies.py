@@ -204,8 +204,7 @@ _DIAG_HEADERS = [
 ]
 
 def _diag_enabled(slot_tag: str, ctx: RunnerCtx) -> bool:
-    # Active par défaut pour LAY_WIN_1, à T−2s uniquement (évite le spam)
-    env = os.getenv("DIAG_SLOTS", "LAY_WIN_1")
+    env = os.getenv("DIAG_SLOTS", "")
     tags = [t.strip() for t in env.split(",") if t.strip()]
     if slot_tag not in tags and "ALL" not in [t.upper() for t in tags]:
         return False
@@ -490,8 +489,8 @@ class Slot:
     tag: Optional[str] = None            # computed automatically if None
 
     # Staking params
-    edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_1)
-    max_runner_stake_env: Optional[str] = None  # cap per runner env (e.g. MAX_RUNNER_STAKE_LAY_WIN_1)
+    edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_401)
+    max_runner_stake_env: Optional[str] = None  # cap per runner env (e.g. MAX_RUNNER_STAKE_LAY_WIN_401)
 
     def __post_init__(self):
         if self.tag is None:
@@ -502,77 +501,6 @@ class Slot:
 
 def build_registry() -> List[Slot]:
     slots: List[Slot] = []
-
-    # --- System 1: LAY WIN — Trap=8, price(BASE) in [1.5, 50], fav-rank/LTP & GOR conditions @ T−2s ---
-    def cond_lay_win_1(ctx: RunnerCtx) -> bool:
-        if ctx.market_type.upper() != "WIN":
-            return False
-        if ctx.milestone != 2:
-            return False
-        if ctx.trap != 8:
-            return False
-        # Use WINBET as the canonical WIN price for strategy conditions
-        win_price = ctx.winbet if (ctx.winbet and ctx.winbet > 1.0) else None
-        if win_price is None or not (1.5 <= win_price <= 50.0):
-            return False
-            return False
-        r = ctx.fav_rank_ltp
-        if r is None:
-            return False
-        if r not in (1,5,8):
-            return True
-        if r == 5 and (ctx.gor is not None) and (ctx.gor <= 1.7):
-            return True
-        if r == 1 and (ctx.gor is not None) and (ctx.gor >= 1.1):
-            return True
-        return False
-
-    slots.append(Slot(
-        family="LAY_WIN",
-        slot=1,
-        side=Side.LAY,
-        condition=cond_lay_win_1,
-        exec_mode=ExecMode.HYB,                 # HYB rules via hybrid_policy.json
-        limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="BASE",
-        bet_per_market=True,
-        edge_env="EDGE_LAY_WIN_1",
-        max_runner_stake_env="MAX_RUNNER_STAKE_LAY_WIN_1",
-    ))
-
-    # --- System 2: LAY PLACE — Trap=8, LTP_PLACE in [3, 40], (rank != 5) or (rank == 5 and GOR < 1.75) @ T−2s ---
-    def cond_lay_place_1(ctx: RunnerCtx) -> bool:
-        if ctx.market_type.upper() != "PLACE":
-            return False
-        if ctx.milestone != 2:
-            return False
-        if ctx.trap != 8:
-            return False
-        # Bornes sur LTP PLACE (demande utilisateur)
-        bounds_price = _pick_bounds_price(ctx, "LTP")
-        if bounds_price is None or not (3.0 <= bounds_price <= 40.0):
-            return False
-        # Fav rank par LTP (réutilisé depuis WIN via cache côté executor)
-        r = ctx.fav_rank_ltp
-        if r is None:
-            return False
-        if r != 5:
-            return True
-        # r == 5 -> contrainte GOR
-        return (ctx.gor is not None) and (ctx.gor < 1.75)
-
-    slots.append(Slot(
-        family="LAY_PLACE",
-        slot=1,
-        side=Side.LAY,
-        condition=cond_lay_place_1,
-        exec_mode=ExecMode.HYB,                 # HYB + fallback SP_MOC si LIMIT impossible
-        limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="LTP",                 # bornes sur LTP_PLACE
-        bet_per_market=True,
-        edge_env="EDGE_LAY_PLACE_1",
-        max_runner_stake_env="MAX_RUNNER_STAKE_LAY_PLACE_1",
-    ))
 
     # You can append more slots here…
     # Append PLACE EV systems
@@ -585,8 +513,6 @@ def build_registry() -> List[Slot]:
     register_winlay_row_ev(slots)
     # Append WIN BACK ROW (EV_PLACE) systems
     register_winback_row_ev(slots)
-    # Append UK WIN momentum systems
-    register_mom_win_uk(slots)
 
 
 
@@ -911,107 +837,3 @@ def register_winback_row_ev(registry: List[Slot]):
         max_runner_stake_env="MAX_RUNNER_STAKE_EV3_WINBACK_ROW",
     ))
 
-
-# ================= WIN (UK) momentum systems — HYB =================
-
-def _win_price_ok(p: Optional[float], lo: float, hi: float) -> bool:
-    return (p is not None and p >= lo and p < hi)
-
-def _mom_ok(m: Optional[float], lo: Optional[float] = None, hi: Optional[float] = None) -> bool:
-    if m is None:
-        return False
-    if lo is not None and not (m > lo):
-        return False
-    if hi is not None and not (m < hi):
-        return False
-    return True
-
-# BACK WIN — UK
-def cond_mom_winback_uk_1(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 2.8, 4.5) and _mom_ok(getattr(ctx, "mom45", None), lo=0.15)
-
-def cond_mom_winback_uk_2(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 4.5, 7.0) and _mom_ok(getattr(ctx, "mom45", None), lo=0.20)
-
-def cond_mom_winback_uk_3(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 7.0, 50.0) and _mom_ok(getattr(ctx, "mom45", None), lo=0.20)
-
-# LAY WIN — UK
-def cond_mom_winlay_uk_1(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 2.8, 4.5) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.15)
-
-def cond_mom_winlay_uk_2(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 4.5, 7.0) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.20)
-
-def cond_mom_winlay_uk_3(ctx: RunnerCtx) -> bool:
-    if ctx.market_type.upper() != "WIN" or ctx.milestone != 2 or getattr(ctx, "region", None) != "UK":
-        return False
-    return _win_price_ok(getattr(ctx, "winbet", None), 7.0, 50.0) and _mom_ok(getattr(ctx, "mom45", None), hi=-0.20)
-
-def register_mom_win_uk(registry: List[Slot]):
-    # BACK — edges
-    registry.append(Slot(
-        family="BACK_WIN", slot=421, side=Side.BACK,
-        condition=cond_mom_winback_uk_1,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINBACKUK_1",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_1",
-    ))
-    registry.append(Slot(
-        family="BACK_WIN", slot=422, side=Side.BACK,
-        condition=cond_mom_winback_uk_2,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINBACKUK_2",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_2",
-    ))
-    registry.append(Slot(
-        family="BACK_WIN", slot=423, side=Side.BACK,
-        condition=cond_mom_winback_uk_3,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINBACKUK_3",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINBACKUK_3",
-    ))
-    # LAY — edges
-    registry.append(Slot(
-        family="LAY_WIN", slot=431, side=Side.LAY,
-        condition=cond_mom_winlay_uk_1,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINLAYUK_1",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_1",
-    ))
-    registry.append(Slot(
-        family="LAY_WIN", slot=432, side=Side.LAY,
-        condition=cond_mom_winlay_uk_2,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINLAYUK_2",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_2",
-    ))
-    registry.append(Slot(
-        family="LAY_WIN", slot=433, side=Side.LAY,
-        condition=cond_mom_winlay_uk_3,
-        exec_mode=ExecMode.HYB, limit_style=LimitStyle.AGGRESSIVE,
-        price_for_bounds="WINBET",
-        bet_per_market=False,
-        edge_env="EDGE_MOMWINLAYUK_3",
-        max_runner_stake_env="MAX_RUNNER_STAKE_MOMWINLAYUK_3",
-    ))
