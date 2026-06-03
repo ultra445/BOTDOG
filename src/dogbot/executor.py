@@ -1125,8 +1125,7 @@ class Executor:
                         if not res:
                             continue
 
-                        status = "DRYRUN" if self.dry_run else "LIVE"
-                        self._log_trade_row({
+                        trade_base = {
                             "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
                             "market_id": market_id,
                             "market_type": (market_type or ""),
@@ -1142,106 +1141,111 @@ class Executor:
                             "strategy_region": getattr(slot, "strategy_region", None),
                             "strategy_signal": getattr(slot, "strategy_signal", None),
                             "strategy_bucket": getattr(slot, "strategy_bucket", None),
-                            "status": status,
-                            "reason": res.reason,
-                        })
+                        }
+
+                        if self.dry_run:
+                            self._log_trade_row({**trade_base, "status": "DRYRUN", "reason": res.reason})
+                            # marquer ce slot comme "dÃ©jÃ  pariÃ©" sur ce marchÃ© si bet_per_market
+                            if getattr(slot, "bet_per_market", False):
+                                self._slot_market_fired.add(key)
+                            continue
+
+                        self._log_trade_row({**trade_base, "status": "LIVE_INTENT", "reason": res.reason})
+                        print(f"[LIVE_INTENT] {market_id} sid={sid} strategy={slot.tag} side={slot.side.value} price={res.price} size={res.size}")
 
                         # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
                         if getattr(slot, "bet_per_market", False):
                             self._slot_market_fired.add(key)
 
-                        # ---- LIVE : place_orders sécurisé ----
-                        if not self.dry_run:
-                            can, reason = self.exposure.can_place(
+                        can, reason = self.exposure.can_place(
+                            Side(slot.side.value),
+                            market_id=market_id,
+                            selection_id=int(sid),
+                            planned_stake=float(res.size),
+                            planned_liability=float(res.liability or 0.0),
+                        )
+                        if not can:
+                            self._log_trade_row({**trade_base, "status": "LIVE_BLOCKED", "reason": reason})
+                            print(f"[LIVE_BLOCKED] {market_id} sid={sid} strategy={slot.tag} reason={reason}")
+                            continue
+
+                        exec_mode = res.exec_mode
+                        orr = None
+                        try:
+                            if exec_mode == ExecMode.LIMIT_LTP:
+                                idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
+                                orr = self.order_executor.place_limit(
+                                    market_id=market_id,
+                                    selection_id=int(sid),
+                                    side=slot.side.value,
+                                    price=float(res.price),
+                                    size=float(res.size),
+                                    strategy=slot.tag,
+                                    persistence=os.getenv("PERSISTENCE", "LAPSE"),
+                                    idem_key=idem_key,
+                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                )
+                            elif exec_mode == ExecMode.SP_MOC:
+                                qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
+                                idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
+                                orr = self.order_executor.place_sp_market_on_close(
+                                    market_id=market_id,
+                                    selection_id=int(sid),
+                                    side=slot.side.value,
+                                    size_or_liability=qty,
+                                    strategy=slot.tag,
+                                    idem_key=idem_key,
+                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                )
+                            elif exec_mode == ExecMode.SP_LOC:
+                                sp_lim = res.sp_limit if res.sp_limit is not None else slot.sp_limit
+                                if sp_lim is None:
+                                    sp_lim = res.price
+                                sp_lim = float(sp_lim)
+                                qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
+                                idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
+                                orr = self.order_executor.place_sp_limit_on_close(
+                                    market_id=market_id,
+                                    selection_id=int(sid),
+                                    side=slot.side.value,
+                                    size_or_liability=qty,
+                                    sp_limit_price=sp_lim,
+                                    strategy=slot.tag,
+                                    idem_key=idem_key,
+                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                                )
+                            else:
+                                raise ValueError(f"unsupported_exec_mode={exec_mode!r}")
+                        except Exception as e:
+                            reject_reason = f"order_exception={e!r}"
+                            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": reject_reason})
+                            self._log_strategy_error(market_id, sid, reject_reason)
+                            print(f"[LIVE_REJECTED] {market_id} sid={sid} strategy={slot.tag} reason={reject_reason}")
+                            continue
+
+                        order_reason = self._order_result_reason(orr)
+                        order_status = getattr(orr, "status", None) if orr is not None else None
+                        if order_status == "IDEMPOTENT_SKIPPED":
+                            self._log_trade_row({**trade_base, "status": "LIVE_SKIPPED", "reason": "IDEMPOTENT_SKIPPED"})
+                            print(f"[LIVE_SKIPPED] {market_id} sid={sid} strategy={slot.tag} reason=IDEMPOTENT_SKIPPED")
+                        elif orr and getattr(orr, "ok", False):
+                            self._log_trade_row({**trade_base, "status": "LIVE_PLACED", "reason": order_reason})
+                            print(f"[LIVE_PLACED] {market_id} sid={sid} strategy={slot.tag} reason={order_reason}")
+                            self.exposure.on_placed(
                                 Side(slot.side.value),
                                 market_id=market_id,
                                 selection_id=int(sid),
-                                planned_stake=float(res.size),
-                                planned_liability=float(res.liability or 0.0),
+                                stake=float(res.size),
+                                liability=float(res.liability or 0.0),
                             )
-                            if not can:
-                                # trace claire d’un blocage live
-                                self._log_trade_row({
-                                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                                    "market_id": market_id,
-                                    "market_type": (market_type or ""),
-                                    "selection_id": int(sid),
-                                    "course_id": str(course_id),
-                                    "side": slot.side.value,
-                                    "price_req": res.price,
-                                    "size_req": res.size,
-                                    "liability": round(res.liability or 0.0, 2),
-                                    "strategy": slot.tag,
-                                    "market_family": getattr(slot, "market_family", None),
-                                    "strategy_group": getattr(slot, "strategy_group", None),
-                                    "strategy_region": getattr(slot, "strategy_region", None),
-                                    "strategy_signal": getattr(slot, "strategy_signal", None),
-                                    "strategy_bucket": getattr(slot, "strategy_bucket", None),
-                                    "status": "LIVE_BLOCKED",
-                                    "reason": reason,
-                                })
-                            else:
-                                # Sélection du mode d'exécution selon le slot
-                                # Use res.exec_mode because HYB resolves to an effective execution mode in try_fire_slot().
-                                exec_mode = res.exec_mode
-                                orr = None
-                                if exec_mode == ExecMode.LIMIT_LTP:
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
-                                    orr = self.order_executor.place_limit(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        price=float(res.price),
-                                        size=float(res.size),
-                                        strategy=slot.tag,
-                                        persistence=os.getenv("PERSISTENCE", "LAPSE"),
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-                                elif exec_mode == ExecMode.SP_MOC:
-                                    # BACK: size = stake ; LAY: size_or_liability = liability
-                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
-                                    orr = self.order_executor.place_sp_market_on_close(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        size_or_liability=qty,
-                                        strategy=slot.tag,
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-                                elif exec_mode == ExecMode.SP_LOC:
-                                    # LIMIT_ON_CLOSE : BACK=min SP ; LAY=max SP
-                                    sp_lim = res.sp_limit if res.sp_limit is not None else slot.sp_limit
-                                    if sp_lim is None:
-                                        sp_lim = res.price
-                                    sp_lim = float(sp_lim)
-                                    qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                    idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
-                                    orr = self.order_executor.place_sp_limit_on_close(
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        side=slot.side.value,
-                                        size_or_liability=qty,
-                                        sp_limit_price=sp_lim,
-                                        strategy=slot.tag,
-                                        idem_key=idem_key,
-                                        retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                        backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                    )
-
-                                if orr and orr.ok:
-                                    # Réserve l’exposition (stake pour BACK, liability pour LAY)
-                                    self.exposure.on_placed(
-                                        Side(slot.side.value),
-                                        market_id=market_id,
-                                        selection_id=int(sid),
-                                        stake=float(res.size),
-                                        liability=float(res.liability or 0.0),
-                                    )
+                        else:
+                            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": order_reason})
+                            self._log_strategy_error(market_id, sid, order_reason)
+                            print(f"[LIVE_REJECTED] {market_id} sid={sid} strategy={slot.tag} reason={order_reason}")
+                        continue
 
                     self._log_strategy_eval_summary_row(ctx, runner_name, slots_tested, true_tags, error_count)
 
@@ -1272,6 +1276,26 @@ class Executor:
             import csv as _csv
             w = _csv.DictWriter(f, fieldnames=self.TRADE_HEADER)
             w.writerow(row)
+
+    def _order_result_reason(self, orr: Any) -> str:
+        if orr is None:
+            return "order_result_missing"
+        parts = []
+        for name in ("bet_id", "order_id", "status", "error_code", "message"):
+            try:
+                value = getattr(orr, name, None)
+            except Exception:
+                value = None
+            if value not in (None, ""):
+                parts.append(f"{name}={value}")
+        if not parts:
+            parts.append(repr(orr))
+        return " ".join(parts)
+
+    def _log_strategy_error(self, market_id: str, sid: Any, err: Any) -> None:
+        fname = self.data_dir / f"strategy_errors_{datetime.now(timezone.utc):%Y%m%d}.log"
+        with fname.open("a", encoding="utf-8") as f:
+            f.write(f"{_now_utc_iso()} market_id={market_id} sid={sid} err={err!r}\n")
 
     def _extract_catalogue_info(self, mie: Any, md: Any) -> Dict[str, Any]:
         info: Dict[str, Any] = {

@@ -95,7 +95,7 @@ class OrderExecutor:
         idem_key = idem_key or self._mk_idem_key(market_id, selection_id, side, price, size, strategy)
         if idem_key in self._idem:
             # Idempotence: on ne replace pas le même ordre
-            return OrderResult(True, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
+            return OrderResult(False, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
 
         self._throttle_wait()
 
@@ -143,7 +143,7 @@ class OrderExecutor:
         """
         idem_key = idem_key or f"{market_id}:{selection_id}:{side}:SP_MOC:{round(size_or_liability,2)}:{strategy}"
         if idem_key in self._idem:
-            return OrderResult(True, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
+            return OrderResult(False, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
 
         self._throttle_wait()
 
@@ -190,7 +190,7 @@ class OrderExecutor:
         """
         idem_key = idem_key or f"{market_id}:{selection_id}:{side}:SP_LOC:{round(sp_limit_price,2)}:{round(size_or_liability,2)}:{strategy}"
         if idem_key in self._idem:
-            return OrderResult(True, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
+            return OrderResult(False, "IDEMPOTENT_SKIPPED", None, 0.0, None, None, None)
 
         self._throttle_wait()
 
