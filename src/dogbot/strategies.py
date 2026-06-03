@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Dict, Any
 import os
+import inspect
 from pathlib import Path
 from datetime import datetime, timezone
 import csv
@@ -156,23 +157,44 @@ def _hyb_decide(ctx: RunnerCtx, slot: Slot) -> Dict[str, Any]:
 def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, max_runner_cap: Optional[float]) -> StakingResult:
     # Call into staking engine if possible; otherwise do a safe fallback
     if hasattr(staking_engine, "quote"):
-        return staking_engine.quote(side, price, edge, max_runner_cap=max_runner_cap)
+        try:
+            return staking_engine.quote(side, price, edge, max_runner_cap=max_runner_cap)
+        except TypeError:
+            pass
     if hasattr(staking_engine, "compute"):
-        return staking_engine.compute(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
+        try:
+            sig = inspect.signature(staking_engine.compute)
+            required = [
+                p for p in sig.parameters.values()
+                if p.default is inspect.Signature.empty
+                and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+            if len(required) <= 3:
+                return staking_engine.compute(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
+        except (TypeError, ValueError):
+            pass
     if hasattr(staking_engine, "size_for"):
-        r = staking_engine.size_for(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
-        if isinstance(r, StakingResult):
-            return r
+        try:
+            r = staking_engine.size_for(side, price, edge, max_runner_cap=max_runner_cap)  # type: ignore
+            if isinstance(r, StakingResult):
+                return r
+        except TypeError:
+            pass
 
     # Fallback: basic proportional model (capital * edge) with sane floors/caps handled in staking engine absent
     capital = _env_float("CAPITAL", 1000.0)
     base = max(0.0, capital * max(0.0, edge))
     if side == Side.BACK:
         stake = base / max(1.01, price)
+        if max_runner_cap is not None:
+            stake = min(stake, max_runner_cap)
         return StakingResult(ok=True, price=price, size=round(stake, 2), liability=None, reason="fallback")
     else:
         liability = base
         stake = liability / max(0.01, price - 1.0)
+        if max_runner_cap is not None:
+            stake = min(stake, max_runner_cap)
+            liability = stake * max(0.01, price - 1.0)
         return StakingResult(ok=True, price=price, size=round(stake, 2), liability=round(liability, 2), reason="fallback")
 
 
@@ -317,23 +339,44 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
         return None
 
     # Choose the actual order price
+    theo_limit_order = False
     if mode == ExecMode.LIMIT_LTP:
         # Priority: explicit limit price from hybrid policy ("CROSS"|"MID"|"OWN")
         order_price: Optional[float] = None
         lp_key = str(decision.get("limit_price", "")).upper() if decision else ""
-        if lp_key == "CROSS":
-            # BACK at best LAY; LAY at best BACK
-            order_price = (ctx.bl if slot.side == Side.BACK else ctx.bb)
-        elif lp_key == "OWN":
-            # BACK at best BACK; LAY at best LAY (post our side)
-            order_price = (ctx.bb if slot.side == Side.BACK else ctx.bl)
-        elif lp_key == "MID":
-            if ctx.bb is not None and ctx.bl is not None:
-                order_price = (ctx.bb + ctx.bl) / 2.0
+        if slot.sp_limit_fn is not None:
+            if sp_limit is None or sp_limit <= 1.0:
+                if do_diag:
+                    _diag_write(slot.tag, {
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                        "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                        "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                        "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                        "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                        "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                        "cond_pass": True,
+                        "exec_mode": mode, "limit_price_choice": "THEO_LIMIT",
+                        "order_price": None, "edge": None, "max_runner_cap": None,
+                        "stake": None, "liability": None, "reason": "no_theo_limit_price", "note": ""
+                    })
+                return None
+            order_price = float(sp_limit)
+            lp_key = "THEO_LIMIT"
+            theo_limit_order = True
+        else:
+            if lp_key == "CROSS":
+                # BACK at best LAY; LAY at best BACK
+                order_price = (ctx.bl if slot.side == Side.BACK else ctx.bb)
+            elif lp_key == "OWN":
+                # BACK at best BACK; LAY at best LAY (post our side)
+                order_price = (ctx.bb if slot.side == Side.BACK else ctx.bl)
+            elif lp_key == "MID":
+                if ctx.bb is not None and ctx.bl is not None:
+                    order_price = (ctx.bb + ctx.bl) / 2.0
 
-        # Fallback to style-based logic
-        if order_price is None:
-            order_price = _choose_limit_price(slot.side, limit_style, ctx)
+            # Fallback to style-based logic
+            if order_price is None:
+                order_price = _choose_limit_price(slot.side, limit_style, ctx)
 
         # --- HYB fallback: if still None, optionally switch to SP_MOC (BSP) ---
         if order_price is None:
@@ -445,6 +488,8 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
             })
         return None
 
+    fire_price = float(order_price) if theo_limit_order else float(getattr(sr, "price", order_price))
+
     # Success path
     if do_diag:
         _diag_write(slot.tag, {
@@ -455,14 +500,14 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
             "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
             "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
             "cond_pass": True,
-            "exec_mode": mode, "limit_price_choice": decision.get("limit_price"),
-            "order_price": getattr(sr, "price", order_price), "edge": edge, "max_runner_cap": max_runner_cap,
+            "exec_mode": mode, "limit_price_choice": ("THEO_LIMIT" if theo_limit_order else decision.get("limit_price")),
+            "order_price": fire_price, "edge": edge, "max_runner_cap": max_runner_cap,
             "stake": getattr(sr, "size", None), "liability": getattr(sr, "liability", None),
             "reason": getattr(sr, "reason", "ok"), "note": "ok"
         })
 
     reason = f"cond_ok edge={edge} bounds_price={round(bounds_price,2)}"
-    return FireResult(price=float(getattr(sr, "price", order_price)),
+    return FireResult(price=fire_price,
                       size=float(getattr(sr, "size", 0.0)),
                       liability=getattr(sr, "liability", None),
                       reason=reason,
@@ -551,14 +596,21 @@ def _lim_from_place_theo(ctx: RunnerCtx, factor: float):
 def _price_place(ctx: RunnerCtx):
     return _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
 
+def _place_theo_ok(ctx: RunnerCtx) -> bool:
+    theo = getattr(ctx, "place_theo", None)
+    try:
+        return theo is not None and float(theo) > 1.0
+    except Exception:
+        return False
+
 def cond_ev1_place_uk(ctx: RunnerCtx) -> bool:
-    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
 
 def cond_ev2_place_uk(ctx: RunnerCtx) -> bool:
-    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and p >= 3.0)(_price_place(ctx)))
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and p >= 3.0)(_price_place(ctx)))
 
 def cond_ev1bis_place_uk(ctx: RunnerCtx) -> bool:
-    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_price_place(ctx)))
 
 def register_ev_place_uk(registry: List[Slot]):
     registry.append(Slot(
@@ -590,7 +642,7 @@ def register_ev_place_uk(registry: List[Slot]):
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=104, side=Side.BACK,
-        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (lambda p: p is not None and 3.0 <= p < 7.0)(_price_place(ctx))),
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and 3.0 <= p < 7.0)(_price_place(ctx))),
         exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_BACK_UK", strategy_region="UK",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_7.0",
@@ -606,15 +658,15 @@ def _row_only(ctx: RunnerCtx) -> bool:
 
 def cond_ev1_place_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 1.3 <= p < 3.0))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 1.3 <= p < 3.0))
 
 def cond_ev2_place_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 3.0 <= p < 4.8))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 3.0 <= p < 4.8))
 
 def cond_ev3_place_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and p >= 4.8))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and p >= 4.8))
 
 def register_ev_place_row(registry: List[Slot]):
     registry.append(Slot(
@@ -646,7 +698,7 @@ def register_ev_place_row(registry: List[Slot]):
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=204, side=Side.BACK,
-        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and 1.3 <= p < 3.0)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
         exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_BACK_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_1.3_3.0",
@@ -655,7 +707,7 @@ def register_ev_place_row(registry: List[Slot]):
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=205, side=Side.BACK,
-        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and 3.0 <= p < 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and 3.0 <= p < 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
         exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_BACK_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_4.8",
@@ -664,7 +716,7 @@ def register_ev_place_row(registry: List[Slot]):
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=206, side=Side.BACK,
-        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (lambda p: p is not None and p >= 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
+        condition=lambda ctx: (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (lambda p: p is not None and p >= 4.8)(_pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP"))),
         exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_BACK_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_4.8_PLUS",
@@ -688,23 +740,23 @@ def _lim_lay_from_place_theo(ctx: RunnerCtx, factor: float):
 # --- ROW LAY ---
 def cond_ev1_placelay_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 1.05 <= p < 3.0))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 1.05 <= p < 3.0))
 
 def cond_ev2_placelay_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 3.0 <= p < 4.8))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 3.0 <= p < 4.8))
 
 def cond_ev3_placelay_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 4.8 <= p < 7.0))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 4.8 <= p < 7.0))
 
 def cond_ev4_placelay_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and 7.0 <= p < 15.0))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and 7.0 <= p < 15.0))
 
 def cond_ev5_placelay_row(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and (p is not None and p >= 15.0))
+    return (ctx.market_type.upper() == "PLACE" and _row_only(ctx) and _place_theo_ok(ctx) and (p is not None and p >= 15.0))
 
 def register_placelay_row(registry: List[Slot]):
     registry.append(Slot(family="LAY_PLACE", slot=301, side=Side.LAY,
@@ -741,7 +793,7 @@ def register_placelay_row(registry: List[Slot]):
 # --- UK LAY ---
 def cond_ev1_placelay_uk(ctx: RunnerCtx) -> bool:
     p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and (p is not None and p >= 15.0))
+    return (ctx.market_type.upper() == "PLACE" and _uk_only(ctx) and _place_theo_ok(ctx) and (p is not None and p >= 15.0))
 
 def register_placelay_uk(registry: List[Slot]):
     registry.append(Slot(family="LAY_PLACE", slot=351, side=Side.LAY,

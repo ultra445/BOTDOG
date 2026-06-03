@@ -258,6 +258,12 @@ class Executor:
         "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
     ]
 
+    STRATEGY_EVAL_SUMMARY_HEADER = [
+        "ts","market_id","market_type","selection_id","runner_name",
+        "trap","region","winbet","place_price","place_theo","ev_place","mom45",
+        "slots_tested","conditions_true_count","true_tags","error_count",
+    ]
+
 
     ENTRY_MIN_T_S = 120
     ENTRY_MAX_T_S = 7200
@@ -461,6 +467,39 @@ class Executor:
         }
         with fname.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
+
+    def _log_strategy_eval_summary_row(
+        self,
+        ctx: RunnerCtx,
+        runner_name: Optional[str],
+        slots_tested: int,
+        true_tags: List[str],
+        error_count: int,
+    ) -> None:
+        if ctx.milestone != 2:
+            return
+        fname = self.data_dir / f"strategy_eval_summary_{datetime.now(timezone.utc):%Y%m%d}.csv"
+        self._ensure_header(fname, self.STRATEGY_EVAL_SUMMARY_HEADER)
+        row = {
+            "ts": _now_utc_iso(),
+            "market_id": ctx.market_id,
+            "market_type": ctx.market_type,
+            "selection_id": ctx.selection_id,
+            "runner_name": runner_name,
+            "trap": ctx.trap,
+            "region": ctx.region,
+            "winbet": ctx.winbet,
+            "place_price": self._debug_place_price(ctx),
+            "place_theo": ctx.place_theo,
+            "ev_place": ctx.ev_place,
+            "mom45": ctx.mom45,
+            "slots_tested": slots_tested,
+            "conditions_true_count": len(true_tags),
+            "true_tags": "|".join(true_tags),
+            "error_count": error_count,
+        }
+        with fname.open("a", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=self.STRATEGY_EVAL_SUMMARY_HEADER).writerow(row)
 
     def _mindex_vals(self) -> List[Any]:
         for try_fn in (lambda i: list(i.values()),
@@ -1045,6 +1084,13 @@ class Executor:
                         ev_place=ev_place_ctx,
                         bsp_place=(bsp_place if is_place else None),
                     )
+                    if milestone != 2:
+                        continue
+
+                    slots_tested = 0
+                    true_tags: List[str] = []
+                    error_count = 0
+
                     for slot in self.strategy_registry:
                         # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
@@ -1052,11 +1098,22 @@ class Executor:
                             self._log_strategy_debug_row(slot, ctx, runner_name, False, "bet_per_market_already_fired")
                             continue
 
+                        slots_tested += 1
                         debug_enabled = self._strategy_debug_enabled(ctx)
                         debug_condition_result: Optional[bool] = None
                         debug_fail_reason = ""
                         if debug_enabled:
                             debug_condition_result, debug_fail_reason = self._debug_evaluate_slot(slot, ctx)
+                            if debug_fail_reason.startswith("condition_error="):
+                                error_count += 1
+                        else:
+                            try:
+                                debug_condition_result = bool(slot.condition(ctx))
+                            except Exception:
+                                debug_condition_result = False
+                                error_count += 1
+                        if debug_condition_result is True:
+                            true_tags.append(str(slot.tag))
 
                         res = try_fire_slot(self.staking_engine, slot, ctx)
                         if debug_enabled:
@@ -1186,9 +1243,11 @@ class Executor:
                                         liability=float(res.liability or 0.0),
                                     )
 
-            except Exception:
+                    self._log_strategy_eval_summary_row(ctx, runner_name, slots_tested, true_tags, error_count)
+
+            except Exception as e:
                 # Ne jamais casser le snapshotting pour une erreur staking/ordre
-                pass
+                print(f"[STRATEGY_LOOP_ERR] {market_id} sid={sid} err={e!r}")
 
     # ----- helpers -----
     def _ensure_trade_header(self, path: Path) -> None:

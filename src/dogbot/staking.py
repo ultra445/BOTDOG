@@ -74,6 +74,67 @@ class StakingEngine:
         key = f"MAX_RUNNER_STAKE_{family}_{slot}"
         return float(self.cfg.per_slot_runner_caps.get(key, self.cfg.max_runner_stake))
 
+    def _size_from_edge(
+        self,
+        side: Side,
+        price_ltp: float,
+        edge: float,
+        max_runner_cap: Optional[float],
+        reason_back: str,
+        reason_lay: str,
+    ) -> StakingResult:
+        price = max(1.01, float(price_ltp))
+
+        if edge <= 0.0:
+            return StakingResult(False, round_to_tick(price), 0.0, None, "edge_zero_or_missing")
+
+        if side == Side.BACK:
+            stake_raw = (self.cfg.capital * edge) / price
+            liability = None
+            reason = reason_back
+        else:
+            liability_raw = self.cfg.capital * edge
+            stake_raw = liability_raw / max(0.01, price - 1.0)
+            liability = liability_raw
+            reason = reason_lay
+
+        stake = stake_raw
+
+        # Cap par marche existant
+        stake = min(stake, self.cfg.risk.max_market_stake)
+
+        # Cap par runner, global ou fourni par la strategie
+        runner_cap = self.cfg.max_runner_stake if max_runner_cap is None else max_runner_cap
+        stake = min(stake, float(runner_cap))
+
+        min_stake = float(self.cfg.risk.min_stake)
+        if 0.0 < stake < min_stake:
+            stake = min_stake
+
+        price_req = round_to_tick(price)
+        stake_req = round(stake, 2)
+
+        if side == Side.LAY:
+            liability = round(stake_req * max(0.01, price_req - 1.0), 2)
+
+        return StakingResult(True, price_req, stake_req, liability, reason)
+
+    def quote(
+        self,
+        side: Side,
+        price_ltp: float,
+        edge: float,
+        max_runner_cap: Optional[float] = None,
+    ) -> StakingResult:
+        return self._size_from_edge(
+            side=side,
+            price_ltp=price_ltp,
+            edge=edge,
+            max_runner_cap=max_runner_cap,
+            reason_back="back_capital_edge_over_price",
+            reason_lay="lay_capital_edge_liability",
+        )
+
     def compute(
         self,
         side: Side,
@@ -84,42 +145,15 @@ class StakingEngine:
         selection_id: int,
         course_id: str,
         strategy_tag: str,
+        max_runner_cap: Optional[float] = None,
     ) -> StakingResult:
         edge = self._edge_for(family, slot)
-        price = max(1.01, float(price_ltp))
-
-        if edge <= 0.0:
-            return StakingResult(False, round_to_tick(price), 0.0, None, "edge_zero_or_missing")
-
-        if side == Side.BACK:
-            stake_raw = (self.cfg.capital * edge) / price
-            liability = None
-            reason = "back_capital_edge_over_price"
-        else:
-            liability_raw = self.cfg.capital * edge
-            stake_raw = liability_raw / max(0.01, price - 1.0)
-            liability = liability_raw
-            reason = "lay_capital_edge_liability"
-
-        # Minima
-        stake = max(stake_raw, self.cfg.risk.min_stake)
-        if side == Side.LAY:
-            liability = max(liability or 0.0, self.cfg.risk.min_liability)
-            stake = max(stake, liability / max(0.01, price - 1.0))
-
-        # Cap par marché (existant)
-        stake = min(stake, self.cfg.risk.max_market_stake)
-
-        # ---- NOUVEAU : cap par chien (global puis par slot si défini) ----
-        runner_cap = self._runner_cap_for(family, slot)
-        stake = min(stake, runner_cap)
-
-        # Arrondi odds (sécurité)
-        price_req = round_to_tick(price)
-
-        # Pour LAY, recalc liability finale avec la stake capée (plus parlant dans le CSV)
-        if side == Side.LAY:
-            liability = round(stake * max(0.01, price_req - 1.0), 2)
-
-        # Taille finale arrondie à 2 décimales (compat ex. GBP/EUR)
-        return StakingResult(True, price_req, round(stake, 2), liability, reason)
+        runner_cap = self._runner_cap_for(family, slot) if max_runner_cap is None else max_runner_cap
+        return self._size_from_edge(
+            side=side,
+            price_ltp=price_ltp,
+            edge=edge,
+            max_runner_cap=runner_cap,
+            reason_back="back_capital_edge_over_price",
+            reason_lay="lay_capital_edge_liability",
+        )
