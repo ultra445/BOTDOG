@@ -98,6 +98,9 @@ def _num_winners(md) -> Optional[int]:
     except Exception:
         return None
 
+def _fallback_k_place_used(n_active: int) -> int:
+    return 3 if n_active >= 8 else 2
+
 def _active_count(runners) -> int:
     n = 0
     for r in (runners or []):
@@ -256,11 +259,13 @@ class Executor:
         "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
         "condition_result","fail_reason",
         "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
+        "place_winners","k_place_used","fallback_k_place_used",
     ]
 
     STRATEGY_EVAL_SUMMARY_HEADER = [
         "ts","market_id","market_type","selection_id","runner_name",
         "trap","region","winbet","place_price","place_theo","ev_place","mom45",
+        "place_winners","k_place_used","fallback_k_place_used",
         "slots_tested","conditions_true_count","true_tags","error_count",
     ]
 
@@ -302,6 +307,10 @@ class Executor:
         self._last_rank_ltp_by_market: Dict[str, Dict[int, int]] = defaultdict(dict)
         self._last_rank_back_by_market: Dict[str, Dict[int, int]] = defaultdict(dict)
         self._last_mom45_by_market: Dict[str, Dict[int, float]] = defaultdict(dict)
+        self._place_winners_by_market: Dict[str, int] = {}
+        self._k_place_used_by_market: Dict[str, int] = {}
+        self._fallback_k_place_used_by_market: Dict[str, bool] = {}
+        self._k_place_fallback_logged: Set[str] = set()
 
         # Cache TRAP & GAP by race (shared between WIN/PLACE)
         self._trap_by_race: dict[tuple[str,int], int] = {}
@@ -464,6 +473,9 @@ class Executor:
             "place_theo": ctx.place_theo,
             "bb": ctx.bb,
             "bl": ctx.bl,
+            "place_winners": getattr(ctx, "place_winners", None),
+            "k_place_used": getattr(ctx, "k_place_used", None),
+            "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
         }
         with fname.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
@@ -493,6 +505,9 @@ class Executor:
             "place_theo": ctx.place_theo,
             "ev_place": ctx.ev_place,
             "mom45": ctx.mom45,
+            "place_winners": getattr(ctx, "place_winners", None),
+            "k_place_used": getattr(ctx, "k_place_used", None),
+            "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
             "slots_tested": slots_tested,
             "conditions_true_count": len(true_tags),
             "true_tags": "|".join(true_tags),
@@ -553,6 +568,82 @@ class Executor:
             place_id = current_market_id
 
         return (str(win_id) if win_id else None, str(place_id) if place_id else None)
+
+    def _remember_place_winners(
+        self,
+        current_market_id: str,
+        place_id: Optional[str],
+        mie: Any,
+        md: Any,
+        market_type: Optional[str],
+    ) -> None:
+        winners = self._official_place_winners(current_market_id, place_id, mie, md, market_type)
+        if winners is not None and place_id:
+            self._place_winners_by_market[str(place_id)] = int(winners)
+
+    def _official_place_winners(
+        self,
+        current_market_id: str,
+        place_id: Optional[str],
+        mie: Any,
+        md: Any,
+        market_type: Optional[str],
+    ) -> Optional[int]:
+        current_type = (market_type or "").upper()
+        current_winners = _num_winners(md)
+        if current_type == "PLACE" and current_winners is not None:
+            return int(current_winners)
+
+        if place_id:
+            cached = self._place_winners_by_market.get(str(place_id))
+            if cached is not None:
+                return int(cached)
+            place_entry = None
+            try:
+                place_entry = self.market_index.get(str(place_id))  # type: ignore
+            except Exception:
+                place_entry = None
+            indexed = getattr(place_entry, "n_places", None)
+            if indexed is not None:
+                return int(indexed)
+
+        indexed_current = getattr(mie, "n_places", None) if mie is not None else None
+        if current_type == "PLACE" and indexed_current is not None:
+            return int(indexed_current)
+        if place_id and str(current_market_id) == str(place_id) and current_winners is not None:
+            return int(current_winners)
+        return None
+
+    def _resolve_k_place_used(
+        self,
+        current_market_id: str,
+        place_id: Optional[str],
+        mie: Any,
+        md: Any,
+        market_type: Optional[str],
+        n_active: int,
+    ) -> tuple[int, Optional[int], bool]:
+        place_winners = self._official_place_winners(current_market_id, place_id, mie, md, market_type)
+        if place_winners is not None:
+            k_place_used = int(place_winners)
+            fallback = False
+        else:
+            k_place_used = _fallback_k_place_used(n_active)
+            fallback = True
+
+        cache_key = str(place_id or current_market_id)
+        self._k_place_used_by_market[cache_key] = int(k_place_used)
+        self._fallback_k_place_used_by_market[cache_key] = bool(fallback)
+        if place_winners is not None:
+            self._place_winners_by_market[cache_key] = int(place_winners)
+        elif fallback and cache_key not in self._k_place_fallback_logged:
+            self._k_place_fallback_logged.add(cache_key)
+            print(
+                "[K_PLACE_FALLBACK] "
+                f"market_id={current_market_id} place_market_id={place_id or ''} "
+                f"n_active={n_active} k_place_used={k_place_used}"
+            )
+        return int(k_place_used), place_winners, fallback
 
     # ---------- cœur ----------
     def process_book(self, book: Any) -> None:
@@ -619,6 +710,16 @@ class Executor:
 
         mie_current = getattr(self.market_index, "get", lambda _:_)(getattr(book,"market_id",None))
         win_id, place_id = self._resolve_link_ids(str(getattr(book,"market_id","")), mie_current, md, market_type)
+        n_active = _active_count(runners)
+        k_place_used, place_winners, fallback_k_place_used = self._resolve_k_place_used(
+            str(getattr(book, "market_id", "")),
+            place_id,
+            mie_current,
+            md,
+            market_type,
+            n_active,
+        )
+        self._remember_place_winners(str(getattr(book, "market_id", "")), place_id, mie_current, md, market_type)
 
         row = [
             _now_utc_iso(),
@@ -634,12 +735,12 @@ class Executor:
             bool(getattr(book, "inplay", False)),
             _market_status(md),
             _num_winners(md),
-            _active_count(runners),
+            n_active,
             float(getattr(book, "total_matched", None) or 0.0),
             back_over, lay_over, spread,
             win_id, place_id,
             (1 if (win_id and place_id) else 0),
-            (_num_winners(md) if (_num_winners(md) is not None) else (3 if _active_count(runners) >= 8 else 2)),
+            k_place_used,
             (tto is not None and self.ENTRY_MIN_T_S <= tto <= self.ENTRY_MAX_T_S),
             self._fav_price_ok(runners),
             (float(getattr(book, "total_matched", 0.0)) >= self.MIN_LIQUIDITY_MARKET),
@@ -679,14 +780,21 @@ class Executor:
         market_id = str(getattr(book, "market_id", ""))
         n_active = _active_count(runners)
         md = getattr(book, "market_definition", None)
-        n_places = (_num_winners(md)
-                    or (3 if n_active >= 8 else 2))
 
         meta_by_sid: Dict[int, RunnerMeta] = info.get("meta_by_sid", {}) or {}
         vmap = self._compute_virtual_traps(runners, meta_by_sid)
 
         mie_current = getattr(self.market_index, "get", lambda _:_)(market_id)
         win_id, place_id = self._resolve_link_ids(market_id, mie_current, md, market_type)
+        n_places, place_winners, fallback_k_place_used = self._resolve_k_place_used(
+            market_id,
+            place_id,
+            mie_current,
+            md,
+            market_type,
+            n_active,
+        )
+        self._remember_place_winners(market_id, place_id, mie_current, md, market_type)
 
         is_win  = (market_type == "WIN")
         is_place = (market_type == "PLACE")
@@ -1084,6 +1192,9 @@ class Executor:
                         ev_place=ev_place_ctx,
                         bsp_place=(bsp_place if is_place else None),
                     )
+                    ctx.place_winners = place_winners
+                    ctx.k_place_used = n_places
+                    ctx.fallback_k_place_used = fallback_k_place_used
                     if milestone != 2:
                         continue
 

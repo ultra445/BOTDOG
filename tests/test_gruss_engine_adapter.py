@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import csv
 import unittest
 from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
 
 from dogbot.gruss.gruss_dryrun_engine import (
     GRUSS_TRADE_DIAGNOSTIC_FIELDS,
+    GrussDryRunRunner,
     ProcessedRaceStore,
+    build_order_intents_from_trade_rows,
     build_gruss_trade_diagnostics,
     get_skip_reason,
+    gruss_region_for_snapshots,
     install_gruss_trade_diagnostics,
+    is_result_screen_for_snapshots,
     race_key,
+    strategy_registry_diagnostics,
 )
 from dogbot.gruss.gruss_engine_adapter import build_engine_bundle
 from dogbot.gruss.gruss_mapper import parse_gruss_sheet
@@ -39,8 +45,49 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(bundle.win_book.runners[0].selection_id, 1)
         self.assertEqual(bundle.win_book.runners[0].last_price_traded, 9.2)
         self.assertEqual(bundle.win_book.runners[0].ex.available_to_back[0].price, 9.4)
+        self.assertEqual(bundle.win_book.market_definition.country_code, "GB")
+        self.assertEqual(bundle.win_book.market_definition.normalized_region, "UK")
+        self.assertEqual(bundle.place_book.market_definition.number_of_winners, 2)
+        self.assertEqual(bundle.market_index.get("258835466").n_places, 2)
         self.assertEqual(bundle.market_index.get("258835465").place_market_id, "258835466")
         self.assertEqual(bundle.market_index.get("258835465").runners[0].runner_name, "Gingers Layla")
+
+    def test_engine_bundle_maps_australia_to_row_country_code(self) -> None:
+        win_rows = _sample_sheet("The Meadows WIN", 258835465.0)
+        place_rows = _sample_sheet("The Meadows PLACE", 258835466.0, winners=2.0)
+        win_rows[0][5] = r"Greyhound Racing\Australia\The Meadows"
+        place_rows[0][5] = r"Greyhound Racing\Australia\The Meadows"
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        bundle = build_engine_bundle(win, place)
+
+        self.assertEqual(gruss_region_for_snapshots(win, place), "ROW")
+        self.assertEqual(bundle.win_book.market_definition.country_code, "AU")
+        self.assertEqual(bundle.win_book.market_definition.normalized_region, "ROW")
+
+    def test_skip_reason_blocks_unknown_region(self) -> None:
+        win_rows = _sample_sheet("Mystery WIN", 258835465.0)
+        place_rows = _sample_sheet("Mystery PLACE", 258835466.0, winners=2.0)
+        win_rows[0][5] = r"Greyhound Racing\PGR\Mystery Track"
+        place_rows[0][5] = r"Greyhound Racing\PGR\Mystery Track"
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        self.assertEqual(gruss_region_for_snapshots(win, place), "UNKNOWN")
+        self.assertEqual(get_skip_reason(win, place, [], True), "unknown_gruss_region")
+
+    def test_result_screen_skips_without_exception(self) -> None:
+        win_rows = _sample_sheet("Bet ref", 258835465.0)
+        place_rows = _sample_sheet("Bet ref", 258835466.0, winners=2.0)
+        win_rows[0][5] = "Result"
+        place_rows[0][5] = "Result"
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        self.assertTrue(is_result_screen_for_snapshots(win, place))
+        self.assertEqual(gruss_region_for_snapshots(win, place), "UNKNOWN")
+        self.assertEqual(get_skip_reason(win, place, [], True), "result_screen")
 
     def test_skip_reason_blocks_validation_and_missing_countdown(self) -> None:
         win_rows = _sample_sheet("Hove WIN", 258835465.0)
@@ -82,6 +129,8 @@ class GrussEngineAdapterTests(unittest.TestCase):
             def __init__(self) -> None:
                 self._last_place_theo_by_market = {"258835465": {1: 2.34}}
                 self._last_ev_place_by_market = {"258835466": {1: 0.12}}
+                self._k_place_used_by_market = {"258835466": 2}
+                self._fallback_k_place_used_by_market = {"258835466": False}
 
             def _log_trade_row(self, row: dict) -> None:
                 logged_rows.append(row)
@@ -105,12 +154,117 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(diagnostics["win_best_lay"], 9.8)
         self.assertEqual(diagnostics["place_best_back"], 9.4)
         self.assertEqual(diagnostics["place_best_lay"], 9.8)
+        self.assertEqual(diagnostics["place_winners"], 2)
+        self.assertEqual(diagnostics["k_place_used"], 2)
+        self.assertFalse(diagnostics["fallback_k_place_used"])
         self.assertEqual(diagnostics["place_theorique"], 2.34)
         self.assertEqual(diagnostics["ev_place"], 0.12)
         self.assertEqual(diagnostics["gruss_event_path"], r"Greyhound Racing\PGR\Hove 3rd Jun")
 
         executor._log_trade_row({"ts": "now", "selection_id": 1})
         self.assertEqual(logged_rows[0]["data_provider"], "gruss_excel")
+
+    def test_build_order_intents_from_trade_rows(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "BACK",
+                    "price_req": "3.2",
+                    "size_req": "2.0",
+                    "strategy": "BACK_PLACE_101",
+                    "course_id": "course-1",
+                    "status": "DRYRUN",
+                    "parent_id": "35678242",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0].provider, "gruss_excel")
+        self.assertEqual(intents[0].market_type, "PLACE")
+        self.assertEqual(intents[0].market_id, "258835466")
+        self.assertEqual(intents[0].runner_name, "Gingers Layla")
+        self.assertEqual(intents[0].trap, 1)
+        self.assertEqual(intents[0].price, 3.2)
+        self.assertEqual(intents[0].stake, 2.0)
+
+    def test_build_order_intents_accepts_lay_place_signal(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "LAY",
+                    "price_req": "3.2",
+                    "size_req": "2.0",
+                    "strategy": "LAY_PLACE_301",
+                    "course_id": "course-1",
+                    "status": "DRYRUN",
+                    "parent_id": "35678242",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0].side, "LAY")
+        self.assertEqual(intents[0].strategy_id, "LAY_PLACE_301")
+
+    def test_lay_place_trade_row_is_logged_to_gruss_orders_dryrun(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+        trade_rows = [
+            {
+                "ts": "2026-06-03T18:00:00Z",
+                "market_type": "PLACE",
+                "market_id": "258835466",
+                "selection_id": "1",
+                "side": "LAY",
+                "price_req": "3.2",
+                "size_req": "2.0",
+                "strategy": "LAY_PLACE_301",
+                "course_id": "course-1",
+                "status": "DRYRUN",
+                "parent_id": "35678242",
+            }
+        ]
+
+        with TemporaryDirectory() as tmp:
+            runner = GrussDryRunRunner(tmp)
+            results = runner.log_gruss_order_intents(trade_rows, win, place)
+            order_path = f"{tmp}/orders_gruss_dryrun.csv"
+
+            self.assertEqual(results[0].status, "GRUSS_DRYRUN")
+            with open(order_path, "r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(rows[0]["side"], "LAY")
+        self.assertEqual(rows[0]["strategy_id"], "LAY_PLACE_301")
+        self.assertEqual(rows[0]["status"], "GRUSS_DRYRUN")
+
+    def test_registry_diagnostics_reports_lay_place_slots(self) -> None:
+        diagnostics = strategy_registry_diagnostics()
+
+        self.assertGreater(diagnostics["total"], 0)
+        self.assertGreater(diagnostics["by_side"].get("LAY", 0), 0)
+        self.assertGreater(diagnostics["by_market_type"].get("PLACE", 0), 0)
+        self.assertTrue(diagnostics["lay_place_ids"])
+        self.assertIn("LAY_PLACE_301", diagnostics["lay_place_ids"])
 
 
 if __name__ == "__main__":

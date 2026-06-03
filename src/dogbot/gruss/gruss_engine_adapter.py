@@ -9,6 +9,11 @@ from dogbot.indexer import MarketIndex
 from dogbot.types import MarketIndexEntry, RunnerMeta
 
 from dogbot.gruss.gruss_mapper import GrussRunner, GrussSnapshot
+from dogbot.gruss.gruss_region import (
+    gruss_country_code_for_region,
+    normalize_gruss_meeting_name,
+    normalize_gruss_region,
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +42,13 @@ def build_engine_bundle(
     place_id = _require_id(place_snapshot.metadata.market_id, "PLACE market_id")
     parent_id = _first_available(win_snapshot.metadata.parent_id, place_snapshot.metadata.parent_id)
     event_path = _first_available(win_snapshot.metadata.event_path, place_snapshot.metadata.event_path)
-    venue = _venue_from_event_path(event_path)
+    meeting_name = normalize_gruss_meeting_name(event_path)
+    region = normalize_gruss_region(
+        event_path=event_path,
+        market_title=_first_available(win_snapshot.metadata.market_title, place_snapshot.metadata.market_title),
+        meeting_name=meeting_name,
+    )
+    country_code = gruss_country_code_for_region(region)
 
     win_entry = _build_index_entry(
         snapshot=win_snapshot,
@@ -47,7 +58,9 @@ def build_engine_bundle(
         linked_place_id=place_id,
         start_utc=start_utc,
         parent_id=parent_id,
-        venue=venue,
+        venue=meeting_name,
+        country_code=country_code,
+        normalized_region=region,
     )
     place_entry = _build_index_entry(
         snapshot=place_snapshot,
@@ -57,13 +70,15 @@ def build_engine_bundle(
         linked_place_id=place_id,
         start_utc=start_utc,
         parent_id=parent_id,
-        venue=venue,
+        venue=meeting_name,
+        country_code=country_code,
+        normalized_region=region,
     )
     market_index = MarketIndex([win_entry, place_entry])
     return GrussEngineBundle(
         market_index=market_index,
-        win_book=_build_book(win_snapshot, "WIN", win_id, start_utc),
-        place_book=_build_book(place_snapshot, "PLACE", place_id, start_utc),
+        win_book=_build_book(win_snapshot, "WIN", win_id, start_utc, country_code, region, meeting_name),
+        place_book=_build_book(place_snapshot, "PLACE", place_id, start_utc, country_code, region, meeting_name),
     )
 
 
@@ -77,6 +92,8 @@ def _build_index_entry(
     start_utc: datetime,
     parent_id: str | None,
     venue: str | None,
+    country_code: str | None,
+    normalized_region: str,
 ) -> MarketIndexEntry:
     runners_meta = {
         _selection_id(runner): RunnerMeta(
@@ -96,7 +113,7 @@ def _build_index_entry(
         event_name=snapshot.metadata.event_path,
         event_open_utc=start_utc,
         venue=venue,
-        country_code="GB",
+        country_code=country_code,
         event_local_date=None,
         race_number=None,
         course_id=parent_id,
@@ -106,8 +123,9 @@ def _build_index_entry(
         runners_meta=runners_meta,
     )
     entry.market_name = snapshot.metadata.market_title
-    entry.event = SimpleNamespace(id=parent_id, name=snapshot.metadata.event_path, venue=venue, country_code="GB")
+    entry.event = SimpleNamespace(id=parent_id, name=snapshot.metadata.event_path, venue=venue, country_code=country_code)
     entry.market_start_time = start_utc
+    entry.normalized_region = normalized_region
     entry.runners = [
         SimpleNamespace(
             selection_id=_selection_id(runner),
@@ -121,7 +139,15 @@ def _build_index_entry(
     return entry
 
 
-def _build_book(snapshot: GrussSnapshot, market_type: str, market_id: str, start_utc: datetime) -> Any:
+def _build_book(
+    snapshot: GrussSnapshot,
+    market_type: str,
+    market_id: str,
+    start_utc: datetime,
+    country_code: str | None,
+    normalized_region: str,
+    meeting_name: str | None,
+) -> Any:
     return SimpleNamespace(
         market_id=market_id,
         market_definition=SimpleNamespace(
@@ -129,7 +155,9 @@ def _build_book(snapshot: GrussSnapshot, market_type: str, market_id: str, start
             market_type=market_type,
             number_of_winners=snapshot.metadata.winners,
             market_time=start_utc,
-            country_code="GB",
+            country_code=country_code,
+            normalized_region=normalized_region,
+            venue=meeting_name,
         ),
         runners=[_build_runner(runner) for runner in snapshot.runners if runner.trap is not None],
         total_matched=snapshot.metadata.total_matched,
@@ -181,10 +209,3 @@ def _first_available(*values: Any) -> Any:
         if value not in (None, ""):
             return value
     return None
-
-
-def _venue_from_event_path(event_path: Any) -> str | None:
-    if not event_path:
-        return None
-    text = str(event_path)
-    return text.split("\\")[-1] if "\\" in text else text

@@ -29,3 +29,11 @@ data/trades_*.csv
 .pytest_cache/
 
 # Virtual environment
+
+
+data/orders_gruss_dryrun.csv
+data/gruss_debug_*.txt
+data/gruss_dryrun_processed.csv
+
+
+
