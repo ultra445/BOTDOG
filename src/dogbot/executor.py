@@ -251,6 +251,13 @@ class Executor:
         "status","reason",
     ]
 
+    STRATEGY_DEBUG_HEADER = [
+        "ts","market_id","market_type","selection_id","runner_name",
+        "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
+        "condition_result","fail_reason",
+        "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
+    ]
+
 
     ENTRY_MIN_T_S = 120
     ENTRY_MAX_T_S = 7200
@@ -364,6 +371,96 @@ class Executor:
     def _append(self, path: Path, row: Iterable[Any]) -> None:
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(list(row))
+
+    def _strategy_debug_enabled(self, ctx: Optional[RunnerCtx] = None) -> bool:
+        raw = str(os.getenv("STRATEGY_DEBUG", "")).strip().lower()
+        enabled = raw in ("1", "true", "yes", "y", "on")
+        if not enabled:
+            return False
+        return ctx is None or ctx.milestone == 2
+
+    def _debug_place_price(self, ctx: RunnerCtx) -> Optional[float]:
+        if (ctx.market_type or "").upper() != "PLACE":
+            return None
+        if ctx.bsp_place and ctx.bsp_place > 1.0:
+            return ctx.bsp_place
+        if ctx.ltp and ctx.ltp > 1.0:
+            return ctx.ltp
+        return None
+
+    def _debug_evaluate_slot(self, slot, ctx: RunnerCtx) -> tuple[bool, str]:
+        market_type = (ctx.market_type or "").upper()
+        family = str(getattr(slot, "family", "")).upper()
+        if "WIN" in family and market_type != "WIN":
+            return False, "market_type_mismatch"
+        if "PLACE" in family and market_type != "PLACE":
+            return False, "market_type_mismatch"
+        try:
+            passed = bool(slot.condition(ctx))
+        except Exception as e:
+            return False, f"condition_error={e!r}"
+        if passed:
+            return True, ""
+        return False, self._debug_fail_reason(slot, ctx)
+
+    def _debug_fail_reason(self, slot, ctx: RunnerCtx) -> str:
+        region = getattr(slot, "strategy_region", None)
+        if region and ctx.region != region:
+            return "region_mismatch"
+        signal = str(getattr(slot, "strategy_signal", "") or "").upper()
+        if signal == "TRAP1" and ctx.trap != 1:
+            return "trap_mismatch"
+        if signal == "TRAP8" and ctx.trap != 8:
+            return "trap_mismatch"
+        market_family = str(getattr(slot, "market_family", "") or "").upper()
+        if market_family == "WIN" and ctx.winbet is None:
+            return "missing_winbet"
+        if market_family == "PLACE" and self._debug_place_price(ctx) is None:
+            return "missing_place_price"
+        if signal in ("TRAP1", "TRAP8") and ctx.ev_place is None:
+            return "missing_ev_place"
+        if signal == "MOM45" and ctx.mom45 is None:
+            return "missing_mom45"
+        return "condition_false"
+
+    def _log_strategy_debug_row(
+        self,
+        slot,
+        ctx: RunnerCtx,
+        runner_name: Optional[str],
+        condition_result: bool,
+        fail_reason: str,
+    ) -> None:
+        if not self._strategy_debug_enabled(ctx):
+            return
+        fname = self.data_dir / f"strategy_debug_{datetime.now(timezone.utc):%Y%m%d}.csv"
+        self._ensure_header(fname, self.STRATEGY_DEBUG_HEADER)
+        row = {
+            "ts": _now_utc_iso(),
+            "market_id": ctx.market_id,
+            "market_type": ctx.market_type,
+            "selection_id": ctx.selection_id,
+            "runner_name": runner_name,
+            "milestone": ctx.milestone,
+            "secs_to_off": ctx.secs_to_off,
+            "tag": getattr(slot, "tag", None),
+            "market_family": getattr(slot, "market_family", None),
+            "strategy_group": getattr(slot, "strategy_group", None),
+            "strategy_signal": getattr(slot, "strategy_signal", None),
+            "condition_result": condition_result,
+            "fail_reason": fail_reason,
+            "trap": ctx.trap,
+            "region": ctx.region,
+            "winbet": ctx.winbet,
+            "place_price": self._debug_place_price(ctx),
+            "ev_place": ctx.ev_place,
+            "mom45": ctx.mom45,
+            "place_theo": ctx.place_theo,
+            "bb": ctx.bb,
+            "bl": ctx.bl,
+        }
+        with fname.open("a", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
 
     def _mindex_vals(self) -> List[Any]:
         for try_fn in (lambda i: list(i.values()),
@@ -952,9 +1049,22 @@ class Executor:
                         # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
                         if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
+                            self._log_strategy_debug_row(slot, ctx, runner_name, False, "bet_per_market_already_fired")
                             continue
 
+                        debug_enabled = self._strategy_debug_enabled(ctx)
+                        debug_condition_result: Optional[bool] = None
+                        debug_fail_reason = ""
+                        if debug_enabled:
+                            debug_condition_result, debug_fail_reason = self._debug_evaluate_slot(slot, ctx)
+
                         res = try_fire_slot(self.staking_engine, slot, ctx)
+                        if debug_enabled:
+                            if debug_condition_result is True and not res:
+                                debug_fail_reason = "no_fire_result_after_condition"
+                            self._log_strategy_debug_row(
+                                slot, ctx, runner_name, bool(debug_condition_result), debug_fail_reason
+                            )
                         if not res:
                             continue
 
