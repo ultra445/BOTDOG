@@ -255,3 +255,25 @@ def load_config() -> AppConfig:
         max_runner_stake=max_runner_stake,
         per_slot_runner_caps=per_slot_runner_caps,
     )
+
+
+DATA_PROVIDER_BETFAIR_API = "betfair_api"
+DATA_PROVIDER_GRUSS_EXCEL = "gruss_excel"
+ORDER_PROVIDER_DRY_RUN = "dry_run"
+ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN = "gruss_excel_dryrun"
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    data_provider: str
+    order_provider: str
+
+
+def load_provider_config() -> ProviderConfig:
+    data_provider = os.getenv("DOGBOT_DATA_PROVIDER", DATA_PROVIDER_BETFAIR_API).strip().lower()
+    order_provider = os.getenv("DOGBOT_ORDER_PROVIDER", ORDER_PROVIDER_DRY_RUN).strip().lower()
+    if data_provider not in {DATA_PROVIDER_BETFAIR_API, DATA_PROVIDER_GRUSS_EXCEL}:
+        raise ValueError(f"unsupported DOGBOT_DATA_PROVIDER={data_provider!r}")
+    if order_provider not in {ORDER_PROVIDER_DRY_RUN, ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN}:
+        raise ValueError(f"unsupported DOGBOT_ORDER_PROVIDER={order_provider!r}")
+    return ProviderConfig(data_provider=data_provider, order_provider=order_provider)

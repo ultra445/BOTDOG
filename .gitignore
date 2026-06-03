@@ -10,3 +10,22 @@ snapshots/
 .env
 __pycache__/
 *.pyc
+
+# Gruss / Excel local bridge files
+gruss_bridge/*.xlsx
+gruss_bridge/~$*.xlsx
+gruss_bridge/~$*.xlsx
+.~lock*.xlsx#
+
+# Gruss diagnostic outputs
+data/gruss_dumps/*.csv
+data/gruss_live_snapshots.csv
+data/trades_*.csv
+
+# Local secrets / environment
+*.env
+
+# Python cache
+.pytest_cache/
+
+# Virtual environment
