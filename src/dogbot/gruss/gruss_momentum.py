@@ -33,6 +33,16 @@ class GrussMomentumValue:
     win_ltp_anchor: float | None
     place_best_back_anchor: float | None
     place_ltp_anchor: float | None
+    first_seen_countdown: int | None
+    t45_anchor_found: bool
+
+
+@dataclass(frozen=True)
+class GrussMomentumCourseStatus:
+    has_mom45: bool
+    mom45_reason: str | None
+    first_seen_countdown: int | None
+    t45_anchor_found: bool
 
 
 class GrussMomentumBuffer:
@@ -49,6 +59,7 @@ class GrussMomentumBuffer:
         self.anchor_max_seconds = anchor_max_seconds
         self._history: dict[str, deque[GrussMomentumAnchor]] = defaultdict(deque)
         self._captured_anchor_keys: set[str] = set()
+        self._first_seen_countdown: dict[str, int] = {}
 
     def add_snapshot_pair(
         self,
@@ -62,6 +73,7 @@ class GrussMomentumBuffer:
         seconds = _countdown_seconds(win_snapshot, place_snapshot)
         if seconds is None:
             return False, None
+        self._first_seen_countdown.setdefault(key, seconds)
 
         anchor = _build_anchor(timestamp, seconds, win_snapshot, place_snapshot)
         history = self._history[key]
@@ -101,7 +113,9 @@ class GrussMomentumBuffer:
             for runner in win_snapshot.runners + place_snapshot.runners
             if runner.trap is not None
         }
+        first_seen_countdown = self._first_seen_countdown.get(gruss_momentum_key(win_snapshot, place_snapshot))
         if anchor is None:
+            reason = self._missing_anchor_reason(win_snapshot, place_snapshot)
             return {
                 int(trap): GrussMomentumValue(
                     trap=int(trap),
@@ -111,11 +125,13 @@ class GrussMomentumBuffer:
                     source_countdown_seconds=None,
                     current_value=None,
                     anchor_value=None,
-                    reason="missing_mom45",
+                    reason=reason,
                     win_best_back_anchor=None,
                     win_ltp_anchor=None,
                     place_best_back_anchor=None,
                     place_ltp_anchor=None,
+                    first_seen_countdown=first_seen_countdown,
+                    t45_anchor_found=False,
                 )
                 for trap in traps
             }
@@ -131,7 +147,7 @@ class GrussMomentumBuffer:
             if current_runner is None:
                 reason = "runner_missing_current"
             elif anchor_base is None:
-                reason = "runner_missing_t45"
+                reason = "runner_missing_at_t45"
             elif current_base is None:
                 reason = "current_base_missing"
             elif anchor_base == 0:
@@ -151,8 +167,47 @@ class GrussMomentumBuffer:
                 win_ltp_anchor=anchor.win_ltp_by_trap.get(trap),
                 place_best_back_anchor=anchor.place_best_back_by_trap.get(trap),
                 place_ltp_anchor=anchor.place_ltp_by_trap.get(trap),
+                first_seen_countdown=first_seen_countdown,
+                t45_anchor_found=True,
             )
         return result
+
+    def course_status(
+        self,
+        win_snapshot: GrussSnapshot,
+        place_snapshot: GrussSnapshot,
+    ) -> GrussMomentumCourseStatus:
+        key = gruss_momentum_key(win_snapshot, place_snapshot)
+        anchor = self.closest_t45_anchor(win_snapshot, place_snapshot)
+        first_seen_countdown = self._first_seen_countdown.get(key)
+        if anchor is None:
+            return GrussMomentumCourseStatus(
+                has_mom45=False,
+                mom45_reason=self._missing_anchor_reason(win_snapshot, place_snapshot),
+                first_seen_countdown=first_seen_countdown,
+                t45_anchor_found=False,
+            )
+        values = self.momentum_by_trap(win_snapshot, place_snapshot)
+        has_mom45 = any(value.has_mom45 for value in values.values())
+        reasons = {value.reason for value in values.values() if value.reason}
+        reason = "runner_missing_at_t45" if "runner_missing_at_t45" in reasons else (sorted(reasons)[0] if reasons else None)
+        return GrussMomentumCourseStatus(
+            has_mom45=has_mom45,
+            mom45_reason=reason,
+            first_seen_countdown=first_seen_countdown,
+            t45_anchor_found=True,
+        )
+
+    def _missing_anchor_reason(
+        self,
+        win_snapshot: GrussSnapshot,
+        place_snapshot: GrussSnapshot,
+    ) -> str:
+        key = gruss_momentum_key(win_snapshot, place_snapshot)
+        first_seen = self._first_seen_countdown.get(key)
+        if first_seen is not None and first_seen < self.anchor_min_seconds:
+            return "watcher_started_after_t45"
+        return "no_t45_anchor"
 
     def _prune(self, history: deque[GrussMomentumAnchor], now: datetime) -> None:
         while history and (now - history[0].timestamp).total_seconds() > self.retention_seconds:

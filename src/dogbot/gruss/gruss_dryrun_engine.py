@@ -19,7 +19,11 @@ from dogbot.feed_selector import create_data_feed_from_config
 from dogbot.gruss.gruss_engine_adapter import GrussEngineBundle, build_engine_bundle
 from dogbot.gruss.gruss_feed import GrussFeed
 from dogbot.gruss.gruss_mapper import GrussMapper, GrussSnapshot
-from dogbot.gruss.gruss_momentum import GrussMomentumBuffer, GrussMomentumValue
+from dogbot.gruss.gruss_momentum import (
+    GrussMomentumBuffer,
+    GrussMomentumCourseStatus,
+    GrussMomentumValue,
+)
 from dogbot.gruss.gruss_orders import GrussOrderProvider, OrderIntent, make_order_intent
 from dogbot.gruss.gruss_region import (
     is_gruss_result_screen,
@@ -38,6 +42,10 @@ GRUSS_TRADE_DIAGNOSTIC_FIELDS = [
     "countdown_seconds",
     "countdown_display",
     "tradable",
+    "has_mom45",
+    "mom45_reason",
+    "first_seen_countdown",
+    "t45_anchor_found",
     "mom45",
     "mom45_win_best_back",
     "mom45_win_ltp",
@@ -108,7 +116,18 @@ class GrussDryRunRunner:
             place_snapshot,
             momentum_buffer,
         )
-        install_gruss_trade_diagnostics(executor, win_snapshot, place_snapshot, momentum_values)
+        momentum_course_status = (
+            momentum_buffer.course_status(win_snapshot, place_snapshot)
+            if momentum_buffer is not None
+            else None
+        )
+        install_gruss_trade_diagnostics(
+            executor,
+            win_snapshot,
+            place_snapshot,
+            momentum_values,
+            momentum_course_status,
+        )
         if debug_strategies:
             install_gruss_strategy_debug_logger(executor)
         _seed_t2_milestone_if_due(executor, bundle, win_snapshot, place_snapshot)
@@ -317,6 +336,7 @@ def strategy_registry_diagnostics() -> dict[str, Any]:
                 "side": _slot_side(slot),
                 "market_type": _slot_market_type(slot),
                 "mode": _slot_mode(slot),
+                "requires_mom45": bool(getattr(slot, "requires_mom45", False)),
             }
             for slot in slots
         ],
@@ -338,7 +358,8 @@ def print_strategy_registry_diagnostics() -> None:
         print(
             "    "
             f"{detail['strategy_id']} side={detail['side']} "
-            f"market_type={detail['market_type']} mode={detail['mode']}"
+            f"market_type={detail['market_type']} mode={detail['mode']} "
+            f"requires_mom45={detail['requires_mom45']}"
         )
 
 
@@ -347,6 +368,7 @@ def install_gruss_trade_diagnostics(
     win_snapshot: GrussSnapshot,
     place_snapshot: GrussSnapshot,
     momentum_values: dict[int, GrussMomentumValue] | None = None,
+    momentum_course_status: GrussMomentumCourseStatus | None = None,
 ) -> None:
     """Attach Gruss-only diagnostics to dry-run trade rows."""
     base_header = list(getattr(executor, "_gruss_trade_base_header", executor.TRADE_HEADER))
@@ -357,6 +379,7 @@ def install_gruss_trade_diagnostics(
         "place_snapshot": place_snapshot,
         "tradable": _is_tradable(win_snapshot, place_snapshot, validation_ok=True),
         "momentum_values": momentum_values or {},
+        "momentum_course_status": momentum_course_status,
     }
 
     if getattr(executor, "_gruss_trade_diag_installed", False):
@@ -388,6 +411,7 @@ def build_gruss_trade_diagnostics(executor: Executor, row: dict) -> dict[str, An
     win_market_id = win_meta.market_id
     place_market_id = place_meta.market_id
     momentum_value = _momentum_value_for_selection(context, selection_id)
+    momentum_course_status = context.get("momentum_course_status")
     place_winners = place_meta.winners
     k_place_used = None
     fallback_k_place_used = None
@@ -420,6 +444,15 @@ def build_gruss_trade_diagnostics(executor: Executor, row: dict) -> dict[str, An
         else place_meta.countdown_seconds,
         "countdown_display": win_meta.countdown_display or place_meta.countdown_display,
         "tradable": "1" if context.get("tradable") else "0",
+        "has_mom45": getattr(momentum_value, "has_mom45", getattr(momentum_course_status, "has_mom45", None)),
+        "mom45_reason": getattr(momentum_value, "reason", None)
+        or getattr(momentum_course_status, "mom45_reason", None),
+        "first_seen_countdown": getattr(momentum_value, "first_seen_countdown", None)
+        if momentum_value is not None
+        else getattr(momentum_course_status, "first_seen_countdown", None),
+        "t45_anchor_found": getattr(momentum_value, "t45_anchor_found", None)
+        if momentum_value is not None
+        else getattr(momentum_course_status, "t45_anchor_found", None),
         "mom45": mom45,
         "mom45_win_best_back": getattr(momentum_value, "win_best_back_anchor", None),
         "mom45_win_ltp": getattr(momentum_value, "win_ltp_anchor", None),
@@ -463,7 +496,12 @@ def install_gruss_strategy_debug_logger(executor: Executor) -> None:
             meeting_name = gruss_meeting_name_for_snapshots(win_snapshot, place_snapshot)
             normalized_region = gruss_region_for_snapshots(win_snapshot, place_snapshot)
         momentum_value = _momentum_value_for_selection(context, getattr(ctx, "selection_id", None))
-        has_mom45 = bool(getattr(momentum_value, "has_mom45", False)) if momentum_value is not None else False
+        momentum_course_status = context.get("momentum_course_status")
+        has_mom45 = (
+            bool(momentum_value.has_mom45)
+            if momentum_value is not None
+            else bool(getattr(momentum_course_status, "has_mom45", False))
+        )
         mom45_source_timestamp = ""
         if momentum_value is not None and momentum_value.source_timestamp is not None:
             mom45_source_timestamp = momentum_value.source_timestamp.isoformat().replace("+00:00", "Z")
@@ -488,13 +526,16 @@ def install_gruss_strategy_debug_logger(executor: Executor) -> None:
             f"meeting_name={meeting_name!r} normalized_region={normalized_region} "
             f"runner={runner_name or ''} trap={getattr(ctx, 'trap', None)} "
             f"side={_slot_side(slot)} market_type={getattr(ctx, 'market_type', None)} "
+            f"requires_mom45={getattr(slot, 'requires_mom45', False)} "
             f"has_mom45={has_mom45} "
             f"mom45_source_timestamp={mom45_source_timestamp} "
             f"mom45_source_countdown={getattr(momentum_value, 'source_countdown_seconds', '') if momentum_value is not None else ''} "
             f"mom45_current_value={getattr(momentum_value, 'current_value', '') if momentum_value is not None else ''} "
             f"mom45_anchor_value={getattr(momentum_value, 'anchor_value', '') if momentum_value is not None else ''} "
             f"mom45={getattr(ctx, 'mom45', None)} "
-            f"mom45_reason={getattr(momentum_value, 'reason', '') if momentum_value is not None else 'missing_mom45'} "
+            f"mom45_reason={getattr(momentum_value, 'reason', None) or getattr(momentum_course_status, 'mom45_reason', '')} "
+            f"first_seen_countdown={getattr(momentum_course_status, 'first_seen_countdown', '')} "
+            f"t45_anchor_found={getattr(momentum_course_status, 't45_anchor_found', '')} "
             f"place_winners={getattr(ctx, 'place_winners', '')} "
             f"k_place_used={getattr(ctx, 'k_place_used', '')} "
             f"fallback_k_place_used={getattr(ctx, 'fallback_k_place_used', '')} "

@@ -259,7 +259,7 @@ class Executor:
         "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
         "condition_result","fail_reason",
         "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
-        "place_winners","k_place_used","fallback_k_place_used",
+        "place_winners","k_place_used","fallback_k_place_used","requires_mom45",
     ]
 
     STRATEGY_EVAL_SUMMARY_HEADER = [
@@ -410,6 +410,8 @@ class Executor:
             return False, "market_type_mismatch"
         if "PLACE" in family and market_type != "PLACE":
             return False, "market_type_mismatch"
+        if getattr(slot, "requires_mom45", False) and ctx.mom45 is None:
+            return False, "missing_mom45"
         try:
             passed = bool(slot.condition(ctx))
         except Exception as e:
@@ -434,7 +436,7 @@ class Executor:
             return "missing_place_price"
         if signal in ("TRAP1", "TRAP8") and ctx.ev_place is None:
             return "missing_ev_place"
-        if signal == "MOM45" and ctx.mom45 is None:
+        if getattr(slot, "requires_mom45", False) and ctx.mom45 is None:
             return "missing_mom45"
         return "condition_false"
 
@@ -476,6 +478,7 @@ class Executor:
             "place_winners": getattr(ctx, "place_winners", None),
             "k_place_used": getattr(ctx, "k_place_used", None),
             "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
+            "requires_mom45": getattr(slot, "requires_mom45", False),
         }
         with fname.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
@@ -1213,7 +1216,10 @@ class Executor:
                         debug_enabled = self._strategy_debug_enabled(ctx)
                         debug_condition_result: Optional[bool] = None
                         debug_fail_reason = ""
-                        if debug_enabled:
+                        if getattr(slot, "requires_mom45", False) and ctx.mom45 is None:
+                            debug_condition_result = False
+                            debug_fail_reason = "missing_mom45"
+                        elif debug_enabled:
                             debug_condition_result, debug_fail_reason = self._debug_evaluate_slot(slot, ctx)
                             if debug_fail_reason.startswith("condition_error="):
                                 error_count += 1

@@ -147,6 +147,7 @@ def _sleep(args: argparse.Namespace, tick: int) -> None:
 
 def _print_mom45_status(tick: int, momentum_buffer: GrussMomentumBuffer, win_snapshot, place_snapshot) -> None:
     values = momentum_buffer.momentum_by_trap(win_snapshot, place_snapshot)
+    status = momentum_buffer.course_status(win_snapshot, place_snapshot)
     available = [value for value in values.values() if value.has_mom45]
     if available:
         sample = available[0]
@@ -154,11 +155,18 @@ def _print_mom45_status(tick: int, momentum_buffer: GrussMomentumBuffer, win_sna
             "tick="
             f"{tick} MOM45 available "
             f"traps={len(available)}/{len(values)} "
-            f"source_countdown={sample.source_countdown_seconds}s"
+            f"source_countdown={sample.source_countdown_seconds}s "
+            f"first_seen_countdown={status.first_seen_countdown} "
+            f"t45_anchor_found={status.t45_anchor_found} "
+            f"mom45_reason={status.mom45_reason or ''}"
         )
         return
-    reasons = sorted({value.reason or "missing_mom45" for value in values.values()}) or ["missing_mom45"]
-    print(f"tick={tick} missing_mom45 reasons={','.join(reasons)}")
+    print(
+        f"tick={tick} missing_mom45 "
+        f"mom45_reason={status.mom45_reason or 'no_t45_anchor'} "
+        f"first_seen_countdown={status.first_seen_countdown} "
+        f"t45_anchor_found={status.t45_anchor_found}"
+    )
 
 
 if __name__ == "__main__":

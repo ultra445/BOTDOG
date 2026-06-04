@@ -50,12 +50,16 @@ class GrussMomentumTests(unittest.TestCase):
         self.assertTrue(captured)
         self.assertIsNotNone(anchor)
         values = buffer.momentum_by_trap(win_2, place_2)
+        status = buffer.course_status(win_2, place_2)
 
         self.assertTrue(values[1].has_mom45)
         self.assertEqual(values[1].source_countdown_seconds, 45)
         self.assertAlmostEqual(values[1].anchor_value or 0.0, 4.2)
         self.assertAlmostEqual(values[1].current_value or 0.0, 3.2)
         self.assertAlmostEqual(values[1].mom45 or 0.0, (3.2 / 4.2) - 1.0)
+        self.assertTrue(status.has_mom45)
+        self.assertTrue(status.t45_anchor_found)
+        self.assertEqual(status.first_seen_countdown, 60)
 
     def test_buffer_returns_missing_mom45_without_t45_anchor(self) -> None:
         buffer = GrussMomentumBuffer()
@@ -66,7 +70,23 @@ class GrussMomentumTests(unittest.TestCase):
         values = buffer.momentum_by_trap(win_2, place_2)
 
         self.assertFalse(values[1].has_mom45)
-        self.assertEqual(values[1].reason, "missing_mom45")
+        self.assertEqual(values[1].reason, "no_t45_anchor")
+        self.assertEqual(values[1].first_seen_countdown, 60)
+        self.assertFalse(values[1].t45_anchor_found)
+
+    def test_buffer_reports_watcher_started_after_t45(self) -> None:
+        buffer = GrussMomentumBuffer()
+        win_30, place_30 = _snapshots_at(30)
+        win_2, place_2 = _snapshots_at(2)
+
+        buffer.add_snapshot_pair(win_30, place_30)
+        values = buffer.momentum_by_trap(win_2, place_2)
+        status = buffer.course_status(win_2, place_2)
+
+        self.assertEqual(values[1].reason, "watcher_started_after_t45")
+        self.assertEqual(status.mom45_reason, "watcher_started_after_t45")
+        self.assertEqual(status.first_seen_countdown, 30)
+        self.assertFalse(status.t45_anchor_found)
 
     def test_buffer_does_not_crash_when_runner_missing_at_t45(self) -> None:
         buffer = GrussMomentumBuffer()
@@ -81,7 +101,8 @@ class GrussMomentumTests(unittest.TestCase):
         values = buffer.momentum_by_trap(win_2, place_2)
 
         self.assertFalse(values[1].has_mom45)
-        self.assertEqual(values[1].reason, "runner_missing_t45")
+        self.assertEqual(values[1].reason, "runner_missing_at_t45")
+        self.assertTrue(values[1].t45_anchor_found)
 
     def test_seed_gruss_momentum_into_executor_populates_t45_caches(self) -> None:
         buffer = GrussMomentumBuffer()

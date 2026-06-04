@@ -31,6 +31,25 @@ class GrussRegionTests(unittest.TestCase):
     def test_new_zealand_addington_is_row(self) -> None:
         self.assertEqual(normalize_gruss_region(r"Greyhound Racing\New Zealand\Addington"), "ROW")
 
+    def test_aus_casino_is_row(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\AUS\Casino (AUS) 4th Jun"), "ROW")
+
+    def test_aus_warragul_is_row(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\AUS\Warragul (AUS) 4th Jun"), "ROW")
+
+    def test_aus_bendigo_is_row(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\AUS\Bendigo (AUS)"), "ROW")
+
+    def test_aus_ballarat_is_row(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\AUS\Ballarat (AUS)"), "ROW")
+
+    def test_nzl_addington_is_row(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\NZL\Addington (NZL)"), "ROW")
+
+    def test_aus_and_nzl_markers_are_row_when_passed_as_meeting_name(self) -> None:
+        self.assertEqual(normalize_gruss_region(meeting_name="Casino (AUS)"), "ROW")
+        self.assertEqual(normalize_gruss_region(meeting_name="Addington (NZL)"), "ROW")
+
     def test_meeting_name_normalization_strips_date(self) -> None:
         self.assertEqual(normalize_gruss_meeting_name(r"Greyhound Racing\PGR\Dunstall Park 3rd Jun"), "Dunstall Park")
 

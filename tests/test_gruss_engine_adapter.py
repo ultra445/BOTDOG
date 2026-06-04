@@ -20,6 +20,7 @@ from dogbot.gruss.gruss_dryrun_engine import (
 )
 from dogbot.gruss.gruss_engine_adapter import build_engine_bundle
 from dogbot.gruss.gruss_mapper import parse_gruss_sheet
+from dogbot.gruss.gruss_momentum import GrussMomentumBuffer
 from tests.test_gruss_mapper import _sample_sheet
 
 
@@ -100,6 +101,16 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(race_key(win, place), "parent:35678242")
         self.assertEqual(get_skip_reason(win, place, [], True), "countdown_seconds_unavailable")
 
+    def test_missing_mom45_is_never_a_global_skip_reason(self) -> None:
+        win_rows = _sample_sheet("Hove WIN", 258835465.0)
+        place_rows = _sample_sheet("Hove PLACE", 258835466.0, winners=2.0)
+        win_rows[1][3] = "00:00:20"
+        place_rows[1][3] = "00:00:20"
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        self.assertIsNone(get_skip_reason(win, place, [], True))
+
     def test_processed_race_store_persists_seen_keys(self) -> None:
         with TemporaryDirectory() as tmp:
             path = f"{tmp}/processed.csv"
@@ -136,7 +147,11 @@ class GrussEngineAdapterTests(unittest.TestCase):
                 logged_rows.append(row)
 
         executor = FakeExecutor()
-        install_gruss_trade_diagnostics(executor, win, place)
+        momentum_buffer = GrussMomentumBuffer()
+        momentum_buffer.add_snapshot_pair(win, place)
+        momentum_values = momentum_buffer.momentum_by_trap(win, place)
+        momentum_status = momentum_buffer.course_status(win, place)
+        install_gruss_trade_diagnostics(executor, win, place, momentum_values, momentum_status)
 
         self.assertIn("data_provider", executor.TRADE_HEADER)
         self.assertTrue(all(field in executor.TRADE_HEADER for field in GRUSS_TRADE_DIAGNOSTIC_FIELDS))
@@ -150,6 +165,10 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(diagnostics["countdown_seconds"], 2)
         self.assertEqual(diagnostics["countdown_display"], "00:02")
         self.assertEqual(diagnostics["tradable"], "1")
+        self.assertFalse(diagnostics["has_mom45"])
+        self.assertEqual(diagnostics["mom45_reason"], "watcher_started_after_t45")
+        self.assertEqual(diagnostics["first_seen_countdown"], 2)
+        self.assertFalse(diagnostics["t45_anchor_found"])
         self.assertEqual(diagnostics["win_best_back"], 9.4)
         self.assertEqual(diagnostics["win_best_lay"], 9.8)
         self.assertEqual(diagnostics["place_best_back"], 9.4)
@@ -265,6 +284,9 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertGreater(diagnostics["by_market_type"].get("PLACE", 0), 0)
         self.assertTrue(diagnostics["lay_place_ids"])
         self.assertIn("LAY_PLACE_301", diagnostics["lay_place_ids"])
+        details = {detail["strategy_id"]: detail for detail in diagnostics["details"]}
+        self.assertFalse(details["LAY_PLACE_301"]["requires_mom45"])
+        self.assertTrue(details["LAY_PLACE_541"]["requires_mom45"])
 
 
 if __name__ == "__main__":

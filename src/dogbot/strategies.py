@@ -262,6 +262,33 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     # Pre-diagnostics context
     do_diag = _diag_enabled(slot.tag or f"{slot.family}_{slot.slot}", ctx)
 
+    if slot.requires_mom45 and ctx.mom45 is None:
+        if do_diag:
+            _diag_write(slot.tag, {
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                "tag": slot.tag,
+                "market_id": ctx.market_id,
+                "selection_id": ctx.selection_id,
+                "market_type": ctx.market_type,
+                "milestone": ctx.milestone,
+                "secs_to_off": ctx.secs_to_off,
+                "trap": ctx.trap,
+                "fav_rank_ltp": ctx.fav_rank_ltp,
+                "gor": ctx.gor,
+                "base_price": _pick_bounds_price(ctx, slot.price_for_bounds),
+                "bb": ctx.bb, "bl": ctx.bl,
+                "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                "cond_pass": False,
+                "exec_mode": None,
+                "limit_price_choice": None,
+                "order_price": None,
+                "edge": None,
+                "max_runner_cap": None,
+                "stake": None, "liability": None, "reason": "missing_mom45",
+                "note": "missing_mom45",
+            })
+        return None
+
     # Evaluate condition with protection
     cond_pass = False
     cond_note = ""
@@ -539,6 +566,7 @@ class Slot:
     strategy_region: Optional[str] = None
     strategy_signal: Optional[str] = None
     strategy_bucket: Optional[str] = None
+    requires_mom45: bool = False
 
     # Staking params
     edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_401)
@@ -999,6 +1027,7 @@ def register_mom45_systems(registry: List[Slot]):
         exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_MOM45_UK", strategy_region="UK",
         strategy_signal="MOM45", strategy_bucket="PLACE_7_PLUS_NEG",
+        requires_mom45=True,
         bet_per_market=False,
         edge_env="EDGE_MOM45_PLACE_LAY_UK_7_PLUS_NEG",
         max_runner_stake_env="MAX_RUNNER_STAKE_MOM45_PLACE_LAY_UK_7_PLUS_NEG",
@@ -1009,6 +1038,7 @@ def register_mom45_systems(registry: List[Slot]):
         exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_MOM45_UK", strategy_region="UK",
         strategy_signal="MOM45", strategy_bucket="PLACE_15_PLUS_POS",
+        requires_mom45=True,
         bet_per_market=False,
         edge_env="EDGE_MOM45_PLACE_LAY_UK_15_PLUS_POS",
         max_runner_stake_env="MAX_RUNNER_STAKE_MOM45_PLACE_LAY_UK_15_PLUS_POS",
@@ -1019,6 +1049,7 @@ def register_mom45_systems(registry: List[Slot]):
         exec_mode=ExecMode.HYB, price_for_bounds="WINBET",
         market_family="WIN", strategy_group="WIN_BACK_MOM45_UK", strategy_region="UK",
         strategy_signal="MOM45", strategy_bucket="WINBET_2.8_7_POS",
+        requires_mom45=True,
         bet_per_market=False,
         edge_env="EDGE_MOM45_WIN_BACK_UK_2_8_7_POS",
         max_runner_stake_env="MAX_RUNNER_STAKE_MOM45_WIN_BACK_UK_2_8_7_POS",
@@ -1029,6 +1060,7 @@ def register_mom45_systems(registry: List[Slot]):
         exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_MOM45_ROW", strategy_region="ROW",
         strategy_signal="MOM45", strategy_bucket="PLACE_15_PLUS_NEG",
+        requires_mom45=True,
         bet_per_market=False,
         edge_env="EDGE_MOM45_PLACE_LAY_ROW_15_PLUS_NEG",
         max_runner_stake_env="MAX_RUNNER_STAKE_MOM45_PLACE_LAY_ROW_15_PLUS_NEG",
@@ -1039,6 +1071,7 @@ def register_mom45_systems(registry: List[Slot]):
         exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_MOM45_ROW", strategy_region="ROW",
         strategy_signal="MOM45", strategy_bucket="PLACE_15_PLUS_POS",
+        requires_mom45=True,
         bet_per_market=False,
         edge_env="EDGE_MOM45_PLACE_LAY_ROW_15_PLUS_POS",
         max_runner_stake_env="MAX_RUNNER_STAKE_MOM45_PLACE_LAY_ROW_15_PLUS_POS",

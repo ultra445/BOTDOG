@@ -36,6 +36,9 @@ ROW_REGION_HINTS = {
     "nz",
 }
 
+ROW_PATH_CODE_PATTERN = re.compile(r"(?:^|[\\/])(?:AUS|NZL)(?=$|[\\/])", re.IGNORECASE)
+ROW_MEETING_SUFFIX_PATTERN = re.compile(r"\((?:AUS|NZL)\)", re.IGNORECASE)
+
 RESULT_SCREEN_TOKENS = {
     "bet ref",
     "result",
@@ -58,6 +61,8 @@ def normalize_gruss_region(
         if value not in (None, "")
     ).casefold()
 
+    if _has_row_region_marker(event_path, market_title, meeting_name, meeting):
+        return "ROW"
     if any(hint in haystack for hint in ROW_REGION_HINTS):
         return "ROW"
     if meeting.casefold() in UK_GREYHOUND_MEETINGS:
@@ -114,6 +119,14 @@ def gruss_country_code_for_region(region: str) -> str | None:
 
 def _meeting_from_event_path(event_path: Any) -> str:
     return normalize_gruss_meeting_name(event_path)
+
+
+def _has_row_region_marker(*values: Any) -> bool:
+    for value in values:
+        text = _clean(value)
+        if ROW_PATH_CODE_PATTERN.search(text) or ROW_MEETING_SUFFIX_PATTERN.search(text):
+            return True
+    return False
 
 
 def _clean(value: Any) -> str:
