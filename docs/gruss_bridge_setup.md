@@ -167,3 +167,24 @@ Les courses traitees sont conservees dans
 Tous les signaux produits au meme tick sont traites comme un batch. La course
 n'est marquee comme traitee qu'apres toutes les tentatives du batch; le tick
 suivant est ensuite ignore.
+
+## Limites runtime du vrai mode reel
+
+Ces limites s'appliquent uniquement au vrai mode reel avec trigger. Elles
+n'affectent ni dry-run, ni preview, ni write-no-trigger:
+
+```powershell
+$env:DOGBOT_GRUSS_REAL_TEST_MODE="true"
+$env:DOGBOT_GRUSS_REAL_MAX_ORDERS="1"
+$env:DOGBOT_GRUSS_REAL_MAX_STAKE="1"
+```
+
+En test mode, les valeurs par defaut sont un ordre reel par course et une mise
+maximale de 1. Une mise superieure est refusee, jamais plafonnee silencieusement,
+avec `stake_above_real_test_limit`. Les ordres au-dela de la limite par course
+sont refuses avec `max_orders_reached`.
+
+Hors test mode, les limites restent applicables si
+`DOGBOT_GRUSS_REAL_MAX_ORDERS` ou `DOGBOT_GRUSS_REAL_MAX_STAKE` sont definies.
+Si elles sont absentes ou vides, aucune limite runtime supplementaire n'est
+appliquee.

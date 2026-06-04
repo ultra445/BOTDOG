@@ -516,6 +516,88 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "GRUSS_REAL_WRITTEN")
         self.assertEqual(rows[0]["dry_run_or_real"], "REAL")
 
+    def test_real_test_mode_limits_ten_signals_to_one_order(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=10):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            results = [
+                provider.place_order(_intent(strategy_id=f"BACK_PLACE_{index}"), _context())
+                for index in range(10)
+            ]
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(results[0].status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(
+            [result.reason for result in results[1:]],
+            ["max_orders_reached"] * 9,
+        )
+        self.assertEqual(len(bridge.write_calls), 1)
+        self.assertEqual([row["reason"] for row in rows[1:]], ["max_orders_reached"] * 9)
+
+    def test_real_test_mode_defaults_to_one_order_and_one_stake_unit(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=None, max_stake=None):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+
+        self.assertEqual(provider.real_max_orders, 1)
+        self.assertEqual(provider.real_max_stake, 1.0)
+
+    def test_real_test_mode_rejects_stake_above_limit(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=10, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(stake=2.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertEqual(result.reason, "stake_above_real_test_limit")
+        self.assertEqual(rows[0]["reason"], "stake_above_real_test_limit")
+        self.assertEqual(bridge.connect_calls, 0)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_configured_real_limit_applies_outside_test_mode(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(
+            real_test_mode=False,
+            max_orders=1,
+            max_stake=10,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            first = provider.place_order(_intent(strategy_id="BACK_PLACE_101"), _context())
+            second = provider.place_order(_intent(strategy_id="BACK_PLACE_102"), _context())
+
+        self.assertEqual(first.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(second.reason, "max_orders_reached")
+        self.assertEqual(len(bridge.write_calls), 1)
+
+    def test_preview_ignores_real_test_limits(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(
+            preview=True,
+            max_orders=0,
+            max_stake=0,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(stake=2.0), _context())
+
+        self.assertEqual(result.status, "GRUSS_REAL_PREVIEW")
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_ignores_real_test_limits(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(
+            enabled=False,
+            real_test_mode=True,
+            max_orders=0,
+            max_stake=0,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(stake=2.0), _context())
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertFalse(result.trigger_written)
+        self.assertEqual(len(bridge.write_calls), 1)
+
     def test_real_provider_treats_real_preview_absent_as_false(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, patch.dict(
@@ -560,21 +642,57 @@ def _provider_env(*, preview: bool, layout_confirmed: bool = False):
             "DOGBOT_GRUSS_REAL_PREVIEW": str(preview).lower(),
             "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
             "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": str(layout_confirmed).lower(),
+            "DOGBOT_GRUSS_REAL_TEST_MODE": "false",
+            "DOGBOT_GRUSS_REAL_MAX_ORDERS": "",
+            "DOGBOT_GRUSS_REAL_MAX_STAKE": "",
         },
         clear=False,
     )
 
 
-def _write_no_trigger_env(*, enabled: bool, preview: str | None = "false"):
+def _write_no_trigger_env(
+    *,
+    enabled: bool,
+    preview: str | None = "false",
+    real_test_mode: bool = False,
+    max_orders: int | None = None,
+    max_stake: float | None = None,
+):
     values = {
         "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
         "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": str(enabled).lower(),
         "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "true",
         "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+        "DOGBOT_GRUSS_REAL_TEST_MODE": str(real_test_mode).lower(),
+        "DOGBOT_GRUSS_REAL_MAX_ORDERS": "" if max_orders is None else str(max_orders),
+        "DOGBOT_GRUSS_REAL_MAX_STAKE": "" if max_stake is None else str(max_stake),
     }
     if preview is not None:
         values["DOGBOT_GRUSS_REAL_PREVIEW"] = preview
     return patch.dict("os.environ", values, clear=preview is None)
+
+
+def _real_test_env(
+    *,
+    real_test_mode: bool = True,
+    preview: bool = False,
+    max_orders: int | None = None,
+    max_stake: float | None = None,
+):
+    return patch.dict(
+        "os.environ",
+        {
+            "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+            "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+            "DOGBOT_GRUSS_REAL_PREVIEW": str(preview).lower(),
+            "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
+            "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+            "DOGBOT_GRUSS_REAL_TEST_MODE": str(real_test_mode).lower(),
+            "DOGBOT_GRUSS_REAL_MAX_ORDERS": "" if max_orders is None else str(max_orders),
+            "DOGBOT_GRUSS_REAL_MAX_STAKE": "" if max_stake is None else str(max_stake),
+        },
+        clear=False,
+    )
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:

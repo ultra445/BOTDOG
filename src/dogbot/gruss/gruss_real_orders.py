@@ -104,6 +104,7 @@ class GrussExcelOrderProvider:
         bridge: GrussExcelBridge | None = None,
         layout: GrussTriggerLayout | None = None,
         processed_markets: set[str] | None = None,
+        real_order_counts: dict[str, int] | None = None,
         preview_only_guard: bool = False,
         write_no_trigger_guard: bool = False,
     ) -> None:
@@ -118,7 +119,11 @@ class GrussExcelOrderProvider:
         self.layout_confirmed = _env_bool("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED", False)
         self.layout = layout or GrussTriggerLayout.from_env()
         self.processed_markets = processed_markets if processed_markets is not None else set()
+        self.real_order_counts = real_order_counts if real_order_counts is not None else {}
         self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
+        self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
+        self.real_max_orders = _real_max_orders(self.real_test_mode)
+        self.real_max_stake = _real_max_stake(self.real_test_mode)
 
     def place_order(
         self,
@@ -268,7 +273,8 @@ class GrussExcelOrderProvider:
                 write_plan=plan,
             )
 
-        self.processed_markets.add(_processed_key(intent, context))
+        real_key = _processed_key(intent, context)
+        self.real_order_counts[real_key] = self.real_order_counts.get(real_key, 0) + 1
         return self._finish(
             intent,
             context,
@@ -325,6 +331,15 @@ class GrussExcelOrderProvider:
             errors.append("countdown_elapsed")
         if context.market_already_processed or _processed_key(intent, context) in self.processed_markets:
             errors.append("market_already_processed")
+        if self._is_true_real_mode():
+            real_key = _processed_key(intent, context)
+            if (
+                self.real_max_orders is not None
+                and self.real_order_counts.get(real_key, 0) >= self.real_max_orders
+            ):
+                errors.append("max_orders_reached")
+            if self.real_max_stake is not None and _float_or_infinity(intent.stake) > self.real_max_stake:
+                errors.append("stake_above_real_test_limit")
 
         errors.extend(validate_order_intent(intent))
         if str(intent.order_type or "").upper() not in {"LIMIT", "SP_MOC"}:
@@ -462,6 +477,19 @@ class GrussExcelOrderProvider:
         self.preview = _env_bool("DOGBOT_GRUSS_REAL_PREVIEW", False)
         self.layout_confirmed = _env_bool("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED", False)
         self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
+        self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
+        self.real_max_orders = _real_max_orders(self.real_test_mode)
+        self.real_max_stake = _real_max_stake(self.real_test_mode)
+
+    def _is_true_real_mode(self) -> bool:
+        return (
+            self.order_provider == ORDER_PROVIDER_GRUSS_EXCEL_REAL
+            and self.enabled
+            and not self.preview_only_guard
+            and not self.write_no_trigger_guard
+            and not self.write_no_trigger
+            and not self.preview
+        )
 
     def _append_attempt(
         self,
@@ -561,6 +589,33 @@ def _valid_order_price(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return math.isfinite(number) and number > 1.01
+
+
+def _float_or_infinity(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.inf
+
+
+def _real_max_orders(real_test_mode: bool) -> int | None:
+    raw = os.getenv("DOGBOT_GRUSS_REAL_MAX_ORDERS")
+    if raw in (None, ""):
+        return 1 if real_test_mode else None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _real_max_stake(real_test_mode: bool) -> float | None:
+    raw = os.getenv("DOGBOT_GRUSS_REAL_MAX_STAKE")
+    if raw in (None, ""):
+        return 1.0 if real_test_mode else None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
