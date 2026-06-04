@@ -243,6 +243,33 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(len(intents), 1)
         self.assertEqual(intents[0].side, "LAY")
         self.assertEqual(intents[0].strategy_id, "LAY_PLACE_301")
+        self.assertEqual(intents[0].order_type, "LIMIT")
+
+    def test_build_order_intents_maps_static_sp_moc_strategy(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "LAY",
+                    "price_req": "9.4",
+                    "size_req": "2.0",
+                    "strategy": "LAY_PLACE_501",
+                    "course_id": "course-1",
+                    "status": "DRYRUN",
+                    "parent_id": "35678242",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(intents[0].order_type, "SP_MOC")
 
     def test_lay_place_trade_row_is_logged_to_gruss_orders_dryrun(self) -> None:
         win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")

@@ -572,7 +572,7 @@ def build_order_intents_from_trade_rows(
                 runner_name=getattr(runner, "runner_name", "") or "",
                 trap=trap,
                 side=row.get("side") or "",
-                order_type="LIMIT",
+                order_type=_order_type_for_trade_row(row),
                 price=_as_float_or_none(row.get("price_req")),
                 stake=_as_float_or_none(row.get("size_req")),
                 strategy_id=row.get("strategy") or "",
@@ -582,6 +582,21 @@ def build_order_intents_from_trade_rows(
             )
         )
     return intents
+
+
+def _order_type_for_trade_row(row: dict[str, str]) -> str:
+    explicit_mode = str(row.get("exec_mode") or "").upper()
+    if explicit_mode == "SP_MOC":
+        return "SP_MOC"
+    if explicit_mode in {"LIMIT", "LIMIT_LTP", "LIM"}:
+        return "LIMIT"
+
+    strategy_id = str(row.get("strategy") or "")
+    for slot in build_registry():
+        if _slot_id(slot) != strategy_id:
+            continue
+        return "SP_MOC" if _slot_mode(slot) == "SP_MOC" else "LIMIT"
+    return "LIMIT"
 
 
 def seed_gruss_momentum_into_executor(

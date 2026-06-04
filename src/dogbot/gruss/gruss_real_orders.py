@@ -25,6 +25,8 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "runner",
     "trap",
     "side",
+    "order_type",
+    "intended_trigger",
     "stake",
     "price",
     "strategy_id",
@@ -33,6 +35,8 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "excel_sheet",
     "excel_row",
     "excel_cells_written",
+    "cells_written",
+    "trigger_written",
 ]
 
 
@@ -82,6 +86,8 @@ class GrussRealOrderResult:
     excel_row: int | None = None
     excel_cells_written: tuple[str, ...] = ()
     write_plan: tuple[tuple[str, Any], ...] = ()
+    trigger_written: bool = False
+    intended_trigger: str = ""
 
 
 class GrussExcelOrderProvider:
@@ -99,17 +105,20 @@ class GrussExcelOrderProvider:
         layout: GrussTriggerLayout | None = None,
         processed_markets: set[str] | None = None,
         preview_only_guard: bool = False,
+        write_no_trigger_guard: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.output_path = self.data_dir / "gruss_real_order_attempts.csv"
         self.bridge = bridge or GrussExcelBridge(DEFAULT_WORKBOOK_PATH)
+        self.preview_only_guard = bool(preview_only_guard)
+        self.write_no_trigger_guard = bool(write_no_trigger_guard)
         self.order_provider = os.getenv("DOGBOT_ORDER_PROVIDER", "").strip().lower()
         self.enabled = _env_bool("DOGBOT_GRUSS_ENABLE_REAL_ORDERS", False)
-        self.preview = _env_bool("DOGBOT_GRUSS_REAL_PREVIEW", True)
+        self.preview = _env_bool("DOGBOT_GRUSS_REAL_PREVIEW", False)
         self.layout_confirmed = _env_bool("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED", False)
         self.layout = layout or GrussTriggerLayout.from_env()
         self.processed_markets = processed_markets if processed_markets is not None else set()
-        self.preview_only_guard = bool(preview_only_guard)
+        self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
 
     def place_order(
         self,
@@ -158,6 +167,72 @@ class GrussExcelOrderProvider:
             )
 
         plan = self._build_write_plan(intent, runner_row)
+        if self.write_no_trigger_guard:
+            try:
+                preparation_plan = self._without_trigger(plan, runner_row)
+            except Exception as exc:
+                return self._finish(
+                    intent,
+                    context,
+                    "REJECTED_REAL",
+                    f"unsafe_preparation_layout: {exc}",
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                )
+            trigger_address = f"{self.layout.trigger_column}{runner_row}"
+            try:
+                trigger_value = self.bridge.read_cell(sheet_name, trigger_address)
+            except Exception as exc:
+                return self._finish(
+                    intent,
+                    context,
+                    "REJECTED_REAL",
+                    f"trigger_cell_read_failed: {exc}",
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=preparation_plan,
+                )
+            if trigger_value not in (None, ""):
+                return self._finish(
+                    intent,
+                    context,
+                    "REJECTED_REAL",
+                    "trigger_cell_not_empty",
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=preparation_plan,
+                )
+            try:
+                written = tuple(
+                    self.bridge.write_cells_without_trigger(
+                        sheet_name,
+                        preparation_plan,
+                        trigger_address=trigger_address,
+                        allow_write=True,
+                    )
+                )
+            except Exception as exc:
+                return self._finish(
+                    intent,
+                    context,
+                    "REJECTED_REAL",
+                    f"excel_write_failed: {exc}",
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=preparation_plan,
+                )
+            return self._finish(
+                intent,
+                context,
+                "GRUSS_WRITE_NO_TRIGGER",
+                "no_trigger_written",
+                excel_sheet=sheet_name,
+                excel_row=runner_row,
+                excel_cells_written=written,
+                write_plan=preparation_plan,
+                trigger_written=False,
+            )
+
         if self.preview:
             return self._finish(
                 intent,
@@ -203,6 +278,7 @@ class GrussExcelOrderProvider:
             excel_row=runner_row,
             excel_cells_written=written,
             write_plan=plan,
+            trigger_written=True,
         )
 
     def _preflight_errors(
@@ -213,11 +289,23 @@ class GrussExcelOrderProvider:
         errors: list[str] = []
         if self.order_provider != ORDER_PROVIDER_GRUSS_EXCEL_REAL:
             errors.append(f"real_provider_not_selected={self.order_provider or 'unset'}")
+        if self.preview_only_guard and self.write_no_trigger_guard:
+            errors.append("conflicting_provider_safety_guards")
+        if self.write_no_trigger_guard and not self.write_no_trigger:
+            errors.append("write_no_trigger_mode_not_enabled")
+        if self.write_no_trigger_guard and self.preview:
+            errors.append("write_no_trigger_requires_real_preview_false")
+        if self.write_no_trigger and not self.write_no_trigger_guard:
+            errors.append("write_no_trigger_requires_guarded_provider")
         if self.preview_only_guard and self.enabled:
             errors.append("preview_only_refuses_real_orders_enabled")
         if self.preview_only_guard and not self.preview:
             errors.append("preview_only_requires_preview")
-        if not self.enabled and not (self.preview_only_guard and self.preview):
+        guarded_unarmed_mode = (
+            (self.preview_only_guard and self.preview)
+            or (self.write_no_trigger_guard and self.write_no_trigger)
+        )
+        if not self.enabled and not guarded_unarmed_mode:
             errors.append("real_orders_not_enabled: set DOGBOT_GRUSS_ENABLE_REAL_ORDERS=true")
         if not context.validation_ok:
             errors.append("win_place_validation_failed")
@@ -227,8 +315,12 @@ class GrussExcelOrderProvider:
             errors.append("unknown_region")
         if context.countdown_seconds is None:
             errors.append("countdown_seconds_unavailable")
-        elif context.countdown_seconds > 3:
-            errors.append("countdown_above_3_seconds")
+        elif context.countdown_seconds > (2 if self.write_no_trigger_guard else 3):
+            errors.append(
+                "countdown_above_2_seconds"
+                if self.write_no_trigger_guard
+                else "countdown_above_3_seconds"
+            )
         elif context.countdown_seconds < 0:
             errors.append("countdown_elapsed")
         if context.market_already_processed or _processed_key(intent, context) in self.processed_markets:
@@ -299,6 +391,28 @@ class GrussExcelOrderProvider:
         }
         return triggers[key]
 
+    def _without_trigger(
+        self,
+        plan: Iterable[tuple[str, Any]],
+        row: int,
+    ) -> tuple[tuple[str, Any], ...]:
+        trigger_address = f"{self.layout.trigger_column}{row}".upper()
+        preparation = tuple(
+            (address, value)
+            for address, value in plan
+            if str(address).upper() != trigger_address
+        )
+        if any(str(address).upper() == trigger_address for address, _ in preparation):
+            raise RuntimeError("trigger_cell_present_in_no_trigger_plan")
+        addresses = [str(address).upper() for address, _ in preparation]
+        expected = {
+            f"{self.layout.odds_column}{row}".upper(),
+            f"{self.layout.stake_column}{row}".upper(),
+        }
+        if len(addresses) != 2 or len(set(addresses)) != 2 or set(addresses) != expected:
+            raise RuntimeError("preparation_plan_must_contain_only_distinct_odds_and_stake_cells")
+        return preparation
+
     def _finish(
         self,
         intent: OrderIntent,
@@ -310,9 +424,14 @@ class GrussExcelOrderProvider:
         excel_row: int | None = None,
         excel_cells_written: Iterable[str] = (),
         write_plan: Iterable[tuple[str, Any]] = (),
+        trigger_written: bool = False,
     ) -> GrussRealOrderResult:
         addresses = tuple(excel_cells_written)
         plan = tuple(write_plan)
+        try:
+            intended_trigger = self._trigger_for(intent)
+        except Exception:
+            intended_trigger = ""
         self._append_attempt(
             intent,
             context,
@@ -321,6 +440,8 @@ class GrussExcelOrderProvider:
             excel_sheet=excel_sheet,
             excel_row=excel_row,
             excel_cells_written=addresses,
+            trigger_written=trigger_written,
+            intended_trigger=intended_trigger,
         )
         return GrussRealOrderResult(
             status=status,
@@ -330,14 +451,17 @@ class GrussExcelOrderProvider:
             excel_row=excel_row,
             excel_cells_written=addresses,
             write_plan=plan,
+            trigger_written=trigger_written,
+            intended_trigger=intended_trigger,
         )
 
     def _refresh_safety_flags(self) -> None:
         """Re-read every arming flag for each individual order attempt."""
         self.order_provider = os.getenv("DOGBOT_ORDER_PROVIDER", "").strip().lower()
         self.enabled = _env_bool("DOGBOT_GRUSS_ENABLE_REAL_ORDERS", False)
-        self.preview = _env_bool("DOGBOT_GRUSS_REAL_PREVIEW", True)
+        self.preview = _env_bool("DOGBOT_GRUSS_REAL_PREVIEW", False)
         self.layout_confirmed = _env_bool("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED", False)
+        self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
 
     def _append_attempt(
         self,
@@ -349,12 +473,17 @@ class GrussExcelOrderProvider:
         excel_sheet: str,
         excel_row: int | None,
         excel_cells_written: tuple[str, ...],
+        trigger_written: bool,
+        intended_trigger: str,
     ) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_attempt_log_header()
         write_header = not self.output_path.exists() or self.output_path.stat().st_size == 0
+        cells_written = ";".join(excel_cells_written)
+        mode = "WRITE_NO_TRIGGER" if self.write_no_trigger_guard else ("PREVIEW" if self.preview else "REAL")
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "dry_run_or_real": "PREVIEW" if self.preview else "REAL",
+            "dry_run_or_real": mode,
             "enabled": str(bool(self.enabled)).lower(),
             "provider": self.order_provider,
             "course": context.course or intent.course_id or "",
@@ -363,6 +492,8 @@ class GrussExcelOrderProvider:
             "runner": intent.runner_name,
             "trap": intent.trap,
             "side": intent.side,
+            "order_type": intent.order_type,
+            "intended_trigger": intended_trigger,
             "stake": intent.stake,
             "price": intent.price,
             "strategy_id": intent.strategy_id,
@@ -370,13 +501,29 @@ class GrussExcelOrderProvider:
             "reason": reason,
             "excel_sheet": excel_sheet,
             "excel_row": excel_row,
-            "excel_cells_written": ";".join(excel_cells_written),
+            "excel_cells_written": cells_written,
+            "cells_written": cells_written,
+            "trigger_written": str(bool(trigger_written)),
         }
         with self.output_path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=GRUSS_REAL_ATTEMPTS_HEADER)
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
+
+    def _ensure_attempt_log_header(self) -> None:
+        if not self.output_path.exists() or self.output_path.stat().st_size == 0:
+            return
+        with self.output_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames == GRUSS_REAL_ATTEMPTS_HEADER:
+                return
+            rows = list(reader)
+        with self.output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=GRUSS_REAL_ATTEMPTS_HEADER)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in GRUSS_REAL_ATTEMPTS_HEADER})
 
 
 def _processed_key(intent: OrderIntent, context: GrussRealOrderContext) -> str:

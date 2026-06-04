@@ -121,6 +121,30 @@ class GrussExcelBridge:
             written.append(address)
         return written
 
+    def write_cells_without_trigger(
+        self,
+        sheet_name: str,
+        cells: Iterable[tuple[str, Any]],
+        *,
+        trigger_address: str,
+        allow_write: bool = False,
+    ) -> list[str]:
+        """Write preparation cells while materially rejecting the trigger cell."""
+        prepared = tuple(cells)
+        forbidden = str(trigger_address).strip().upper()
+        if any(str(address).strip().upper() == forbidden for address, _ in prepared):
+            raise PermissionError(f"Trigger cell write forbidden: {trigger_address}")
+        if not allow_write:
+            raise PermissionError("Excel writes require allow_write=True")
+        sheet = self.get_sheet(sheet_name)
+        written: list[str] = []
+        for address, value in prepared:
+            if sheet.range(trigger_address).value not in (None, ""):
+                raise PermissionError(f"Trigger cell is not empty: {trigger_address}")
+            sheet.range(address).value = value
+            written.append(address)
+        return written
+
     def export_csv_diagnostic(
         self,
         sheet_name: str,

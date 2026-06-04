@@ -129,3 +129,41 @@ Ce watcher refuse de demarrer si les ordres reels sont armes. Il attend une
 course valide et tradable, puis evalue une seule fois lorsque le countdown est
 inferieur ou egal a 2 secondes. Il journalise uniquement les previews dans
 `data/gruss_real_order_attempts.csv`.
+
+## Ecriture de preparation sans trigger
+
+Le mode `write-no-trigger` ecrit uniquement les cellules de preparation Gruss
+connues (`R=Odds`, `S=Stake`). Il ne touche jamais la cellule `Q=Trigger`, donc
+les valeurs de trigger `BACK`, `LAY`, `BACKSP` et `LAYSP` ne sont jamais
+ecrites. Le side et la strategie restent visibles dans le journal diagnostic.
+Le champ `intended_trigger` montre la valeur qui aurait ete utilisee en mode
+reel, sans jamais l'ecrire dans Excel.
+
+```powershell
+$env:DOGBOT_DATA_PROVIDER="gruss_excel"
+$env:DOGBOT_ORDER_PROVIDER="gruss_excel_real"
+$env:DOGBOT_GRUSS_WRITE_NO_TRIGGER="true"
+$env:DOGBOT_GRUSS_ENABLE_REAL_ORDERS="false"
+$env:DOGBOT_GRUSS_REAL_PREVIEW="false"
+python scripts\watch_gruss_write_no_trigger.py --interval 1 --max-ticks 120
+```
+
+Ce mode n'exige pas l'armement reel. Meme si
+`DOGBOT_GRUSS_ENABLE_REAL_ORDERS=true` est present, le provider protege
+toujours la cellule Trigger. Il refuse aussi l'ecriture si cette cellule
+contient deja une valeur. Les tentatives sont journalisees avec:
+
+En mode write-no-trigger, `DOGBOT_GRUSS_REAL_PREVIEW` absent, vide ou egal a
+`false` est accepte. Seule la valeur `true` est refusee.
+
+- `status=GRUSS_WRITE_NO_TRIGGER`
+- `reason=no_trigger_written`
+- `cells_written=R...;S...`
+- `trigger_written=False`
+
+Les courses traitees sont conservees dans
+`data/gruss_write_no_trigger_processed.csv`.
+
+Tous les signaux produits au meme tick sont traites comme un batch. La course
+n'est marquee comme traitee qu'apres toutes les tentatives du batch; le tick
+suivant est ensuite ignore.

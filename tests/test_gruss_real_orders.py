@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from dogbot.config import ORDER_PROVIDER_GRUSS_EXCEL_REAL
+from dogbot.gruss.gruss_excel_bridge import GrussExcelBridge
 from dogbot.gruss.gruss_orders import make_order_intent
 from dogbot.gruss.gruss_real_orders import GrussExcelOrderProvider, GrussRealOrderContext
 
@@ -19,11 +20,13 @@ class FakeBridge:
         visible: bool = True,
         sheets=None,
         market_ids=None,
+        trigger_values=None,
     ) -> None:
         self.runner_values = runner_values or [["1. Test Runner"], ["2. Other Runner"]]
         self.visible = visible
         self.sheets = set(sheets or {"WIN", "PLACE"})
         self.market_ids = market_ids or {"WIN": "258836707", "PLACE": "258836708"}
+        self.trigger_values = trigger_values or {}
         self.connect_calls = 0
         self.write_calls: list[tuple[str, tuple[tuple[str, object], ...], bool]] = []
 
@@ -45,12 +48,56 @@ class FakeBridge:
             return self.market_ids.get(sheet_name)
         if address == "F2":
             return "Active"
+        if address.startswith("Q"):
+            return self.trigger_values.get((sheet_name, address))
         return None
 
     def write_cells(self, sheet_name: str, cells, *, allow_write: bool = False):
         plan = tuple(cells)
         self.write_calls.append((sheet_name, plan, allow_write))
         return [address for address, _ in plan]
+
+    def write_cells_without_trigger(
+        self,
+        sheet_name: str,
+        cells,
+        *,
+        trigger_address: str,
+        allow_write: bool = False,
+    ):
+        plan = tuple(cells)
+        if any(address == trigger_address for address, _ in plan):
+            raise AssertionError("trigger address reached write_cells_without_trigger")
+        return self.write_cells(sheet_name, plan, allow_write=allow_write)
+
+
+class FakeCellRange:
+    def __init__(self, cells: dict[str, object], address: str) -> None:
+        self.cells = cells
+        self.address = address
+
+    @property
+    def value(self):
+        return self.cells.get(self.address)
+
+    @value.setter
+    def value(self, value):
+        self.cells[self.address] = value
+
+
+class FakeSheet:
+    name = "PLACE"
+
+    def __init__(self) -> None:
+        self.cells: dict[str, object] = {}
+
+    def range(self, address: str) -> FakeCellRange:
+        return FakeCellRange(self.cells, address)
+
+
+class FakeWorkbook:
+    def __init__(self, sheet: FakeSheet) -> None:
+        self.sheets = [sheet]
 
 
 def _intent(**overrides):
@@ -90,6 +137,38 @@ def _context(**overrides):
 
 
 class GrussRealOrdersTests(unittest.TestCase):
+    def test_bridge_write_without_trigger_materially_rejects_trigger_address(self) -> None:
+        sheet = FakeSheet()
+        bridge = GrussExcelBridge()
+        bridge.workbook = FakeWorkbook(sheet)
+
+        with self.assertRaisesRegex(PermissionError, "Trigger cell write forbidden"):
+            bridge.write_cells_without_trigger(
+                "PLACE",
+                [("R5", 3.2), ("Q5", "BACK")],
+                trigger_address="Q5",
+                allow_write=True,
+            )
+
+        self.assertEqual(sheet.cells, {})
+
+    def test_bridge_write_without_trigger_rechecks_trigger_before_each_write(self) -> None:
+        sheet = FakeSheet()
+        sheet.cells["Q5"] = "LAY"
+        bridge = GrussExcelBridge()
+        bridge.workbook = FakeWorkbook(sheet)
+
+        with self.assertRaisesRegex(PermissionError, "Trigger cell is not empty"):
+            bridge.write_cells_without_trigger(
+                "PLACE",
+                [("R5", 3.2), ("S5", 2.0)],
+                trigger_address="Q5",
+                allow_write=True,
+            )
+
+        self.assertNotIn("R5", sheet.cells)
+        self.assertNotIn("S5", sheet.cells)
+
     def test_real_provider_refuses_when_enable_env_is_absent(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, patch.dict(
@@ -150,6 +229,7 @@ class GrussRealOrdersTests(unittest.TestCase):
                 "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
                 "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "false",
                 "DOGBOT_GRUSS_REAL_PREVIEW": "true",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
             },
             clear=False,
         ):
@@ -167,6 +247,7 @@ class GrussRealOrdersTests(unittest.TestCase):
                 "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
                 "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
                 "DOGBOT_GRUSS_REAL_PREVIEW": "true",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
             },
             clear=False,
         ):
@@ -186,6 +267,7 @@ class GrussRealOrdersTests(unittest.TestCase):
                 "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
                 "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "false",
                 "DOGBOT_GRUSS_REAL_PREVIEW": "false",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
                 "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
             },
             clear=False,
@@ -196,6 +278,154 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(result.status, "REJECTED_REAL")
         self.assertIn("preview_only_requires_preview", result.reason)
         self.assertEqual(bridge.connect_calls, 0)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_writes_preparation_cells_without_real_enable(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(side="LAY"), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertEqual(result.reason, "no_trigger_written")
+        self.assertFalse(result.trigger_written)
+        self.assertEqual(
+            bridge.write_calls,
+            [("PLACE", (("R5", 3.2), ("S5", 2.0)), True)],
+        )
+        self.assertNotIn("Q5", result.excel_cells_written)
+        self.assertEqual(rows[0]["cells_written"], "R5;S5")
+        self.assertEqual(rows[0]["trigger_written"], "False")
+
+    def test_write_no_trigger_allows_multiple_intents_in_same_batch_course(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            results = [
+                provider.place_order(
+                    _intent(strategy_id=f"BACK_PLACE_{index}", price=3.0 + index / 10),
+                    _context(),
+                )
+                for index in range(1, 4)
+            ]
+
+        self.assertEqual([result.status for result in results], ["GRUSS_WRITE_NO_TRIGGER"] * 3)
+        self.assertTrue(all(result.trigger_written is False for result in results))
+        self.assertEqual(len(bridge.write_calls), 3)
+        self.assertTrue(
+            all(
+                all(address != "Q5" for address, _ in plan)
+                for _, plan, _ in bridge.write_calls
+            )
+        )
+
+    def test_write_no_trigger_accepts_real_preview_absent(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False, preview=None):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertFalse(result.trigger_written)
+
+    def test_write_no_trigger_accepts_real_preview_empty(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False, preview=""):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertFalse(result.trigger_written)
+
+    def test_write_no_trigger_accepts_real_preview_false(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False, preview="false"):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertFalse(result.trigger_written)
+
+    def test_write_no_trigger_refuses_real_preview_true(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False, preview="true"):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertIn("write_no_trigger_requires_real_preview_false", result.reason)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_never_writes_trigger_even_when_real_enabled(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(order_type="SP_MOC", side="BACK"), _context())
+
+        self.assertEqual(result.status, "GRUSS_WRITE_NO_TRIGGER")
+        self.assertEqual(result.write_plan, (("R5", 3.2), ("S5", 2.0)))
+        self.assertEqual(result.intended_trigger, "BACKSP")
+        self.assertTrue(all(address != "Q5" for address, _ in bridge.write_calls[0][1]))
+        self.assertFalse(result.trigger_written)
+
+    def test_regular_real_provider_refuses_when_write_no_trigger_flag_is_set(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertIn("write_no_trigger_requires_guarded_provider", result.reason)
+        self.assertEqual(bridge.connect_calls, 0)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_refuses_dangerous_context(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(
+                _intent(),
+                _context(validation_ok=False, tradable=False, region="UNKNOWN", countdown_seconds=3),
+            )
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertIn("win_place_validation_failed", result.reason)
+        self.assertIn("market_not_tradable", result.reason)
+        self.assertIn("unknown_region", result.reason)
+        self.assertIn("countdown_above_2_seconds", result.reason)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_refuses_invalid_price_and_stake(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(price=1.01, stake=0), _context())
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertIn("invalid_price", result.reason)
+        self.assertIn("invalid_stake", result.reason)
+        self.assertEqual(bridge.connect_calls, 0)
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_refuses_changed_market(self) -> None:
+        bridge = FakeBridge(market_ids={"WIN": "999", "PLACE": "258836708"})
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertEqual(result.reason, "current_market_id_mismatch=WIN:999")
+        self.assertEqual(bridge.write_calls, [])
+
+    def test_write_no_trigger_refuses_nonempty_trigger_cell(self) -> None:
+        bridge = FakeBridge(trigger_values={("PLACE", "Q5"): "LAY"})
+        with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "REJECTED_REAL")
+        self.assertEqual(result.reason, "trigger_cell_not_empty")
         self.assertEqual(bridge.write_calls, [])
 
     def test_real_provider_refuses_invalid_price(self) -> None:
@@ -286,6 +516,41 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "GRUSS_REAL_WRITTEN")
         self.assertEqual(rows[0]["dry_run_or_real"], "REAL")
 
+    def test_real_provider_treats_real_preview_absent_as_false(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+                "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
+                "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+            },
+            clear=True,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+
+    def test_real_provider_treats_empty_real_preview_as_false(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+                "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+                "DOGBOT_GRUSS_REAL_PREVIEW": "",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
+                "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+            },
+            clear=True,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context())
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+
 def _provider_env(*, preview: bool, layout_confirmed: bool = False):
     return patch.dict(
         "os.environ",
@@ -293,10 +558,23 @@ def _provider_env(*, preview: bool, layout_confirmed: bool = False):
             "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
             "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
             "DOGBOT_GRUSS_REAL_PREVIEW": str(preview).lower(),
+            "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
             "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": str(layout_confirmed).lower(),
         },
         clear=False,
     )
+
+
+def _write_no_trigger_env(*, enabled: bool, preview: str | None = "false"):
+    values = {
+        "DOGBOT_ORDER_PROVIDER": ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+        "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": str(enabled).lower(),
+        "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "true",
+        "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+    }
+    if preview is not None:
+        values["DOGBOT_GRUSS_REAL_PREVIEW"] = preview
+    return patch.dict("os.environ", values, clear=preview is None)
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
