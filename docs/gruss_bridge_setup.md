@@ -1,6 +1,6 @@
 # Gruss Excel Bridge Setup
 
-Cette premiere passerelle lit uniquement les donnees Excel ecrites par Gruss Betting Assistant. Elle ne place aucun ordre et ne modifie aucune cellule de trigger Gruss.
+Par defaut, cette passerelle lit uniquement les donnees Excel ecrites par Gruss Betting Assistant. Les scripts de lecture et de dry-run ne placent aucun ordre et ne modifient aucune cellule de trigger Gruss.
 
 ## Preparation
 
@@ -82,3 +82,50 @@ python scripts\watch_gruss_dryrun.py --interval 1 --max-ticks 120
 Ces scripts utilisent les strategies existantes uniquement en dry-run. Ils n'envoient aucun ordre et n'ecrivent pas dans Excel.
 
 Les lignes `DRYRUN` generees depuis Gruss dans `data/trades_YYYYMMDD.csv` sont enrichies avec les diagnostics Gruss: provider, market ids WIN/PLACE, parent id, countdown, tradable, meilleures cotes WIN/PLACE, place theorique, EV place et titres/path Gruss quand ces valeurs sont disponibles.
+
+## Preview du provider d'ordres Gruss reel
+
+Le provider reel est desactive par defaut. La commande de preview exige une
+activation explicite, mais force toujours le mode preview et n'ecrit aucune
+cellule Excel:
+
+```powershell
+$env:DOGBOT_DATA_PROVIDER="gruss_excel"
+$env:DOGBOT_ORDER_PROVIDER="gruss_excel_real"
+$env:DOGBOT_GRUSS_ENABLE_REAL_ORDERS="true"
+$env:DOGBOT_GRUSS_REAL_PREVIEW="true"
+python scripts\run_gruss_real_preview_once.py --market-type PLACE --trap 1 --side BACK --stake 2
+```
+
+Le plan exact des cellules qui seraient ecrites est affiche et l'essai est
+journalise dans:
+
+`data/gruss_real_order_attempts.csv`
+
+Le layout standard configure est `Q=Trigger`, `R=Odds`, `S=Stake`, avec le
+trigger ecrit en dernier. Les ordres `SP_MOC` sont traduits en `BACKSP` ou
+`LAYSP` et exigent aussi un prix limite explicite. Une ecriture reelle exige en
+plus:
+
+```powershell
+$env:DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED="true"
+$env:DOGBOT_GRUSS_REAL_PREVIEW="false"
+```
+
+Ne pas activer ces deux variables avant d'avoir confirme manuellement le layout
+du workbook Gruss. Aucun script dry-run existant n'active le provider reel.
+
+Surveillance continue du provider reel en preview-only:
+
+```powershell
+$env:DOGBOT_DATA_PROVIDER="gruss_excel"
+$env:DOGBOT_ORDER_PROVIDER="gruss_excel_real"
+$env:DOGBOT_GRUSS_ENABLE_REAL_ORDERS="false"
+$env:DOGBOT_GRUSS_REAL_PREVIEW="true"
+python scripts\watch_gruss_real_preview.py --interval 1 --max-ticks 120
+```
+
+Ce watcher refuse de demarrer si les ordres reels sont armes. Il attend une
+course valide et tradable, puis evalue une seule fois lorsque le countdown est
+inferieur ou egal a 2 secondes. Il journalise uniquement les previews dans
+`data/gruss_real_order_attempts.csv`.

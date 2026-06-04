@@ -1,4 +1,4 @@
-"""Read-only bridge helpers for Gruss Betting Assistant Excel sheets."""
+"""Gruss Betting Assistant Excel bridge helpers."""
 
 from dogbot.gruss.gruss_excel_bridge import GrussExcelBridge
 from dogbot.gruss.gruss_mapper import (
@@ -22,6 +22,12 @@ from dogbot.gruss.gruss_momentum import (
     gruss_win_base_price,
 )
 from dogbot.gruss.gruss_orders import GrussOrderProvider, GrussOrderResult, OrderIntent
+from dogbot.gruss.gruss_real_orders import (
+    GrussExcelOrderProvider,
+    GrussRealOrderContext,
+    GrussRealOrderResult,
+    GrussTriggerLayout,
+)
 from dogbot.gruss.gruss_region import normalize_gruss_meeting_name, normalize_gruss_region
 
 __all__ = [
@@ -41,6 +47,10 @@ __all__ = [
     "GrussOrderProvider",
     "GrussOrderResult",
     "OrderIntent",
+    "GrussExcelOrderProvider",
+    "GrussRealOrderContext",
+    "GrussRealOrderResult",
+    "GrussTriggerLayout",
     "GrussMomentumBuffer",
     "GrussMomentumCourseStatus",
     "GrussMomentumValue",

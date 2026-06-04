@@ -261,6 +261,7 @@ DATA_PROVIDER_BETFAIR_API = "betfair_api"
 DATA_PROVIDER_GRUSS_EXCEL = "gruss_excel"
 ORDER_PROVIDER_DRY_RUN = "dry_run"
 ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN = "gruss_excel_dryrun"
+ORDER_PROVIDER_GRUSS_EXCEL_REAL = "gruss_excel_real"
 
 
 @dataclass(frozen=True)
@@ -271,9 +272,18 @@ class ProviderConfig:
 
 def load_provider_config() -> ProviderConfig:
     data_provider = os.getenv("DOGBOT_DATA_PROVIDER", DATA_PROVIDER_BETFAIR_API).strip().lower()
-    order_provider = os.getenv("DOGBOT_ORDER_PROVIDER", ORDER_PROVIDER_DRY_RUN).strip().lower()
+    default_order_provider = (
+        ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN
+        if data_provider == DATA_PROVIDER_GRUSS_EXCEL
+        else ORDER_PROVIDER_DRY_RUN
+    )
+    order_provider = os.getenv("DOGBOT_ORDER_PROVIDER", default_order_provider).strip().lower()
     if data_provider not in {DATA_PROVIDER_BETFAIR_API, DATA_PROVIDER_GRUSS_EXCEL}:
         raise ValueError(f"unsupported DOGBOT_DATA_PROVIDER={data_provider!r}")
-    if order_provider not in {ORDER_PROVIDER_DRY_RUN, ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN}:
+    if order_provider not in {
+        ORDER_PROVIDER_DRY_RUN,
+        ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN,
+        ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+    }:
         raise ValueError(f"unsupported DOGBOT_ORDER_PROVIDER={order_provider!r}")
     return ProviderConfig(data_provider=data_provider, order_provider=order_provider)

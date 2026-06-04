@@ -18,7 +18,12 @@ class CsvDumpResult:
 
 
 class GrussExcelBridge:
-    """Read-only access to the Excel workbook populated by Gruss."""
+    """Access to the Excel workbook populated by Gruss.
+
+    Reads are available by default. Writes require an explicit per-call
+    ``allow_write=True`` guard and are intended only for the separately armed
+    Gruss real-order provider.
+    """
 
     def __init__(self, workbook_path: str | Path = DEFAULT_WORKBOOK_PATH) -> None:
         self.workbook_path = Path(workbook_path)
@@ -87,6 +92,34 @@ class GrussExcelBridge:
         sheet = self.get_sheet(sheet_name)
         values = sheet.range(address).value
         return self._as_matrix(values)
+
+    def read_cell(self, sheet_name: str, address: str) -> Any:
+        sheet = self.get_sheet(sheet_name)
+        return sheet.range(address).value
+
+    def is_workbook_visible(self) -> bool:
+        workbook = self._require_workbook()
+        try:
+            return bool(workbook.app.visible)
+        except Exception:
+            return False
+
+    def write_cells(
+        self,
+        sheet_name: str,
+        cells: Iterable[tuple[str, Any]],
+        *,
+        allow_write: bool = False,
+    ) -> list[str]:
+        """Write cells sequentially only after an explicit safety opt-in."""
+        if not allow_write:
+            raise PermissionError("Excel writes require allow_write=True")
+        sheet = self.get_sheet(sheet_name)
+        written: list[str] = []
+        for address, value in cells:
+            sheet.range(address).value = value
+            written.append(address)
+        return written
 
     def export_csv_diagnostic(
         self,
