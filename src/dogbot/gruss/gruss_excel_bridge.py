@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -144,6 +145,32 @@ class GrussExcelBridge:
             sheet.range(address).value = value
             written.append(address)
         return written
+
+    def clear_trigger_cells(
+        self,
+        sheet_name: str,
+        addresses: Iterable[str],
+        *,
+        trigger_column: str,
+        allow_clear: bool = False,
+    ) -> list[str]:
+        """Clear only validated trigger-column cells after explicit opt-in."""
+        prepared = tuple(str(address).strip().upper() for address in addresses)
+        column = str(trigger_column).strip().upper()
+        pattern = re.compile(rf"^{re.escape(column)}[1-9][0-9]*$")
+        if not prepared:
+            return []
+        if not column.isalpha() or any(not pattern.fullmatch(address) for address in prepared):
+            raise PermissionError("Only trigger-column cells may be cleared")
+        if not allow_clear:
+            raise PermissionError("Trigger clearing requires allow_clear=True")
+
+        sheet = self.get_sheet(sheet_name)
+        cleared: list[str] = []
+        for address in prepared:
+            sheet.range(address).value = None
+            cleared.append(address)
+        return cleared
 
     def export_csv_diagnostic(
         self,

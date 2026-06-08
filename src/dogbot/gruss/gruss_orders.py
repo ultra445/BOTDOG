@@ -44,6 +44,17 @@ class OrderIntent:
     course_id: str | None
     timestamp: str
     dry_run: bool
+    stake_original: float | None = None
+    stake_forced: bool = False
+    force_test_bsp_place: bool = False
+    force_test_back_place_limit: bool = False
+    selected_reason: str | None = None
+    selected_runner: str | None = None
+    selected_trap: int | None = None
+    selected_place_odds: float | None = None
+    selected_place_back_odds: float | None = None
+    selected_place_lay_odds: float | None = None
+    price_used: float | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +106,7 @@ class GrussOrderProvider:
             writer.writerow(row)
 
 
-def validate_order_intent(intent: OrderIntent) -> list[str]:
+def validate_order_intent(intent: OrderIntent, *, minimum_stake: float = 2.0) -> list[str]:
     errors: list[str] = []
     if str(intent.market_type or "").upper() not in {"WIN", "PLACE"}:
         errors.append("invalid_market_type")
@@ -107,7 +118,7 @@ def validate_order_intent(intent: OrderIntent) -> list[str]:
         stake = float(intent.stake) if intent.stake is not None else 0.0
     except (TypeError, ValueError):
         stake = 0.0
-    if stake < 2.0:
+    if stake < minimum_stake:
         errors.append("stake_below_minimum")
     if str(intent.order_type or "").upper() == "LIMIT":
         try:
@@ -135,6 +146,17 @@ def make_order_intent(
     course_id: str | None,
     timestamp: str | None = None,
     dry_run: bool = True,
+    stake_original: float | None = None,
+    stake_forced: bool = False,
+    force_test_bsp_place: bool = False,
+    force_test_back_place_limit: bool = False,
+    selected_reason: str | None = None,
+    selected_runner: str | None = None,
+    selected_trap: int | None = None,
+    selected_place_odds: float | None = None,
+    selected_place_back_odds: float | None = None,
+    selected_place_lay_odds: float | None = None,
+    price_used: float | None = None,
 ) -> OrderIntent:
     return OrderIntent(
         provider=provider,
@@ -151,6 +173,17 @@ def make_order_intent(
         course_id=course_id,
         timestamp=timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         dry_run=bool(dry_run),
+        stake_original=stake_original,
+        stake_forced=bool(stake_forced),
+        force_test_bsp_place=bool(force_test_bsp_place),
+        force_test_back_place_limit=bool(force_test_back_place_limit),
+        selected_reason=selected_reason,
+        selected_runner=selected_runner,
+        selected_trap=selected_trap,
+        selected_place_odds=selected_place_odds,
+        selected_place_back_odds=selected_place_back_odds,
+        selected_place_lay_odds=selected_place_lay_odds,
+        price_used=price_used,
     )
 
 

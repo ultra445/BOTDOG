@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,20 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "side",
     "order_type",
     "intended_trigger",
+    "trigger",
     "stake",
+    "stake_original",
+    "stake_used",
+    "stake_forced",
+    "force_test_bsp_place",
+    "force_test_back_place_limit",
+    "selected_reason",
+    "selected_runner",
+    "selected_trap",
+    "selected_place_odds",
+    "selected_place_back_odds",
+    "selected_place_lay_odds",
+    "price_used",
     "price",
     "strategy_id",
     "status",
@@ -36,7 +50,25 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "excel_row",
     "excel_cells_written",
     "cells_written",
+    "trigger_cell_address",
+    "trigger_cell_current_value",
+    "trigger_cell_expected_empty",
+    "trigger_mapping_name",
     "trigger_written",
+    "trigger_value_written",
+    "trigger_clear_attempted",
+    "trigger_cleared",
+    "trigger_clear_reason",
+    "trigger_cell_value_before_clear",
+    "trigger_clear_delay_ms",
+    "post_write_odds_cell_address",
+    "post_write_odds_value",
+    "post_write_stake_cell_address",
+    "post_write_stake_value",
+    "post_write_trigger_cell_address",
+    "post_write_trigger_value",
+    "post_write_verified",
+    "hold_trigger_for_visual_test",
 ]
 
 
@@ -76,6 +108,25 @@ class GrussTriggerLayout:
             lay_sp_moc_trigger=os.getenv("DOGBOT_GRUSS_LAY_SP_MOC_TRIGGER", "LAYSP").strip().upper(),
         )
 
+    def trigger_mapping_name(self, side: str, order_type: str) -> str:
+        key = (str(side).upper(), str(order_type).upper())
+        mappings = {
+            ("BACK", "LIMIT"): self.back_limit_trigger,
+            ("LAY", "LIMIT"): self.lay_limit_trigger,
+            ("BACK", "SP_MOC"): self.back_sp_moc_trigger,
+            ("LAY", "SP_MOC"): self.lay_sp_moc_trigger,
+        }
+        return mappings[key]
+
+    def trigger_address(self, row: int) -> str:
+        return f"{self.trigger_column}{row}".upper()
+
+    def odds_address(self, row: int) -> str:
+        return f"{self.odds_column}{row}".upper()
+
+    def stake_address(self, row: int) -> str:
+        return f"{self.stake_column}{row}".upper()
+
 
 @dataclass(frozen=True)
 class GrussRealOrderResult:
@@ -88,6 +139,47 @@ class GrussRealOrderResult:
     write_plan: tuple[tuple[str, Any], ...] = ()
     trigger_written: bool = False
     intended_trigger: str = ""
+    stake_original: float | None = None
+    stake_used: float | None = None
+    stake_forced: bool = False
+    trigger_cell_address: str = ""
+    trigger_cell_current_value: Any = None
+    trigger_cell_expected_empty: bool | None = None
+    trigger_mapping_name: str = ""
+    trigger_value_written: str = ""
+    trigger_clear_attempted: bool = False
+    trigger_cleared: bool = False
+    trigger_clear_reason: str = ""
+    trigger_cell_value_before_clear: Any = None
+    trigger_clear_delay_ms: int = 0
+    post_write_odds_cell_address: str = ""
+    post_write_odds_value: Any = None
+    post_write_stake_cell_address: str = ""
+    post_write_stake_value: Any = None
+    post_write_trigger_cell_address: str = ""
+    post_write_trigger_value: Any = None
+    post_write_verified: bool | None = None
+    hold_trigger_for_visual_test: bool = False
+
+
+@dataclass(frozen=True)
+class _TriggerClearOutcome:
+    attempted: bool = False
+    cleared: bool = False
+    reason: str = ""
+    value_before_clear: Any = None
+    delay_ms: int = 0
+
+
+@dataclass(frozen=True)
+class _PostWriteVerification:
+    odds_cell_address: str
+    odds_value: Any
+    stake_cell_address: str
+    stake_value: Any
+    trigger_cell_address: str
+    trigger_value: Any
+    verified: bool
 
 
 class GrussExcelOrderProvider:
@@ -124,6 +216,11 @@ class GrussExcelOrderProvider:
         self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
         self.real_max_orders = _real_max_orders(self.real_test_mode)
         self.real_max_stake = _real_max_stake(self.real_test_mode)
+        self.trigger_clear_delay_ms = _trigger_clear_delay_ms()
+        self.hold_trigger_for_visual_test = _env_bool(
+            "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST",
+            False,
+        )
 
     def place_order(
         self,
@@ -184,7 +281,8 @@ class GrussExcelOrderProvider:
                     excel_sheet=sheet_name,
                     excel_row=runner_row,
                 )
-            trigger_address = f"{self.layout.trigger_column}{runner_row}"
+            trigger_address = self.layout.trigger_address(runner_row)
+            trigger_mapping_name = self._trigger_for(intent)
             try:
                 trigger_value = self.bridge.read_cell(sheet_name, trigger_address)
             except Exception as exc:
@@ -196,6 +294,8 @@ class GrussExcelOrderProvider:
                     excel_sheet=sheet_name,
                     excel_row=runner_row,
                     write_plan=preparation_plan,
+                    trigger_cell_address=trigger_address,
+                    trigger_mapping_name=trigger_mapping_name,
                 )
             if trigger_value not in (None, ""):
                 return self._finish(
@@ -206,6 +306,10 @@ class GrussExcelOrderProvider:
                     excel_sheet=sheet_name,
                     excel_row=runner_row,
                     write_plan=preparation_plan,
+                    trigger_cell_address=trigger_address,
+                    trigger_cell_current_value=trigger_value,
+                    trigger_cell_expected_empty=False,
+                    trigger_mapping_name=trigger_mapping_name,
                 )
             try:
                 written = tuple(
@@ -225,6 +329,10 @@ class GrussExcelOrderProvider:
                     excel_sheet=sheet_name,
                     excel_row=runner_row,
                     write_plan=preparation_plan,
+                    trigger_cell_address=trigger_address,
+                    trigger_cell_current_value=trigger_value,
+                    trigger_cell_expected_empty=True,
+                    trigger_mapping_name=trigger_mapping_name,
                 )
             return self._finish(
                 intent,
@@ -236,6 +344,10 @@ class GrussExcelOrderProvider:
                 excel_cells_written=written,
                 write_plan=preparation_plan,
                 trigger_written=False,
+                trigger_cell_address=trigger_address,
+                trigger_cell_current_value=trigger_value,
+                trigger_cell_expected_empty=True,
+                trigger_mapping_name=trigger_mapping_name,
             )
 
         if self.preview:
@@ -260,6 +372,37 @@ class GrussExcelOrderProvider:
                 write_plan=plan,
             )
 
+        trigger_address = self.layout.trigger_address(runner_row)
+        trigger_mapping_name = self._trigger_for(intent)
+        try:
+            trigger_value = self.bridge.read_cell(sheet_name, trigger_address)
+        except Exception as exc:
+            return self._finish(
+                intent,
+                context,
+                "REJECTED_REAL",
+                f"trigger_cell_read_failed: {exc}",
+                excel_sheet=sheet_name,
+                excel_row=runner_row,
+                write_plan=plan,
+                trigger_cell_address=trigger_address,
+                trigger_mapping_name=trigger_mapping_name,
+            )
+        if trigger_value not in (None, ""):
+            return self._finish(
+                intent,
+                context,
+                "REJECTED_REAL",
+                "trigger_cell_not_empty",
+                excel_sheet=sheet_name,
+                excel_row=runner_row,
+                write_plan=plan,
+                trigger_cell_address=trigger_address,
+                trigger_cell_current_value=trigger_value,
+                trigger_cell_expected_empty=False,
+                trigger_mapping_name=trigger_mapping_name,
+            )
+
         try:
             written = tuple(self.bridge.write_cells(sheet_name, plan, allow_write=True))
         except Exception as exc:
@@ -271,6 +414,48 @@ class GrussExcelOrderProvider:
                 excel_sheet=sheet_name,
                 excel_row=runner_row,
                 write_plan=plan,
+                trigger_cell_address=trigger_address,
+                trigger_cell_current_value=trigger_value,
+                trigger_cell_expected_empty=True,
+                trigger_mapping_name=trigger_mapping_name,
+            )
+
+        verification = self._verify_real_write(sheet_name, runner_row, plan)
+        trigger_written = _values_match(trigger_mapping_name, verification.trigger_value)
+        clear_outcome = _TriggerClearOutcome()
+        if trigger_written:
+            clear_outcome = self._clear_written_trigger(
+                sheet_name,
+                trigger_address,
+                trigger_mapping_name,
+                hold_for_visual_test=self.hold_trigger_for_visual_test,
+            )
+        finish_kwargs = {
+            "excel_sheet": sheet_name,
+            "excel_row": runner_row,
+            "excel_cells_written": written,
+            "write_plan": plan,
+            "trigger_written": trigger_written,
+            "trigger_cell_address": trigger_address,
+            "trigger_cell_current_value": trigger_value,
+            "trigger_cell_expected_empty": True,
+            "trigger_mapping_name": trigger_mapping_name,
+            "trigger_value_written": trigger_mapping_name if trigger_written else "",
+            "trigger_clear_attempted": clear_outcome.attempted,
+            "trigger_cleared": clear_outcome.cleared,
+            "trigger_clear_reason": clear_outcome.reason,
+            "trigger_cell_value_before_clear": clear_outcome.value_before_clear,
+            "trigger_clear_delay_ms": clear_outcome.delay_ms,
+            "post_write_verification": verification,
+            "hold_trigger_for_visual_test": self.hold_trigger_for_visual_test,
+        }
+        if not verification.verified:
+            return self._finish(
+                intent,
+                context,
+                "GRUSS_WRITE_FAILED",
+                "post_write_verification_failed",
+                **finish_kwargs,
             )
 
         real_key = _processed_key(intent, context)
@@ -280,11 +465,7 @@ class GrussExcelOrderProvider:
             context,
             "GRUSS_REAL_WRITTEN",
             "excel_trigger_written",
-            excel_sheet=sheet_name,
-            excel_row=runner_row,
-            excel_cells_written=written,
-            write_plan=plan,
-            trigger_written=True,
+            **finish_kwargs,
         )
 
     def _preflight_errors(
@@ -307,11 +488,8 @@ class GrussExcelOrderProvider:
             errors.append("preview_only_refuses_real_orders_enabled")
         if self.preview_only_guard and not self.preview:
             errors.append("preview_only_requires_preview")
-        guarded_unarmed_mode = (
-            (self.preview_only_guard and self.preview)
-            or (self.write_no_trigger_guard and self.write_no_trigger)
-        )
-        if not self.enabled and not guarded_unarmed_mode:
+        unarmed_safe_mode = self.preview or (self.write_no_trigger_guard and self.write_no_trigger)
+        if not self.enabled and not unarmed_safe_mode:
             errors.append("real_orders_not_enabled: set DOGBOT_GRUSS_ENABLE_REAL_ORDERS=true")
         if not context.validation_ok:
             errors.append("win_place_validation_failed")
@@ -331,6 +509,24 @@ class GrussExcelOrderProvider:
             errors.append("countdown_elapsed")
         if context.market_already_processed or _processed_key(intent, context) in self.processed_markets:
             errors.append("market_already_processed")
+        if (
+            intent.stake_forced
+            and not self.preview
+            and not (self._is_true_real_mode() and self.real_test_mode)
+        ):
+            errors.append("forced_stake_requires_real_test_mode")
+        if (
+            self.hold_trigger_for_visual_test
+            and not self.preview
+            and not (self._is_true_real_mode() and self.real_test_mode)
+        ):
+            errors.append("hold_trigger_for_visual_test_requires_real_test_mode")
+        if intent.force_test_bsp_place and intent.force_test_back_place_limit:
+            errors.append("forced_test_modes_are_mutually_exclusive")
+        if intent.force_test_bsp_place:
+            errors.extend(self._force_test_bsp_place_errors(intent))
+        if intent.force_test_back_place_limit:
+            errors.extend(self._force_test_back_place_limit_errors(intent))
         if self._is_true_real_mode():
             real_key = _processed_key(intent, context)
             if (
@@ -341,7 +537,8 @@ class GrussExcelOrderProvider:
             if self.real_max_stake is not None and _float_or_infinity(intent.stake) > self.real_max_stake:
                 errors.append("stake_above_real_test_limit")
 
-        errors.extend(validate_order_intent(intent))
+        minimum_stake = 0.01 if self._is_true_real_mode() and self.real_test_mode else 2.0
+        errors.extend(validate_order_intent(intent, minimum_stake=minimum_stake))
         if str(intent.order_type or "").upper() not in {"LIMIT", "SP_MOC"}:
             errors.append("invalid_order_type")
         if not _positive_finite(intent.stake):
@@ -349,6 +546,56 @@ class GrussExcelOrderProvider:
         if not _valid_order_price(intent.price):
             errors.append("invalid_price")
         return _dedupe(errors)
+
+    def _force_test_bsp_place_errors(self, intent: OrderIntent) -> list[str]:
+        errors: list[str] = []
+        if not (self._is_true_real_mode() and self.real_test_mode):
+            errors.append("force_test_bsp_place_requires_real_test_mode")
+        if self.real_max_orders != 1:
+            errors.append("force_test_bsp_place_requires_max_orders_1")
+        if self.real_max_stake is None or self.real_max_stake <= 0 or self.real_max_stake > 2.0:
+            errors.append("force_test_bsp_place_requires_max_stake_lte_2")
+        if not intent.stake_forced:
+            errors.append("force_test_bsp_place_requires_forced_stake")
+        elif _float_or_infinity(intent.stake) > min(self.real_max_stake or 0.0, 2.0):
+            errors.append("force_test_bsp_place_forced_stake_above_max")
+        if str(intent.market_type or "").upper() != "PLACE":
+            errors.append("force_test_bsp_place_requires_place_market")
+        if str(intent.side or "").upper() != "BACK":
+            errors.append("force_test_bsp_place_requires_back")
+        if str(intent.order_type or "").upper() != "SP_MOC":
+            errors.append("force_test_bsp_place_requires_sp_moc")
+        if str(intent.strategy_id or "") != "GRUSS_FORCE_TEST_BSP_PLACE":
+            errors.append("force_test_bsp_place_invalid_strategy_id")
+        if not str(self.layout.back_sp_moc_trigger or "").strip():
+            errors.append("back_sp_mapping_unavailable")
+        return errors
+
+    def _force_test_back_place_limit_errors(self, intent: OrderIntent) -> list[str]:
+        errors: list[str] = []
+        if not (self._is_true_real_mode() and self.real_test_mode):
+            errors.append("force_test_back_place_limit_requires_real_test_mode")
+        if self.real_max_orders != 1:
+            errors.append("force_test_back_place_limit_requires_max_orders_1")
+        if self.real_max_stake is None or self.real_max_stake <= 0 or self.real_max_stake > 2.0:
+            errors.append("force_test_back_place_limit_requires_max_stake_lte_2")
+        if not intent.stake_forced:
+            errors.append("force_test_back_place_limit_requires_forced_stake")
+        elif _float_or_infinity(intent.stake) > min(self.real_max_stake or 0.0, 2.0):
+            errors.append("force_test_back_place_limit_forced_stake_above_max")
+        if str(intent.market_type or "").upper() != "PLACE":
+            errors.append("force_test_back_place_limit_requires_place_market")
+        if str(intent.side or "").upper() != "BACK":
+            errors.append("force_test_back_place_limit_requires_back")
+        if str(intent.order_type or "").upper() != "LIMIT":
+            errors.append("force_test_back_place_limit_requires_limit")
+        if str(intent.strategy_id or "") != "GRUSS_FORCE_TEST_BACK_PLACE_LIMIT":
+            errors.append("force_test_back_place_limit_invalid_strategy_id")
+        if not _valid_order_price(intent.selected_place_lay_odds):
+            errors.append("missing_place_best_lay")
+        if _float_or_infinity(intent.price) != _float_or_infinity(intent.selected_place_lay_odds):
+            errors.append("force_test_back_place_limit_price_must_equal_best_lay")
+        return errors
 
     def _find_runner_row(self, sheet_name: str, intent: OrderIntent) -> int | None:
         values = self.bridge.read_range(sheet_name, "A5:A84")
@@ -389,29 +636,22 @@ class GrussExcelOrderProvider:
     def _build_write_plan(self, intent: OrderIntent, row: int) -> tuple[tuple[str, Any], ...]:
         trigger = self._trigger_for(intent)
         cells: list[tuple[str, Any]] = [
-            (f"{self.layout.odds_column}{row}", float(intent.price)),
+            (self.layout.odds_address(row), float(intent.price)),
         ]
-        cells.append((f"{self.layout.stake_column}{row}", float(intent.stake)))
+        cells.append((self.layout.stake_address(row), float(intent.stake)))
         # Trigger is deliberately written last.
-        cells.append((f"{self.layout.trigger_column}{row}", trigger))
+        cells.append((self.layout.trigger_address(row), trigger))
         return tuple(cells)
 
     def _trigger_for(self, intent: OrderIntent) -> str:
-        key = (str(intent.side).upper(), str(intent.order_type).upper())
-        triggers = {
-            ("BACK", "LIMIT"): self.layout.back_limit_trigger,
-            ("LAY", "LIMIT"): self.layout.lay_limit_trigger,
-            ("BACK", "SP_MOC"): self.layout.back_sp_moc_trigger,
-            ("LAY", "SP_MOC"): self.layout.lay_sp_moc_trigger,
-        }
-        return triggers[key]
+        return self.layout.trigger_mapping_name(intent.side, intent.order_type)
 
     def _without_trigger(
         self,
         plan: Iterable[tuple[str, Any]],
         row: int,
     ) -> tuple[tuple[str, Any], ...]:
-        trigger_address = f"{self.layout.trigger_column}{row}".upper()
+        trigger_address = self.layout.trigger_address(row)
         preparation = tuple(
             (address, value)
             for address, value in plan
@@ -421,12 +661,126 @@ class GrussExcelOrderProvider:
             raise RuntimeError("trigger_cell_present_in_no_trigger_plan")
         addresses = [str(address).upper() for address, _ in preparation]
         expected = {
-            f"{self.layout.odds_column}{row}".upper(),
-            f"{self.layout.stake_column}{row}".upper(),
+            self.layout.odds_address(row),
+            self.layout.stake_address(row),
         }
         if len(addresses) != 2 or len(set(addresses)) != 2 or set(addresses) != expected:
             raise RuntimeError("preparation_plan_must_contain_only_distinct_odds_and_stake_cells")
         return preparation
+
+    def _clear_written_trigger(
+        self,
+        sheet_name: str,
+        trigger_address: str,
+        trigger_value_written: str,
+        *,
+        hold_for_visual_test: bool = False,
+    ) -> _TriggerClearOutcome:
+        delay_ms = self.trigger_clear_delay_ms
+        try:
+            if hold_for_visual_test:
+                print(
+                    "holding trigger for visual test "
+                    f"{sheet_name}!{trigger_address}={trigger_value_written} "
+                    f"delay_ms={delay_ms}"
+                )
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
+            current_value = self.bridge.read_cell(sheet_name, trigger_address)
+        except Exception as exc:
+            return _TriggerClearOutcome(
+                attempted=True,
+                reason=f"trigger_clear_read_failed: {exc}",
+                delay_ms=delay_ms,
+            )
+
+        if trigger_value_written not in {"BACK", "LAY", "BACKSP", "LAYSP"}:
+            return _TriggerClearOutcome(
+                attempted=True,
+                reason="trigger_clear_skipped_unrecognized_trigger",
+                value_before_clear=current_value,
+                delay_ms=delay_ms,
+            )
+        if current_value != trigger_value_written:
+            return _TriggerClearOutcome(
+                attempted=True,
+                reason="trigger_clear_skipped_value_changed",
+                value_before_clear=current_value,
+                delay_ms=delay_ms,
+            )
+
+        try:
+            self.bridge.clear_trigger_cells(
+                sheet_name,
+                [trigger_address],
+                trigger_column=self.layout.trigger_column,
+                allow_clear=True,
+            )
+            value_after_clear = self.bridge.read_cell(sheet_name, trigger_address)
+        except Exception as exc:
+            return _TriggerClearOutcome(
+                attempted=True,
+                reason=f"trigger_clear_failed: {exc}",
+                value_before_clear=current_value,
+                delay_ms=delay_ms,
+            )
+        if value_after_clear not in (None, ""):
+            return _TriggerClearOutcome(
+                attempted=True,
+                reason="trigger_clear_verify_failed",
+                value_before_clear=current_value,
+                delay_ms=delay_ms,
+            )
+        return _TriggerClearOutcome(
+            attempted=True,
+            cleared=True,
+            reason="trigger_cleared",
+            value_before_clear=current_value,
+            delay_ms=delay_ms,
+        )
+
+    def _verify_real_write(
+        self,
+        sheet_name: str,
+        row: int,
+        plan: Iterable[tuple[str, Any]],
+    ) -> _PostWriteVerification:
+        expected = {str(address).upper(): value for address, value in plan}
+        odds_address = self.layout.odds_address(row)
+        stake_address = self.layout.stake_address(row)
+        trigger_address = self.layout.trigger_address(row)
+        odds_value = stake_value = trigger_value = None
+        try:
+            odds_value = self.bridge.read_cell(sheet_name, odds_address)
+            stake_value = self.bridge.read_cell(sheet_name, stake_address)
+            trigger_value = self.bridge.read_cell(sheet_name, trigger_address)
+        except Exception:
+            return _PostWriteVerification(
+                odds_address,
+                odds_value,
+                stake_address,
+                stake_value,
+                trigger_address,
+                trigger_value,
+                False,
+            )
+        verified = all(
+            _values_match(expected.get(address), actual)
+            for address, actual in (
+                (odds_address, odds_value),
+                (stake_address, stake_value),
+                (trigger_address, trigger_value),
+            )
+        )
+        return _PostWriteVerification(
+            odds_address,
+            odds_value,
+            stake_address,
+            stake_value,
+            trigger_address,
+            trigger_value,
+            verified,
+        )
 
     def _finish(
         self,
@@ -440,6 +794,18 @@ class GrussExcelOrderProvider:
         excel_cells_written: Iterable[str] = (),
         write_plan: Iterable[tuple[str, Any]] = (),
         trigger_written: bool = False,
+        trigger_cell_address: str = "",
+        trigger_cell_current_value: Any = None,
+        trigger_cell_expected_empty: bool | None = None,
+        trigger_mapping_name: str = "",
+        trigger_value_written: str = "",
+        trigger_clear_attempted: bool = False,
+        trigger_cleared: bool = False,
+        trigger_clear_reason: str = "",
+        trigger_cell_value_before_clear: Any = None,
+        trigger_clear_delay_ms: int = 0,
+        post_write_verification: _PostWriteVerification | None = None,
+        hold_trigger_for_visual_test: bool = False,
     ) -> GrussRealOrderResult:
         addresses = tuple(excel_cells_written)
         plan = tuple(write_plan)
@@ -457,6 +823,18 @@ class GrussExcelOrderProvider:
             excel_cells_written=addresses,
             trigger_written=trigger_written,
             intended_trigger=intended_trigger,
+            trigger_cell_address=trigger_cell_address,
+            trigger_cell_current_value=trigger_cell_current_value,
+            trigger_cell_expected_empty=trigger_cell_expected_empty,
+            trigger_mapping_name=trigger_mapping_name or intended_trigger,
+            trigger_value_written=trigger_value_written,
+            trigger_clear_attempted=trigger_clear_attempted,
+            trigger_cleared=trigger_cleared,
+            trigger_clear_reason=trigger_clear_reason,
+            trigger_cell_value_before_clear=trigger_cell_value_before_clear,
+            trigger_clear_delay_ms=trigger_clear_delay_ms,
+            post_write_verification=post_write_verification,
+            hold_trigger_for_visual_test=hold_trigger_for_visual_test,
         )
         return GrussRealOrderResult(
             status=status,
@@ -468,6 +846,37 @@ class GrussExcelOrderProvider:
             write_plan=plan,
             trigger_written=trigger_written,
             intended_trigger=intended_trigger,
+            stake_original=intent.stake_original if intent.stake_original is not None else intent.stake,
+            stake_used=intent.stake,
+            stake_forced=bool(intent.stake_forced),
+            trigger_cell_address=trigger_cell_address,
+            trigger_cell_current_value=trigger_cell_current_value,
+            trigger_cell_expected_empty=trigger_cell_expected_empty,
+            trigger_mapping_name=trigger_mapping_name or intended_trigger,
+            trigger_value_written=trigger_value_written,
+            trigger_clear_attempted=trigger_clear_attempted,
+            trigger_cleared=trigger_cleared,
+            trigger_clear_reason=trigger_clear_reason,
+            trigger_cell_value_before_clear=trigger_cell_value_before_clear,
+            trigger_clear_delay_ms=trigger_clear_delay_ms,
+            post_write_odds_cell_address=(
+                post_write_verification.odds_cell_address if post_write_verification else ""
+            ),
+            post_write_odds_value=post_write_verification.odds_value if post_write_verification else None,
+            post_write_stake_cell_address=(
+                post_write_verification.stake_cell_address if post_write_verification else ""
+            ),
+            post_write_stake_value=(
+                post_write_verification.stake_value if post_write_verification else None
+            ),
+            post_write_trigger_cell_address=(
+                post_write_verification.trigger_cell_address if post_write_verification else ""
+            ),
+            post_write_trigger_value=(
+                post_write_verification.trigger_value if post_write_verification else None
+            ),
+            post_write_verified=post_write_verification.verified if post_write_verification else None,
+            hold_trigger_for_visual_test=hold_trigger_for_visual_test,
         )
 
     def _refresh_safety_flags(self) -> None:
@@ -480,6 +889,11 @@ class GrussExcelOrderProvider:
         self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
         self.real_max_orders = _real_max_orders(self.real_test_mode)
         self.real_max_stake = _real_max_stake(self.real_test_mode)
+        self.trigger_clear_delay_ms = _trigger_clear_delay_ms()
+        self.hold_trigger_for_visual_test = _env_bool(
+            "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST",
+            False,
+        )
 
     def _is_true_real_mode(self) -> bool:
         return (
@@ -503,6 +917,18 @@ class GrussExcelOrderProvider:
         excel_cells_written: tuple[str, ...],
         trigger_written: bool,
         intended_trigger: str,
+        trigger_cell_address: str,
+        trigger_cell_current_value: Any,
+        trigger_cell_expected_empty: bool | None,
+        trigger_mapping_name: str,
+        trigger_value_written: str,
+        trigger_clear_attempted: bool,
+        trigger_cleared: bool,
+        trigger_clear_reason: str,
+        trigger_cell_value_before_clear: Any,
+        trigger_clear_delay_ms: int,
+        post_write_verification: _PostWriteVerification | None,
+        hold_trigger_for_visual_test: bool,
     ) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_attempt_log_header()
@@ -522,7 +948,20 @@ class GrussExcelOrderProvider:
             "side": intent.side,
             "order_type": intent.order_type,
             "intended_trigger": intended_trigger,
+            "trigger": intended_trigger,
             "stake": intent.stake,
+            "stake_original": intent.stake_original if intent.stake_original is not None else intent.stake,
+            "stake_used": intent.stake,
+            "stake_forced": str(bool(intent.stake_forced)),
+            "force_test_bsp_place": str(bool(intent.force_test_bsp_place)),
+            "force_test_back_place_limit": str(bool(intent.force_test_back_place_limit)),
+            "selected_reason": intent.selected_reason or "",
+            "selected_runner": intent.selected_runner or "",
+            "selected_trap": intent.selected_trap,
+            "selected_place_odds": intent.selected_place_odds,
+            "selected_place_back_odds": intent.selected_place_back_odds,
+            "selected_place_lay_odds": intent.selected_place_lay_odds,
+            "price_used": intent.price_used if intent.price_used is not None else intent.price,
             "price": intent.price,
             "strategy_id": intent.strategy_id,
             "status": status,
@@ -531,7 +970,39 @@ class GrussExcelOrderProvider:
             "excel_row": excel_row,
             "excel_cells_written": cells_written,
             "cells_written": cells_written,
+            "trigger_cell_address": trigger_cell_address,
+            "trigger_cell_current_value": trigger_cell_current_value,
+            "trigger_cell_expected_empty": (
+                "" if trigger_cell_expected_empty is None else str(trigger_cell_expected_empty)
+            ),
+            "trigger_mapping_name": trigger_mapping_name or intended_trigger,
             "trigger_written": str(bool(trigger_written)),
+            "trigger_value_written": trigger_value_written,
+            "trigger_clear_attempted": str(bool(trigger_clear_attempted)),
+            "trigger_cleared": str(bool(trigger_cleared)),
+            "trigger_clear_reason": trigger_clear_reason,
+            "trigger_cell_value_before_clear": trigger_cell_value_before_clear,
+            "trigger_clear_delay_ms": trigger_clear_delay_ms,
+            "post_write_odds_cell_address": (
+                post_write_verification.odds_cell_address if post_write_verification else ""
+            ),
+            "post_write_odds_value": post_write_verification.odds_value if post_write_verification else "",
+            "post_write_stake_cell_address": (
+                post_write_verification.stake_cell_address if post_write_verification else ""
+            ),
+            "post_write_stake_value": (
+                post_write_verification.stake_value if post_write_verification else ""
+            ),
+            "post_write_trigger_cell_address": (
+                post_write_verification.trigger_cell_address if post_write_verification else ""
+            ),
+            "post_write_trigger_value": (
+                post_write_verification.trigger_value if post_write_verification else ""
+            ),
+            "post_write_verified": (
+                "" if post_write_verification is None else str(post_write_verification.verified)
+            ),
+            "hold_trigger_for_visual_test": str(bool(hold_trigger_for_visual_test)),
         }
         with self.output_path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=GRUSS_REAL_ATTEMPTS_HEADER)
@@ -591,6 +1062,21 @@ def _valid_order_price(value: Any) -> bool:
     return math.isfinite(number) and number > 1.01
 
 
+def _values_match(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        try:
+            actual_number = float(actual)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(actual_number) and math.isclose(
+            float(expected),
+            actual_number,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+    return expected == actual
+
+
 def _float_or_infinity(value: Any) -> float:
     try:
         return float(value)
@@ -616,6 +1102,16 @@ def _real_max_stake(real_test_mode: bool) -> float | None:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _trigger_clear_delay_ms() -> int:
+    raw = os.getenv("DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS")
+    if raw in (None, ""):
+        return 1500
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 1500
 
 
 def _env_bool(name: str, default: bool) -> bool:

@@ -22,6 +22,12 @@ class GrussRegionTests(unittest.TestCase):
     def test_sis_newcastle_is_uk(self) -> None:
         self.assertEqual(normalize_gruss_region(r"Greyhound Racing\SIS\Newcastle 3rd Jun"), "UK")
 
+    def test_sis_star_pelaw_is_uk(self) -> None:
+        self.assertEqual(normalize_gruss_region(r"Greyhound Racing\SIS\Star Pelaw 7th Jun"), "UK")
+
+    def test_star_pelaw_meeting_name_is_uk(self) -> None:
+        self.assertEqual(normalize_gruss_region(meeting_name="Star Pelaw"), "UK")
+
     def test_australia_the_meadows_is_row(self) -> None:
         self.assertEqual(normalize_gruss_region(r"Greyhound Racing\Australia\The Meadows"), "ROW")
 

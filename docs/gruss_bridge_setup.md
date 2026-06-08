@@ -188,3 +188,133 @@ Hors test mode, les limites restent applicables si
 `DOGBOT_GRUSS_REAL_MAX_ORDERS` ou `DOGBOT_GRUSS_REAL_MAX_STAKE` sont definies.
 Si elles sont absentes ou vides, aucune limite runtime supplementaire n'est
 appliquee.
+
+## Premier test reel limite
+
+Le watcher dedie au premier test reel exige un armement complet et refuse de
+demarrer si une limite est absente ou trop large:
+
+```powershell
+$env:DOGBOT_DATA_PROVIDER="gruss_excel"
+$env:DOGBOT_ORDER_PROVIDER="gruss_excel_real"
+$env:DOGBOT_GRUSS_ENABLE_REAL_ORDERS="true"
+$env:DOGBOT_GRUSS_REAL_TEST_MODE="true"
+$env:DOGBOT_GRUSS_REAL_MAX_ORDERS="1"
+$env:DOGBOT_GRUSS_REAL_MAX_STAKE="1"
+$env:DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE="1"
+$env:DOGBOT_GRUSS_REAL_PREVIEW="false"
+$env:DOGBOT_GRUSS_WRITE_NO_TRIGGER="false"
+$env:DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED="true"
+python scripts\watch_gruss_real_test.py --interval 1
+```
+
+Ce script peut ecrire un vrai trigger Excel. Il attend une course valide,
+tradable et connue jusqu'a T-2s, puis autorise au maximum un ordre reel par
+course. Toute mise superieure a la limite est refusee sans plafonnement. Toutes
+les tentatives restent journalisees dans `data/gruss_real_order_attempts.csv`.
+
+`DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE` est optionnelle et exclusivement lue par
+`watch_gruss_real_test.py`. Lorsqu'elle vaut `1`, la mise du signal est
+remplacee par `1` juste avant l'unique tentative reelle. Elle ne s'applique
+jamais au dry-run, preview ou write-no-trigger. Si elle depasse
+`DOGBOT_GRUSS_REAL_MAX_STAKE`, l'ordre est refuse avec
+`stake_above_real_test_limit`. Le journal conserve `stake_original`,
+`stake_used` et `stake_forced`.
+
+### Test force du canal BSP PLACE
+
+Le watcher reel test peut ignorer les strategies normales et construire un
+unique ordre de verification `BACK PLACE SP_MOC`. Il selectionne le runner
+ayant le plus faible `best_back` PLACE disponible et utilise le mapping Gruss
+existant `BACKSP`:
+
+```powershell
+$env:DOGBOT_GRUSS_FORCE_TEST_BSP_PLACE="true"
+$env:DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE="1"
+python scripts\watch_gruss_real_test.py --interval 1
+```
+
+Ce mode exige aussi tout l'armement du premier test reel, avec
+`DOGBOT_GRUSS_REAL_MAX_ORDERS=1`, `DOGBOT_GRUSS_REAL_MAX_STAKE=1` et le layout
+trigger confirme. Il refuse de demarrer hors real-test mode. Le journal ajoute
+`force_test_bsp_place`, `selected_reason`, `selected_runner`, `selected_trap`
+et `selected_place_odds`.
+
+### Test force BACK PLACE LIMIT
+
+Pour tester un BACK PLACE classique au meilleur prix LAY disponible:
+
+```powershell
+$env:DOGBOT_GRUSS_FORCE_TEST_BSP_PLACE="false"
+$env:DOGBOT_GRUSS_FORCE_TEST_BACK_PLACE_LIMIT="true"
+$env:DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE="1"
+python scripts\watch_gruss_real_test.py --interval 1
+```
+
+Ce mode est mutuellement exclusif avec le test BSP. Il selectionne le runner
+PLACE ayant le plus faible `best_back`, exige un `best_lay` valide, puis ecrit
+un unique ordre LIMIT avec `R{row}=best_lay`, `S{row}=1` et `Q{row}=BACK`.
+Les strategies normales ne sont pas evaluees. Le journal conserve
+`selected_place_back_odds`, `selected_place_lay_odds`, `price_used`, le trigger
+ecrit et le resultat du nettoyage differe de Q.
+
+Pour inspecter les cellules trigger PLACE sans aucune ecriture:
+
+```powershell
+python scripts\inspect_gruss_trigger_cells.py
+```
+
+Le layout configure actuellement `R{row}` pour Odds/SP, `S{row}` pour Stake et
+`Q{row}` comme cellule trigger commune. La valeur ecrite dans `Q{row}`
+distingue `BACK`, `LAY`, `BACKSP` et `LAYSP`. Le script affiche la valeur
+actuelle de cette cellule pour chaque runner et ne possede aucun chemin
+d'ecriture Excel.
+
+Pour previsualiser le nettoyage des cellules trigger non vides sur les lignes
+runners WIN et PLACE:
+
+```powershell
+python scripts\clear_gruss_trigger_cells.py
+```
+
+Pour effectuer le nettoyage:
+
+```powershell
+$env:DOGBOT_GRUSS_CLEAR_TRIGGERS="true"
+python scripts\clear_gruss_trigger_cells.py
+python scripts\inspect_gruss_trigger_cells.py
+```
+
+Le nettoyeur est limite materiellement aux cellules `Q{row}` des runners
+detectes en colonne A. Il ne peut pas modifier R/S et n'ecrit jamais de
+commande `BACK`, `LAY`, `BACKSP` ou `LAYSP`. Les previews et nettoyages sont
+journalises dans `data/gruss_trigger_clear_attempts.csv`.
+
+Apres un trigger reel effectivement ecrit, le provider relit uniquement cette
+cellule puis l'efface seulement si sa valeur correspond encore exactement au
+trigger ecrit. Le delai de relecture est configurable avec
+`DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS` et vaut `1500` ms par defaut. Pour les
+tests reels, utiliser par defaut:
+
+```powershell
+$env:DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS="1500"
+```
+
+Le delai peut etre augmente a `2000` ou `3000` ms si Gruss a besoin de plus de
+temps pour lire le trigger. Le nettoyage reste actif et ne s'applique jamais
+en preview ni en write-no-trigger.
+
+Toute ecriture reelle est maintenant relue immediatement dans R/S/Q. Un ordre
+n'est journalise `GRUSS_REAL_WRITTEN` et compte dans la limite reelle que si
+les trois valeurs relues correspondent aux valeurs ecrites. Sinon, le statut
+est `GRUSS_WRITE_FAILED` avec `post_write_verification_failed`.
+
+Pour rendre Q explicitement visible pendant le delai lors d'un real-test:
+
+```powershell
+$env:DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST="true"
+```
+
+Cette option est refusee hors `DOGBOT_GRUSS_REAL_TEST_MODE=true`. Elle ne
+desactive jamais le nettoyage: Q est efface apres
+`DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS`.

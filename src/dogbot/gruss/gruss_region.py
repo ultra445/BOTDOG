@@ -23,6 +23,7 @@ UK_GREYHOUND_MEETINGS = {
     "perry barr",
     "romford",
     "sheffield",
+    "star pelaw",
     "sunderland",
     "swindon",
     "towcester",
