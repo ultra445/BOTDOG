@@ -259,7 +259,7 @@ class GrussEngineAdapterTests(unittest.TestCase):
                     "side": "LAY",
                     "price_req": "9.4",
                     "size_req": "2.0",
-                    "strategy": "LAY_PLACE_501",
+                    "strategy": "LAY_PLACE_502",
                     "course_id": "course-1",
                     "status": "DRYRUN",
                     "parent_id": "35678242",
@@ -311,6 +311,8 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertGreater(diagnostics["by_market_type"].get("PLACE", 0), 0)
         self.assertTrue(diagnostics["lay_place_ids"])
         self.assertIn("LAY_PLACE_301", diagnostics["lay_place_ids"])
+        self.assertNotIn("LAY_PLACE_501", diagnostics["lay_place_ids"])
+        self.assertNotIn("LAY_PLACE_503", diagnostics["lay_place_ids"])
         details = {detail["strategy_id"]: detail for detail in diagnostics["details"]}
         self.assertFalse(details["LAY_PLACE_301"]["requires_mom45"])
         self.assertTrue(details["LAY_PLACE_541"]["requires_mom45"])

@@ -12,11 +12,16 @@ if str(SRC) not in sys.path:
 
 from dogbot.gruss.gruss_dryrun_engine import (
     GrussDryRunRunner,
+    active_strategy_milestones,
     create_configured_gruss_feed,
+    countdown_wait_reason,
+    current_strategy_milestone,
+    describe_current_strategy_milestone,
     describe_state,
     print_strategy_registry_diagnostics,
     race_key,
     read_gruss_dryrun_state,
+    strategy_milestone_key,
     validate_gruss_dryrun_provider_config,
 )
 from dogbot.gruss.gruss_excel_bridge import DEFAULT_WORKBOOK_PATH
@@ -35,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Gruss engine dry-run watcher")
     print(f"Workbook cible: {DEFAULT_WORKBOOK_PATH}")
     print("Aucun ordre ne sera envoye.")
+    print(f"active_milestones={list(active_strategy_milestones())}")
 
     try:
         config = validate_gruss_dryrun_provider_config()
@@ -77,21 +83,27 @@ def main(argv: list[str] | None = None) -> int:
             _sleep(args, tick)
             continue
 
-        seconds = state.win_snapshot.metadata.countdown_seconds
-        if seconds is None:
-            seconds = state.place_snapshot.metadata.countdown_seconds
-        if seconds is None:
-            print(f"tick={tick} skip: countdown_seconds_unavailable")
+        wait_reason = countdown_wait_reason(
+            state.win_snapshot.metadata.countdown_seconds,
+            state.place_snapshot.metadata.countdown_seconds,
+        )
+        if wait_reason:
+            print(f"tick={tick} {wait_reason}")
             _sleep(args, tick)
             continue
-        if seconds > args.trigger_seconds:
-            print(f"tick={tick} wait: countdown_seconds={seconds} > trigger={args.trigger_seconds}")
-            _sleep(args, tick)
-            continue
+        print(
+            f"tick={tick} "
+            f"{describe_current_strategy_milestone(state.win_snapshot.metadata.countdown_seconds, state.place_snapshot.metadata.countdown_seconds)}"
+        )
 
         key = race_key(state.win_snapshot, state.place_snapshot)
-        if runner.processed_store.has_seen(key):
-            print(f"tick={tick} skip: marche deja traite ({key})")
+        milestone = current_strategy_milestone(
+            state.win_snapshot.metadata.countdown_seconds,
+            state.place_snapshot.metadata.countdown_seconds,
+        )
+        processed_key = strategy_milestone_key(key, milestone)
+        if runner.processed_store.has_seen(processed_key):
+            print(f"tick={tick} skip: milestone deja traite ({processed_key})")
             _sleep(args, tick)
             continue
 
@@ -105,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                 momentum_buffer=momentum_buffer,
             )
             runner.processed_store.mark_seen(
-                key,
+                processed_key,
                 state.win_snapshot.metadata.market_id,
                 state.place_snapshot.metadata.market_id,
             )
@@ -121,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"tick={tick} ordres Gruss dry-run journalises: {len(order_results)}")
             else:
                 print(f"tick={tick} no signal")
-            print(f"tick={tick} evaluation dry-run terminee: {key}")
+            print(f"tick={tick} evaluation dry-run terminee: {processed_key}")
         except Exception as exc:
             print(f"tick={tick} skip: evaluation dry-run impossible: {exc}")
 
@@ -134,7 +146,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Gruss Excel through the bot engine in dry-run mode.")
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between Excel reads.")
     parser.add_argument("--max-ticks", type=int, default=None, help="Stop after N reads.")
-    parser.add_argument("--trigger-seconds", type=int, default=2, help="Evaluate once when countdown <= this value.")
+    parser.add_argument(
+        "--trigger-seconds",
+        type=int,
+        default=2,
+        help="Deprecated compatibility option; PRE/POST active milestones drive evaluation.",
+    )
     parser.add_argument("--debug-strategies", action="store_true", help="Print detailed PLACE strategy evaluations.")
     return parser.parse_args(argv)
 

@@ -268,7 +268,7 @@ class WatchGrussRealTestTests(unittest.TestCase):
         self.assertEqual(rows[0]["stake_forced"], "True")
         self.assertEqual([row["reason"] for row in rows[1:]], ["max_orders_reached"] * 9)
 
-    def test_without_force_large_strategy_stake_is_refused(self) -> None:
+    def test_without_force_large_strategy_stake_is_capped(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, patch.dict("os.environ", VALID_ENV, clear=True):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
@@ -282,11 +282,14 @@ class WatchGrussRealTestTests(unittest.TestCase):
                 place_market_id="place-1",
             )
 
-        self.assertEqual(results[0].reason, "stake_above_real_test_limit")
+        self.assertEqual(results[0].status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(results[0].reason, "excel_trigger_written")
         self.assertEqual(results[0].stake_original, 5)
-        self.assertEqual(results[0].stake_used, 5)
+        self.assertEqual(results[0].stake_used, 1)
         self.assertFalse(results[0].stake_forced)
-        self.assertEqual(bridge.write_calls, [])
+        self.assertTrue(results[0].stake_capped)
+        self.assertEqual(results[0].stake_cap_value, 1.0)
+        self.assertEqual(bridge.write_calls[0][1][1], ("S5", 1.0))
 
     def test_force_bsp_place_generates_exactly_one_intent_and_skips_strategies(self) -> None:
         normal_calls = []
@@ -519,12 +522,14 @@ class WatchGrussRealTestTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ouvert mais non visible"):
             watch_gruss_real_test.ensure_open_visible_workbook(HiddenBridge())
 
-    def test_waits_until_countdown_is_at_most_two_seconds(self) -> None:
+    def test_waits_only_outside_active_pre_post_milestones(self) -> None:
+        for seconds in (20, 15, 10, 5, 0):
+            with self.subTest(seconds=seconds):
+                self.assertIsNone(watch_gruss_real_test.countdown_wait_reason(seconds, seconds))
         self.assertEqual(
             watch_gruss_real_test.countdown_wait_reason(3, 3),
-            "wait: countdown_seconds=3 > trigger=2",
+            "wait: countdown_seconds=3 next_milestone=0 execution_phase=POST",
         )
-        self.assertIsNone(watch_gruss_real_test.countdown_wait_reason(2, 2))
 
     def test_valid_environment_is_accepted(self) -> None:
         self.assertEqual(

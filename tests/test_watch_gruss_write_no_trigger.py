@@ -136,12 +136,14 @@ class WatchGrussWriteNoTriggerTests(unittest.TestCase):
         env = dict(VALID_ENV, DOGBOT_GRUSS_ENABLE_REAL_ORDERS="true")
         watch_gruss_write_no_trigger.validate_write_no_trigger_environment(env)
 
-    def test_waits_until_countdown_is_at_most_two_seconds(self) -> None:
+    def test_waits_only_outside_active_pre_post_milestones(self) -> None:
+        for seconds in (20, 15, 10, 5, 0):
+            with self.subTest(seconds=seconds):
+                self.assertIsNone(watch_gruss_write_no_trigger.countdown_wait_reason(seconds, seconds))
         self.assertEqual(
             watch_gruss_write_no_trigger.countdown_wait_reason(3, 3),
-            "wait: countdown_seconds=3 > trigger=2",
+            "wait: countdown_seconds=3 next_milestone=0 execution_phase=POST",
         )
-        self.assertIsNone(watch_gruss_write_no_trigger.countdown_wait_reason(2, 2))
 
 
 if __name__ == "__main__":

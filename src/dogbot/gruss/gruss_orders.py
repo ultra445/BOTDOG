@@ -23,6 +23,10 @@ ORDERS_GRUSS_DRYRUN_HEADER = [
     "price",
     "stake",
     "strategy_id",
+    "selection_id",
+    "execution_phase",
+    "triggered_systems",
+    "triggered_prices",
     "status",
     "reason",
 ]
@@ -44,6 +48,10 @@ class OrderIntent:
     course_id: str | None
     timestamp: str
     dry_run: bool
+    selection_id: str | int | None = None
+    execution_phase: str = "POST"
+    triggered_systems: str | None = None
+    triggered_prices: str | None = None
     stake_original: float | None = None
     stake_forced: bool = False
     force_test_bsp_place: bool = False
@@ -157,6 +165,10 @@ def make_order_intent(
     selected_place_back_odds: float | None = None,
     selected_place_lay_odds: float | None = None,
     price_used: float | None = None,
+    selection_id: str | int | None = None,
+    execution_phase: str = "POST",
+    triggered_systems: str | None = None,
+    triggered_prices: str | None = None,
 ) -> OrderIntent:
     return OrderIntent(
         provider=provider,
@@ -173,6 +185,10 @@ def make_order_intent(
         course_id=course_id,
         timestamp=timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         dry_run=bool(dry_run),
+        selection_id=selection_id,
+        execution_phase=str(execution_phase or "POST").strip().upper(),
+        triggered_systems=triggered_systems,
+        triggered_prices=triggered_prices,
         stake_original=stake_original,
         stake_forced=bool(stake_forced),
         force_test_bsp_place=bool(force_test_bsp_place),

@@ -33,13 +33,14 @@ class WatchGrussRealPreviewTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "REAL_PREVIEW=true est obligatoire"):
             watch_gruss_real_preview.validate_real_preview_environment(env)
 
-    def test_waits_until_countdown_is_at_most_two_seconds(self) -> None:
+    def test_waits_only_outside_active_pre_post_milestones(self) -> None:
+        for seconds in (20, 15, 10, 5, 0):
+            with self.subTest(seconds=seconds):
+                self.assertIsNone(watch_gruss_real_preview.countdown_wait_reason(seconds, seconds))
         self.assertEqual(
             watch_gruss_real_preview.countdown_wait_reason(3, 3),
-            "wait: countdown_seconds=3 > trigger=2",
+            "wait: countdown_seconds=3 next_milestone=0 execution_phase=POST",
         )
-        self.assertIsNone(watch_gruss_real_preview.countdown_wait_reason(2, 2))
-        self.assertIsNone(watch_gruss_real_preview.countdown_wait_reason(1, 1))
 
     def test_valid_preview_environment_is_accepted(self) -> None:
         watch_gruss_real_preview.validate_real_preview_environment(VALID_ENV)

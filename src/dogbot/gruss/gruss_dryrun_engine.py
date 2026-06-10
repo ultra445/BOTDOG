@@ -15,6 +15,11 @@ from dogbot.config import (
     load_provider_config,
 )
 from dogbot.executor import Executor
+from dogbot.executor import (
+    POST_SEND_SECONDS_BEFORE_OFF,
+    _execution_phase_for_milestone,
+    _pre_ladder_steps_from_env,
+)
 from dogbot.feed_selector import create_data_feed_from_config
 from dogbot.gruss.gruss_engine_adapter import GrussEngineBundle, build_engine_bundle
 from dogbot.gruss.gruss_feed import GrussFeed
@@ -130,7 +135,7 @@ class GrussDryRunRunner:
         )
         if debug_strategies:
             install_gruss_strategy_debug_logger(executor)
-        _seed_t2_milestone_if_due(executor, bundle, win_snapshot, place_snapshot)
+        _seed_strategy_milestone_if_due(executor, bundle, win_snapshot, place_snapshot)
         executor.process_book(bundle.win_book)
         executor.process_book(bundle.place_book)
 
@@ -322,12 +327,18 @@ def strategy_registry_diagnostics() -> dict[str, Any]:
     slots = build_registry()
     by_side = Counter(_slot_side(slot) for slot in slots)
     by_market_type = Counter(_slot_market_type(slot) for slot in slots)
+    by_execution_phase = Counter(str(getattr(slot, "execution_phase", "POST")).upper() for slot in slots)
     place_slots = [slot for slot in slots if "PLACE" in _slot_id(slot).upper()]
     lay_place_slots = [slot for slot in slots if "LAY_PLACE" in _slot_id(slot).upper()]
+    pre_slots = [slot for slot in slots if str(getattr(slot, "execution_phase", "POST")).upper() == "PRE"]
+    post_slots = [slot for slot in slots if str(getattr(slot, "execution_phase", "POST")).upper() == "POST"]
     return {
         "total": len(slots),
         "by_side": dict(by_side),
         "by_market_type": dict(by_market_type),
+        "by_execution_phase": dict(by_execution_phase),
+        "pre_ids": [_slot_id(slot) for slot in pre_slots],
+        "post_ids": [_slot_id(slot) for slot in post_slots],
         "place_ids": [_slot_id(slot) for slot in place_slots],
         "lay_place_ids": [_slot_id(slot) for slot in lay_place_slots],
         "details": [
@@ -336,6 +347,7 @@ def strategy_registry_diagnostics() -> dict[str, Any]:
                 "side": _slot_side(slot),
                 "market_type": _slot_market_type(slot),
                 "mode": _slot_mode(slot),
+                "execution_phase": getattr(slot, "execution_phase", "POST"),
                 "requires_mom45": bool(getattr(slot, "requires_mom45", False)),
             }
             for slot in slots
@@ -349,6 +361,11 @@ def print_strategy_registry_diagnostics() -> None:
     print(f"  total: {diagnostics['total']}")
     print(f"  by side: {_format_counts(diagnostics['by_side'])}")
     print(f"  by market_type: {_format_counts(diagnostics['by_market_type'])}")
+    print(f"  by execution_phase: {_format_counts(diagnostics['by_execution_phase'])}")
+    print(f"  PRE total: {len(diagnostics['pre_ids'])}")
+    print(f"  POST total: {len(diagnostics['post_ids'])}")
+    print(f"  PRE strategy_ids: {', '.join(diagnostics['pre_ids']) or '-'}")
+    print(f"  POST strategy_ids: {', '.join(diagnostics['post_ids']) or '-'}")
     print(f"  PLACE strategy_ids: {', '.join(diagnostics['place_ids']) or '-'}")
     print(f"  LAY_PLACE strategy_ids: {', '.join(diagnostics['lay_place_ids']) or '-'}")
     print("  registry details:")
@@ -359,8 +376,89 @@ def print_strategy_registry_diagnostics() -> None:
             "    "
             f"{detail['strategy_id']} side={detail['side']} "
             f"market_type={detail['market_type']} mode={detail['mode']} "
+            f"execution_phase={detail['execution_phase']} "
             f"requires_mom45={detail['requires_mom45']}"
         )
+
+
+def active_strategy_milestones() -> tuple[int, ...]:
+    milestones = {POST_SEND_SECONDS_BEFORE_OFF}
+    has_pre_systems = any(
+        str(getattr(slot, "execution_phase", "POST")).upper() == "PRE"
+        for slot in build_registry()
+    )
+    if _env_true(os.getenv("DOGBOT_PRE_LADDER_PREVIEW"), default=True) or has_pre_systems:
+        milestones.update(_pre_ladder_steps_from_env())
+    return tuple(sorted(milestones, reverse=True))
+
+
+def current_strategy_milestone(
+    win_countdown_seconds: int | None,
+    place_countdown_seconds: int | None,
+) -> int | None:
+    seconds = win_countdown_seconds
+    if seconds is None:
+        seconds = place_countdown_seconds
+    if seconds is None:
+        return None
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        return None
+    return value if value in active_strategy_milestones() else None
+
+
+def countdown_wait_reason(
+    win_countdown_seconds: int | None,
+    place_countdown_seconds: int | None,
+) -> str | None:
+    seconds = win_countdown_seconds
+    if seconds is None:
+        seconds = place_countdown_seconds
+    if seconds is None:
+        return "skip: countdown_seconds_unavailable"
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        return "skip: countdown_seconds_unavailable"
+    milestones = active_strategy_milestones()
+    if value in milestones:
+        return None
+    future = [milestone for milestone in milestones if milestone < value]
+    if future:
+        next_milestone = max(future)
+        phase = _execution_phase_for_milestone(next_milestone) or "UNKNOWN"
+        return (
+            f"wait: countdown_seconds={value} next_milestone={next_milestone} "
+            f"execution_phase={phase}"
+        )
+    return "wait: no_active_milestone_remaining"
+
+
+def describe_current_strategy_milestone(
+    win_countdown_seconds: int | None,
+    place_countdown_seconds: int | None,
+) -> str:
+    milestone = current_strategy_milestone(win_countdown_seconds, place_countdown_seconds)
+    if milestone is None:
+        return "milestone=none execution_phase=UNKNOWN"
+    phase = _execution_phase_for_milestone(milestone) or "UNKNOWN"
+    parts = [f"milestone={milestone}", f"execution_phase={phase}"]
+    if phase == "PRE":
+        steps = _pre_ladder_steps_from_env()
+        if milestone in steps:
+            parts.append(f"pre_ladder_step={steps.index(milestone) + 1}/{len(steps)}")
+        parts.append("evaluating PRE systems")
+    elif phase == "POST":
+        parts.append("evaluating POST systems")
+    return " ".join(parts)
+
+
+def strategy_milestone_key(base_key: str, milestone: int | None) -> str:
+    phase = _execution_phase_for_milestone(milestone) if milestone is not None else None
+    if phase is None:
+        return base_key
+    return f"{base_key}|milestone={milestone}|phase={phase}"
 
 
 def install_gruss_trade_diagnostics(
@@ -579,6 +677,10 @@ def build_order_intents_from_trade_rows(
                 course_id=row.get("course_id") or None,
                 timestamp=row.get("ts") or None,
                 dry_run=True,
+                selection_id=row.get("selection_id") or trap,
+                execution_phase=row.get("execution_phase") or "POST",
+                triggered_systems=row.get("triggered_systems") or row.get("strategy") or "",
+                triggered_prices=row.get("triggered_prices") or row.get("price_req") or "",
             )
         )
     return intents
@@ -617,7 +719,7 @@ def seed_gruss_momentum_into_executor(
     return momentum_values
 
 
-def _seed_t2_milestone_if_due(
+def _seed_strategy_milestone_if_due(
     executor: Executor,
     bundle: GrussEngineBundle,
     win_snapshot: GrussSnapshot,
@@ -626,11 +728,18 @@ def _seed_t2_milestone_if_due(
     seconds = win_snapshot.metadata.countdown_seconds
     if seconds is None:
         seconds = place_snapshot.metadata.countdown_seconds
-    if seconds is None or seconds > 2:
+    milestone = current_strategy_milestone(seconds, seconds)
+    if seconds is None or milestone is None:
         return
     for market_id in (bundle.win_book.market_id, bundle.place_book.market_id):
-        if 2 in executor._next_ms[market_id] and market_id not in executor._last_tto:
-            executor._last_tto[market_id] = 3.0
+        if milestone in executor._next_ms[market_id] and market_id not in executor._last_tto:
+            executor._last_tto[market_id] = float(milestone + 1)
+
+
+def _env_true(value: str | None, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().casefold() in {"1", "true", "yes", "on", "y"}
 
 
 def _is_tradable(

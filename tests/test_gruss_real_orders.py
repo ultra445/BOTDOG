@@ -620,6 +620,105 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["trigger_cell_value_before_clear"], "LAY")
         self.assertEqual(rows[0]["trigger_clear_delay_ms"], "0")
 
+    def test_real_back_order_caps_stake_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="BACK", stake=8.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.2), ("S5", 5.0), ("Q5", "BACK")))
+        self.assertEqual(result.stake_original, 8.0)
+        self.assertEqual(result.stake_used, 5.0)
+        self.assertTrue(result.stake_capped)
+        self.assertEqual(result.stake_cap_value, 5.0)
+        self.assertEqual(rows[0]["stake_original"], "8.0")
+        self.assertEqual(rows[0]["stake_used"], "5.0")
+        self.assertEqual(rows[0]["stake_capped"], "True")
+        self.assertEqual(rows[0]["stake_cap_value"], "5.0")
+
+    def test_real_lay_order_caps_stake_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="LAY", stake=8.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.2), ("S5", 5.0), ("Q5", "LAY")))
+        self.assertEqual(result.stake_original, 8.0)
+        self.assertEqual(result.stake_used, 5.0)
+        self.assertTrue(result.stake_capped)
+        self.assertEqual(result.stake_cap_value, 5.0)
+        self.assertEqual(rows[0]["stake_capped"], "True")
+
+    def test_real_order_below_stake_cap_keeps_original_stake(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(stake=3.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1][1], ("S5", 3.0))
+        self.assertEqual(result.stake_original, 3.0)
+        self.assertEqual(result.stake_used, 3.0)
+        self.assertFalse(result.stake_capped)
+        self.assertEqual(result.stake_cap_value, 5.0)
+        self.assertEqual(rows[0]["stake_capped"], "False")
+        self.assertEqual(rows[0]["stake_cap_value"], "5.0")
+
+    def test_real_order_without_stake_cap_keeps_original_stake(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(stake=8.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1][1], ("S5", 8.0))
+        self.assertEqual(result.stake_original, 8.0)
+        self.assertEqual(result.stake_used, 8.0)
+        self.assertFalse(result.stake_capped)
+        self.assertIsNone(result.stake_cap_value)
+        self.assertEqual(rows[0]["stake_capped"], "False")
+        self.assertEqual(rows[0]["stake_cap_value"], "")
+
+    def test_preview_does_not_apply_real_stake_cap_or_write_excel(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(stake=8.0), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_PREVIEW")
+        self.assertEqual(result.write_plan[1], ("S5", 8.0))
+        self.assertEqual(result.stake_original, 8.0)
+        self.assertEqual(result.stake_used, 8.0)
+        self.assertFalse(result.stake_capped)
+        self.assertIsNone(result.stake_cap_value)
+        self.assertEqual(bridge.write_calls, [])
+        self.assertEqual(rows[0]["stake_used"], "8.0")
+        self.assertEqual(rows[0]["stake_capped"], "False")
+        self.assertEqual(rows[0]["stake_cap_value"], "")
+
     def test_post_trigger_does_not_clear_if_value_changed(self) -> None:
         bridge = FakeBridge(trigger_value_before_clear="CHANGED_BY_GRUSS")
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
@@ -801,15 +900,21 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(bridge.write_calls, [])
 
     def test_real_test_mode_limits_ten_signals_to_one_order(self) -> None:
-        bridge = FakeBridge()
+        bridge = FakeBridge(runner_values=[[f"{index}. Runner {index}"] for index in range(1, 11)])
         with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
             results = [
                 provider.place_order(
-                    _intent(strategy_id=f"BACK_PLACE_{index}", stake=1.0),
+                    _intent(
+                        strategy_id=f"BACK_PLACE_{index}",
+                        stake=1.0,
+                        selection_id=f"runner-{index}",
+                        trap=index,
+                        runner_name=f"Runner {index}",
+                    ),
                     _context(),
                 )
-                for index in range(10)
+                for index in range(1, 11)
             ]
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
@@ -824,6 +929,139 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual([row["reason"] for row in rows[1:]], ["max_orders_reached"] * 9)
         self.assertEqual([row["trigger_written"] for row in rows], ["True"] + ["False"] * 9)
 
+    def test_processed_pre_does_not_block_processed_post(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            pre = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1"),
+                _context(),
+            )
+            post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-1"),
+                _context(),
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+        self.assertIn("|PRE", pre.processed_key)
+        self.assertIn("|POST", post.processed_key)
+        self.assertNotEqual(pre.processed_key, post.processed_key)
+        self.assertEqual([row["execution_phase"] for row in rows], ["PRE", "POST"])
+        self.assertEqual([row["status"] for row in rows], ["GRUSS_REAL_WRITTEN", "GRUSS_REAL_WRITTEN"])
+
+    def test_processed_post_does_not_block_processed_pre(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-1"),
+                _context(),
+            )
+            pre = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1"),
+                _context(),
+            )
+
+        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
+        self.assertNotEqual(post.processed_key, pre.processed_key)
+
+    def test_duplicate_processed_key_blocks_same_phase_only(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=2, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            first = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1"),
+                _context(),
+            )
+            duplicate = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1"),
+                _context(),
+            )
+            post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-1"),
+                _context(),
+            )
+
+        self.assertEqual(first.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(duplicate.reason, "market_already_processed")
+        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+
+    def test_max_orders_pre_does_not_block_post(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            pre = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1"),
+                _context(),
+            )
+            blocked_pre = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-2", trap=2, runner_name="Other Runner"),
+                _context(),
+            )
+            post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-2", trap=2, runner_name="Other Runner"),
+                _context(),
+            )
+
+        self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(blocked_pre.reason, "max_orders_reached")
+        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+
+    def test_max_orders_post_does_not_block_pre(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-1"),
+                _context(),
+            )
+            blocked_post = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-2", trap=2, runner_name="Other Runner"),
+                _context(),
+            )
+            pre = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-2", trap=2, runner_name="Other Runner"),
+                _context(),
+            )
+
+        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(blocked_post.reason, "max_orders_reached")
+        self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
+
+    def test_phase_specific_max_order_environment_overrides_default(self) -> None:
+        bridge = FakeBridge(runner_values=[[f"{index}. Runner {index}"] for index in range(1, 5)])
+        with TemporaryDirectory() as tmp, _real_test_env(max_orders=1, max_stake=1), patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_GRUSS_REAL_MAX_ORDERS_PRE": "2",
+                "DOGBOT_GRUSS_REAL_MAX_ORDERS_POST": "1",
+            },
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            pre_1 = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-1", runner_name="Runner 1"),
+                _context(),
+            )
+            pre_2 = provider.place_order(
+                _intent(stake=1.0, execution_phase="PRE", selection_id="runner-2", trap=2, runner_name="Runner 2"),
+                _context(),
+            )
+            post_1 = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-3", trap=3, runner_name="Runner 3"),
+                _context(),
+            )
+            post_2 = provider.place_order(
+                _intent(stake=1.0, execution_phase="POST", selection_id="runner-4", trap=4, runner_name="Runner 4"),
+                _context(),
+            )
+
+        self.assertEqual([pre_1.status, pre_2.status, post_1.status], ["GRUSS_REAL_WRITTEN"] * 3)
+        self.assertEqual(post_2.reason, "max_orders_reached")
+
     def test_real_test_mode_defaults_to_one_order_and_one_stake_unit(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _real_test_env(max_orders=None, max_stake=None):
@@ -832,18 +1070,24 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(provider.real_max_orders, 1)
         self.assertEqual(provider.real_max_stake, 1.0)
 
-    def test_real_test_mode_rejects_stake_above_limit(self) -> None:
+    def test_real_test_mode_caps_stake_above_limit(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _real_test_env(max_orders=10, max_stake=1):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
             result = provider.place_order(_intent(stake=2.0), _context())
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
-        self.assertEqual(result.status, "REJECTED_REAL")
-        self.assertEqual(result.reason, "stake_above_real_test_limit")
-        self.assertEqual(rows[0]["reason"], "stake_above_real_test_limit")
-        self.assertEqual(bridge.connect_calls, 0)
-        self.assertEqual(bridge.write_calls, [])
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(result.reason, "excel_trigger_written")
+        self.assertEqual(bridge.write_calls[0][1][1], ("S5", 1.0))
+        self.assertEqual(result.stake_original, 2.0)
+        self.assertEqual(result.stake_used, 1.0)
+        self.assertTrue(result.stake_capped)
+        self.assertEqual(result.stake_cap_value, 1.0)
+        self.assertEqual(rows[0]["stake_original"], "2.0")
+        self.assertEqual(rows[0]["stake_used"], "1.0")
+        self.assertEqual(rows[0]["stake_capped"], "True")
+        self.assertEqual(rows[0]["stake_cap_value"], "1.0")
 
     def test_real_test_mode_allows_positive_stake_below_dryrun_minimum(self) -> None:
         bridge = FakeBridge()
@@ -864,7 +1108,10 @@ class GrussRealOrdersTests(unittest.TestCase):
         ):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
             first = provider.place_order(_intent(strategy_id="BACK_PLACE_101"), _context())
-            second = provider.place_order(_intent(strategy_id="BACK_PLACE_102"), _context())
+            second = provider.place_order(
+                _intent(strategy_id="BACK_PLACE_102", selection_id="runner-2", trap=2, runner_name="Runner 2"),
+                _context(),
+            )
 
         self.assertEqual(first.status, "GRUSS_REAL_WRITTEN")
         self.assertEqual(second.reason, "max_orders_reached")

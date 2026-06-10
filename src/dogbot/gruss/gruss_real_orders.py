@@ -4,7 +4,7 @@ import csv
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,14 +25,21 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "market_type",
     "runner",
     "trap",
+    "selection_id",
     "side",
     "order_type",
+    "execution_phase",
+    "processed_key",
+    "triggered_systems",
+    "triggered_prices",
     "intended_trigger",
     "trigger",
     "stake",
     "stake_original",
     "stake_used",
     "stake_forced",
+    "stake_capped",
+    "stake_cap_value",
     "force_test_bsp_place",
     "force_test_back_place_limit",
     "selected_reason",
@@ -142,6 +149,10 @@ class GrussRealOrderResult:
     stake_original: float | None = None
     stake_used: float | None = None
     stake_forced: bool = False
+    stake_capped: bool = False
+    stake_cap_value: float | None = None
+    execution_phase: str = "POST"
+    processed_key: str = ""
     trigger_cell_address: str = ""
     trigger_cell_current_value: Any = None
     trigger_cell_expected_empty: bool | None = None
@@ -215,6 +226,7 @@ class GrussExcelOrderProvider:
         self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
         self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
         self.real_max_orders = _real_max_orders(self.real_test_mode)
+        self.real_max_orders_by_phase = _real_max_orders_by_phase(self.real_test_mode, self.real_max_orders)
         self.real_max_stake = _real_max_stake(self.real_test_mode)
         self.trigger_clear_delay_ms = _trigger_clear_delay_ms()
         self.hold_trigger_for_visual_test = _env_bool(
@@ -361,6 +373,9 @@ class GrussExcelOrderProvider:
                 write_plan=plan,
             )
 
+        intent, stake_capped, stake_cap_value = self._cap_real_stake(intent)
+        plan = self._build_write_plan(intent, runner_row)
+
         if not self.layout_confirmed:
             return self._finish(
                 intent,
@@ -370,6 +385,8 @@ class GrussExcelOrderProvider:
                 excel_sheet=sheet_name,
                 excel_row=runner_row,
                 write_plan=plan,
+                stake_capped=stake_capped,
+                stake_cap_value=stake_cap_value,
             )
 
         trigger_address = self.layout.trigger_address(runner_row)
@@ -387,6 +404,8 @@ class GrussExcelOrderProvider:
                 write_plan=plan,
                 trigger_cell_address=trigger_address,
                 trigger_mapping_name=trigger_mapping_name,
+                stake_capped=stake_capped,
+                stake_cap_value=stake_cap_value,
             )
         if trigger_value not in (None, ""):
             return self._finish(
@@ -401,6 +420,8 @@ class GrussExcelOrderProvider:
                 trigger_cell_current_value=trigger_value,
                 trigger_cell_expected_empty=False,
                 trigger_mapping_name=trigger_mapping_name,
+                stake_capped=stake_capped,
+                stake_cap_value=stake_cap_value,
             )
 
         try:
@@ -418,6 +439,8 @@ class GrussExcelOrderProvider:
                 trigger_cell_current_value=trigger_value,
                 trigger_cell_expected_empty=True,
                 trigger_mapping_name=trigger_mapping_name,
+                stake_capped=stake_capped,
+                stake_cap_value=stake_cap_value,
             )
 
         verification = self._verify_real_write(sheet_name, runner_row, plan)
@@ -448,6 +471,8 @@ class GrussExcelOrderProvider:
             "trigger_clear_delay_ms": clear_outcome.delay_ms,
             "post_write_verification": verification,
             "hold_trigger_for_visual_test": self.hold_trigger_for_visual_test,
+            "stake_capped": stake_capped,
+            "stake_cap_value": stake_cap_value,
         }
         if not verification.verified:
             return self._finish(
@@ -459,7 +484,9 @@ class GrussExcelOrderProvider:
             )
 
         real_key = _processed_key(intent, context)
+        max_key = _max_orders_key(intent, context)
         self.real_order_counts[real_key] = self.real_order_counts.get(real_key, 0) + 1
+        self.real_order_counts[max_key] = self.real_order_counts.get(max_key, 0) + 1
         return self._finish(
             intent,
             context,
@@ -507,7 +534,12 @@ class GrussExcelOrderProvider:
             )
         elif context.countdown_seconds < 0:
             errors.append("countdown_elapsed")
-        if context.market_already_processed or _processed_key(intent, context) in self.processed_markets:
+        processed_key = _processed_key(intent, context)
+        if (
+            context.market_already_processed
+            or processed_key in self.processed_markets
+            or self.real_order_counts.get(processed_key, 0) > 0
+        ):
             errors.append("market_already_processed")
         if (
             intent.stake_forced
@@ -528,14 +560,10 @@ class GrussExcelOrderProvider:
         if intent.force_test_back_place_limit:
             errors.extend(self._force_test_back_place_limit_errors(intent))
         if self._is_true_real_mode():
-            real_key = _processed_key(intent, context)
-            if (
-                self.real_max_orders is not None
-                and self.real_order_counts.get(real_key, 0) >= self.real_max_orders
-            ):
+            max_orders = self._max_orders_for_intent(intent)
+            max_key = _max_orders_key(intent, context)
+            if max_orders is not None and self.real_order_counts.get(max_key, 0) >= max_orders:
                 errors.append("max_orders_reached")
-            if self.real_max_stake is not None and _float_or_infinity(intent.stake) > self.real_max_stake:
-                errors.append("stake_above_real_test_limit")
 
         minimum_stake = 0.01 if self._is_true_real_mode() and self.real_test_mode else 2.0
         errors.extend(validate_order_intent(intent, minimum_stake=minimum_stake))
@@ -642,6 +670,22 @@ class GrussExcelOrderProvider:
         # Trigger is deliberately written last.
         cells.append((self.layout.trigger_address(row), trigger))
         return tuple(cells)
+
+    def _cap_real_stake(self, intent: OrderIntent) -> tuple[OrderIntent, bool, float | None]:
+        cap_value = self.real_max_stake
+        if cap_value is None:
+            return intent, False, None
+        try:
+            cap = float(cap_value)
+            stake_to_write = float(intent.stake)
+        except (TypeError, ValueError):
+            return intent, False, cap_value
+        if not math.isfinite(cap) or cap <= 0:
+            return intent, False, cap
+        if stake_to_write <= cap:
+            return intent, False, cap
+        stake_original = intent.stake_original if intent.stake_original is not None else stake_to_write
+        return replace(intent, stake=cap, stake_original=stake_original), True, cap
 
     def _trigger_for(self, intent: OrderIntent) -> str:
         return self.layout.trigger_mapping_name(intent.side, intent.order_type)
@@ -806,6 +850,8 @@ class GrussExcelOrderProvider:
         trigger_clear_delay_ms: int = 0,
         post_write_verification: _PostWriteVerification | None = None,
         hold_trigger_for_visual_test: bool = False,
+        stake_capped: bool = False,
+        stake_cap_value: float | None = None,
     ) -> GrussRealOrderResult:
         addresses = tuple(excel_cells_written)
         plan = tuple(write_plan)
@@ -835,6 +881,8 @@ class GrussExcelOrderProvider:
             trigger_clear_delay_ms=trigger_clear_delay_ms,
             post_write_verification=post_write_verification,
             hold_trigger_for_visual_test=hold_trigger_for_visual_test,
+            stake_capped=stake_capped,
+            stake_cap_value=stake_cap_value,
         )
         return GrussRealOrderResult(
             status=status,
@@ -849,6 +897,10 @@ class GrussExcelOrderProvider:
             stake_original=intent.stake_original if intent.stake_original is not None else intent.stake,
             stake_used=intent.stake,
             stake_forced=bool(intent.stake_forced),
+            stake_capped=stake_capped,
+            stake_cap_value=stake_cap_value,
+            execution_phase=_execution_phase(intent),
+            processed_key=_processed_key(intent, context),
             trigger_cell_address=trigger_cell_address,
             trigger_cell_current_value=trigger_cell_current_value,
             trigger_cell_expected_empty=trigger_cell_expected_empty,
@@ -888,6 +940,7 @@ class GrussExcelOrderProvider:
         self.write_no_trigger = _env_bool("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
         self.real_test_mode = _env_bool("DOGBOT_GRUSS_REAL_TEST_MODE", False)
         self.real_max_orders = _real_max_orders(self.real_test_mode)
+        self.real_max_orders_by_phase = _real_max_orders_by_phase(self.real_test_mode, self.real_max_orders)
         self.real_max_stake = _real_max_stake(self.real_test_mode)
         self.trigger_clear_delay_ms = _trigger_clear_delay_ms()
         self.hold_trigger_for_visual_test = _env_bool(
@@ -904,6 +957,9 @@ class GrussExcelOrderProvider:
             and not self.write_no_trigger
             and not self.preview
         )
+
+    def _max_orders_for_intent(self, intent: OrderIntent) -> int | None:
+        return self.real_max_orders_by_phase.get(_execution_phase(intent), self.real_max_orders)
 
     def _append_attempt(
         self,
@@ -929,6 +985,8 @@ class GrussExcelOrderProvider:
         trigger_clear_delay_ms: int,
         post_write_verification: _PostWriteVerification | None,
         hold_trigger_for_visual_test: bool,
+        stake_capped: bool,
+        stake_cap_value: float | None,
     ) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_attempt_log_header()
@@ -945,14 +1003,21 @@ class GrussExcelOrderProvider:
             "market_type": intent.market_type,
             "runner": intent.runner_name,
             "trap": intent.trap,
+            "selection_id": intent.selection_id if intent.selection_id is not None else intent.trap,
             "side": intent.side,
             "order_type": intent.order_type,
+            "execution_phase": _execution_phase(intent),
+            "processed_key": _processed_key(intent, context),
+            "triggered_systems": intent.triggered_systems or intent.strategy_id,
+            "triggered_prices": intent.triggered_prices or "",
             "intended_trigger": intended_trigger,
             "trigger": intended_trigger,
             "stake": intent.stake,
             "stake_original": intent.stake_original if intent.stake_original is not None else intent.stake,
             "stake_used": intent.stake,
             "stake_forced": str(bool(intent.stake_forced)),
+            "stake_capped": str(bool(stake_capped)),
+            "stake_cap_value": "" if stake_cap_value is None else stake_cap_value,
             "force_test_bsp_place": str(bool(intent.force_test_bsp_place)),
             "force_test_back_place_limit": str(bool(intent.force_test_back_place_limit)),
             "selected_reason": intent.selected_reason or "",
@@ -1026,7 +1091,29 @@ class GrussExcelOrderProvider:
 
 
 def _processed_key(intent: OrderIntent, context: GrussRealOrderContext) -> str:
-    return str(context.course or intent.course_id or intent.parent_id or intent.market_id)
+    race_id = str(context.course or intent.course_id or intent.parent_id or "").strip()
+    selection_id = intent.selection_id if intent.selection_id is not None else intent.trap
+    return "|".join(
+        str(part)
+        for part in (
+            race_id,
+            intent.market_id,
+            selection_id,
+            intent.side,
+            intent.market_type,
+            _execution_phase(intent),
+        )
+    )
+
+
+def _max_orders_key(intent: OrderIntent, context: GrussRealOrderContext) -> str:
+    race_id = str(context.course or intent.course_id or intent.parent_id or intent.market_id).strip()
+    return "|".join((race_id, _execution_phase(intent)))
+
+
+def _execution_phase(intent: OrderIntent) -> str:
+    phase = str(getattr(intent, "execution_phase", "") or "POST").strip().upper()
+    return phase if phase in {"PRE", "POST"} else "POST"
 
 
 def _normalise_identifier(value: Any) -> str:
@@ -1088,6 +1175,27 @@ def _real_max_orders(real_test_mode: bool) -> int | None:
     raw = os.getenv("DOGBOT_GRUSS_REAL_MAX_ORDERS")
     if raw in (None, ""):
         return 1 if real_test_mode else None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _real_max_orders_by_phase(real_test_mode: bool, default_max_orders: int | None) -> dict[str, int | None]:
+    return {
+        "PRE": _real_max_orders_for_env("DOGBOT_GRUSS_REAL_MAX_ORDERS_PRE", real_test_mode, default_max_orders),
+        "POST": _real_max_orders_for_env("DOGBOT_GRUSS_REAL_MAX_ORDERS_POST", real_test_mode, default_max_orders),
+    }
+
+
+def _real_max_orders_for_env(
+    name: str,
+    real_test_mode: bool,
+    default_max_orders: int | None,
+) -> int | None:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default_max_orders
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):

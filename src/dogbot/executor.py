@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 from datetime import datetime, timezone
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Optional, Dict, List, Tuple, Set
 from collections import defaultdict, deque
@@ -27,11 +28,132 @@ except Exception:
 # --- AJOUTS (Staking/Stratégies) ---
 from .config import load_config
 from .staking import StakingEngine, Side
+from . import strategies as _strategies
 from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
+from .pre_ladder import (
+    PRE_LADDER_SYSTEM_IDS,
+    build_pre_ladder_from_same_side_offer,
+    decide_pre_ladder_step,
+    plan_gruss_pre_ladder_trigger,
+    round_final_lim_to_ladder_tick,
+)
 
 # --- AJOUTS LIVE (Step 3) ---
 from .execution.orders import OrderExecutor
 from .risk import ExposureManager
+
+PRE_LADDER_DEFAULT_STEPS_SECONDS = (20, 15, 10, 5)
+PRE_SEND_SECONDS_BEFORE_OFF = 5
+POST_SEND_SECONDS_BEFORE_OFF = 0
+
+
+@dataclass
+class _StrategyOrderCandidate:
+    slot: Any
+    market_id: str
+    market_type: str
+    selection_id: int
+    course_id: str
+    side: str
+    price: float
+    size: float
+    liability: float
+    reason: str
+    exec_mode: ExecMode
+    sp_limit: float | None
+    execution_phase: str
+    triggered_systems: list[str]
+    triggered_prices: list[float]
+    bet_per_market_key: tuple[str, int, str]
+    phase_send_seconds_before_off: int | None = None
+    best_unmatched_back_offer: float | None = None
+    best_unmatched_lay_offer: float | None = None
+    strategy_group: Any = None
+    strategy_region: Any = None
+    strategy_signal: Any = None
+    strategy_bucket: Any = None
+
+    @property
+    def merge_key(self) -> tuple[str, int, str, str, str]:
+        return (
+            self.market_id,
+            self.selection_id,
+            self.market_type,
+            self.side,
+            self.execution_phase,
+        )
+
+    @property
+    def final_system(self) -> str:
+        return self.triggered_systems[0] if self.triggered_systems else str(getattr(self.slot, "tag", ""))
+
+
+def _execution_phase_for_milestone(milestone: int | None) -> str | None:
+    if milestone in _pre_ladder_steps_from_env():
+        return _strategies.EXECUTION_PHASE_PRE
+    if milestone == POST_SEND_SECONDS_BEFORE_OFF:
+        return _strategies.EXECUTION_PHASE_POST
+    return None
+
+
+def _pre_ladder_steps_from_env() -> tuple[int, ...]:
+    raw = os.getenv("DOGBOT_PRE_LADDER_STEPS")
+    if raw in (None, ""):
+        return PRE_LADDER_DEFAULT_STEPS_SECONDS
+    steps: list[int] = []
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            continue
+        if value > 0:
+            steps.append(value)
+    return tuple(steps or PRE_LADDER_DEFAULT_STEPS_SECONDS)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _merge_order_candidates(
+    candidates: list[_StrategyOrderCandidate],
+) -> list[_StrategyOrderCandidate]:
+    grouped: dict[tuple[str, int, str, str, str], list[_StrategyOrderCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        grouped[candidate.merge_key].append(candidate)
+
+    merged: list[_StrategyOrderCandidate] = []
+    for group in grouped.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+
+        first = group[0]
+        price = min(candidate.price for candidate in group) if first.side == "BACK" else max(
+            candidate.price for candidate in group
+        )
+        size = sum(candidate.size for candidate in group)
+        liability = sum(candidate.liability for candidate in group)
+        systems = [system for candidate in group for system in candidate.triggered_systems]
+        prices = [price for candidate in group for price in candidate.triggered_prices]
+        merged.append(
+            replace(
+                first,
+                price=price,
+                size=round(size, 2),
+                liability=round(liability, 2),
+                reason=f"merged_{first.execution_phase.lower()} systems={','.join(systems)}",
+                triggered_systems=systems,
+                triggered_prices=prices,
+            )
+        )
+    return merged
 
 
 # ---------- utilitaires généraux ----------
@@ -203,7 +325,10 @@ class _MetaStub:
 
 
 class Executor:
-    MILESTONES = [300, 150, 80, 45, 2]
+    MILESTONES = sorted(
+        {300, 150, 80, 45, 2, *PRE_LADDER_DEFAULT_STEPS_SECONDS, POST_SEND_SECONDS_BEFORE_OFF},
+        reverse=True,
+    )
     TOLERANCE_S = 1.5
 
     MARKET_HEADER = [
@@ -248,15 +373,32 @@ class Executor:
 ]
 
     TRADE_HEADER = [
-        "ts","market_id","market_type","selection_id","course_id",
+        "ts","run_id","evaluation_id","parent_market_id","milestone","complete_after_post",
+        "post_checked","post_signal_count","post_evaluated","post_missing_reason",
+        "market_id","market_type","selection_id","course_id",
         "side","price_req","size_req","liability","strategy",
         "market_family","strategy_group","strategy_region","strategy_signal","strategy_bucket",
+        "execution_phase","triggered_systems","triggered_prices","final_system","final_price","final_stake","merged",
+        "stake_pre","stake_post","total_stake_same_runner_side","pre_post_cumulative",
+        "processed_key","exec_mode",
+        "ladder_enabled","ladder_preview","ladder_id","ladder_tracking_key","ladder_step",
+        "ladder_seconds_before_off","final_lim_price","final_lim_price_raw","final_lim_price_tick",
+        "start_price","start_price_raw","start_price_tick","tick_rounding_mode","ladder_prices",
+        "current_ladder_price","best_unmatched_back_offer","best_unmatched_lay_offer",
+        "best_same_side_back_offer","best_same_side_lay_offer","source_fields_used",
+        "no_better_ladder_range_reason",
+        "previous_order_status","matched_stake","remaining_stake","cancelled_previous",
+        "cancel_failed","stop_reason","current_step_stake",
+        "gruss_planned_trigger","gruss_trigger_allowed","gruss_bet_ref_required",
+        "gruss_bet_ref_present","gruss_bet_ref","gruss_update_confirmed",
+        "gruss_cancel_replace_confirmed","gruss_no_stack",
         "status","reason",
     ]
 
     STRATEGY_DEBUG_HEADER = [
         "ts","market_id","market_type","selection_id","runner_name",
         "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
+        "execution_phase",
         "condition_result","fail_reason",
         "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
         "place_winners","k_place_used","fallback_k_place_used","requires_mom45",
@@ -266,7 +408,7 @@ class Executor:
         "ts","market_id","market_type","selection_id","runner_name",
         "trap","region","winbet","place_price","place_theo","ev_place","mom45",
         "place_winners","k_place_used","fallback_k_place_used",
-        "slots_tested","conditions_true_count","true_tags","error_count",
+        "execution_phase","slots_tested","conditions_true_count","true_tags","error_count",
     ]
 
 
@@ -290,7 +432,12 @@ class Executor:
         self._ensure_header(self.market_csv, self.MARKET_HEADER)
         self._ensure_header(self.runner_csv, self.RUNNER_HEADER)
 
-        self._next_ms: Dict[str, List[int]] = defaultdict(lambda: list(self.MILESTONES))
+        self._pre_ladder_steps = _pre_ladder_steps_from_env()
+        self._configured_milestones = sorted(
+            {300, 150, 80, 45, 2, *self._pre_ladder_steps, POST_SEND_SECONDS_BEFORE_OFF},
+            reverse=True,
+        )
+        self._next_ms: Dict[str, List[int]] = defaultdict(lambda: list(self._configured_milestones))
         self._last_tto: Dict[str, float] = {}
 
         # Milestones:
@@ -340,6 +487,9 @@ class Executor:
 
         # --- AJOUT: mémoire "un pari par marché" par slot ---
         self._slot_market_fired: Set[tuple[str,int,str]] = set()  # {(family, slot, market_id)}
+        self._phase_stakes_by_runner_side: Dict[tuple[str, int, str, str], Dict[str, float]] = defaultdict(
+            lambda: {_strategies.EXECUTION_PHASE_PRE: 0.0, _strategies.EXECUTION_PHASE_POST: 0.0}
+        )
 
         # --- AJOUTS LIVE (OrderExecutor + ExposureManager) ---
         self.order_executor = OrderExecutor(
@@ -464,6 +614,7 @@ class Executor:
             "market_family": getattr(slot, "market_family", None),
             "strategy_group": getattr(slot, "strategy_group", None),
             "strategy_signal": getattr(slot, "strategy_signal", None),
+            "execution_phase": getattr(slot, "execution_phase", None),
             "condition_result": condition_result,
             "fail_reason": fail_reason,
             "trap": ctx.trap,
@@ -511,6 +662,7 @@ class Executor:
             "place_winners": getattr(ctx, "place_winners", None),
             "k_place_used": getattr(ctx, "k_place_used", None),
             "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
+            "execution_phase": getattr(ctx, "execution_phase", None),
             "slots_tested": slots_tested,
             "conditions_true_count": len(true_tags),
             "true_tags": "|".join(true_tags),
@@ -1194,18 +1346,31 @@ class Executor:
                         place_theo=place_theo_ctx,
                         ev_place=ev_place_ctx,
                         bsp_place=(bsp_place if is_place else None),
+                        execution_phase=_strategies.EXECUTION_PHASE_POST,
+                        phase_send_seconds_before_off=None,
                     )
                     ctx.place_winners = place_winners
                     ctx.k_place_used = n_places
                     ctx.fallback_k_place_used = fallback_k_place_used
-                    if milestone != 2:
+                    execution_phase = _execution_phase_for_milestone(milestone)
+                    if execution_phase is None:
                         continue
+                    ctx.execution_phase = execution_phase
+                    ctx.phase_send_seconds_before_off = milestone
+                    ctx.milestone = 2
 
                     slots_tested = 0
                     true_tags: List[str] = []
                     error_count = 0
+                    pre_orders: List[_StrategyOrderCandidate] = []
+                    post_orders: List[_StrategyOrderCandidate] = []
 
                     for slot in self.strategy_registry:
+                        slot_phase = str(
+                            getattr(slot, "execution_phase", _strategies.EXECUTION_PHASE_POST)
+                        ).upper()
+                        if slot_phase != execution_phase:
+                            continue
                         # Bet per market (par slot)
                         key = (slot.family, slot.slot, market_id)
                         if getattr(slot, "bet_per_market", False) and key in self._slot_market_fired:
@@ -1242,128 +1407,39 @@ class Executor:
                         if not res:
                             continue
 
-                        trade_base = {
-                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                            "market_id": market_id,
-                            "market_type": (market_type or ""),
-                            "selection_id": int(sid),
-                            "course_id": str(course_id),
-                            "side": slot.side.value,
-                            "price_req": res.price,
-                            "size_req": res.size,
-                            "liability": round(res.liability or 0.0, 2),
-                            "strategy": slot.tag,
-                            "market_family": getattr(slot, "market_family", None),
-                            "strategy_group": getattr(slot, "strategy_group", None),
-                            "strategy_region": getattr(slot, "strategy_region", None),
-                            "strategy_signal": getattr(slot, "strategy_signal", None),
-                            "strategy_bucket": getattr(slot, "strategy_bucket", None),
-                        }
-
-                        if self.dry_run:
-                            self._log_trade_row({**trade_base, "status": "DRYRUN", "reason": res.reason})
-                            # marquer ce slot comme "dÃ©jÃ  pariÃ©" sur ce marchÃ© si bet_per_market
-                            if getattr(slot, "bet_per_market", False):
-                                self._slot_market_fired.add(key)
-                            continue
-
-                        self._log_trade_row({**trade_base, "status": "LIVE_INTENT", "reason": res.reason})
-                        print(f"[LIVE_INTENT] {market_id} sid={sid} strategy={slot.tag} side={slot.side.value} price={res.price} size={res.size}")
-
-                        # marquer ce slot comme "déjà parié" sur ce marché si bet_per_market
-                        if getattr(slot, "bet_per_market", False):
-                            self._slot_market_fired.add(key)
-
-                        can, reason = self.exposure.can_place(
-                            Side(slot.side.value),
+                        candidate = _StrategyOrderCandidate(
+                            slot=slot,
                             market_id=market_id,
+                            market_type=(market_type or ""),
                             selection_id=int(sid),
-                            planned_stake=float(res.size),
-                            planned_liability=float(res.liability or 0.0),
+                            course_id=str(course_id),
+                            side=slot.side.value,
+                            price=float(res.price),
+                            size=float(res.size),
+                            liability=round(res.liability or 0.0, 2),
+                            reason=res.reason,
+                            exec_mode=res.exec_mode,
+                            sp_limit=res.sp_limit,
+                            execution_phase=execution_phase,
+                            triggered_systems=[str(slot.tag)],
+                            triggered_prices=[float(res.price)],
+                            bet_per_market_key=key,
+                            phase_send_seconds_before_off=milestone,
+                            best_unmatched_back_offer=bb,
+                            best_unmatched_lay_offer=bl,
+                            strategy_group=getattr(slot, "strategy_group", None),
+                            strategy_region=getattr(slot, "strategy_region", None),
+                            strategy_signal=getattr(slot, "strategy_signal", None),
+                            strategy_bucket=getattr(slot, "strategy_bucket", None),
                         )
-                        if not can:
-                            self._log_trade_row({**trade_base, "status": "LIVE_BLOCKED", "reason": reason})
-                            print(f"[LIVE_BLOCKED] {market_id} sid={sid} strategy={slot.tag} reason={reason}")
-                            continue
-
-                        exec_mode = res.exec_mode
-                        orr = None
-                        try:
-                            if exec_mode == ExecMode.LIMIT_LTP:
-                                idem_key = f"{market_id}:{sid}:{slot.tag}:{res.price}"
-                                orr = self.order_executor.place_limit(
-                                    market_id=market_id,
-                                    selection_id=int(sid),
-                                    side=slot.side.value,
-                                    price=float(res.price),
-                                    size=float(res.size),
-                                    strategy=slot.tag,
-                                    persistence=os.getenv("PERSISTENCE", "LAPSE"),
-                                    idem_key=idem_key,
-                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                )
-                            elif exec_mode == ExecMode.SP_MOC:
-                                qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                idem_key = f"{market_id}:{sid}:{slot.tag}:SP_MOC"
-                                orr = self.order_executor.place_sp_market_on_close(
-                                    market_id=market_id,
-                                    selection_id=int(sid),
-                                    side=slot.side.value,
-                                    size_or_liability=qty,
-                                    strategy=slot.tag,
-                                    idem_key=idem_key,
-                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                )
-                            elif exec_mode == ExecMode.SP_LOC:
-                                sp_lim = res.sp_limit if res.sp_limit is not None else slot.sp_limit
-                                if sp_lim is None:
-                                    sp_lim = res.price
-                                sp_lim = float(sp_lim)
-                                qty = float(res.size) if slot.side == Side.BACK else float(res.liability or 0.0)
-                                idem_key = f"{market_id}:{sid}:{slot.tag}:SP_LOC:{sp_lim}"
-                                orr = self.order_executor.place_sp_limit_on_close(
-                                    market_id=market_id,
-                                    selection_id=int(sid),
-                                    side=slot.side.value,
-                                    size_or_liability=qty,
-                                    sp_limit_price=sp_lim,
-                                    strategy=slot.tag,
-                                    idem_key=idem_key,
-                                    retries=int(os.getenv("ORDER_RETRIES", "2")),
-                                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
-                                )
-                            else:
-                                raise ValueError(f"unsupported_exec_mode={exec_mode!r}")
-                        except Exception as e:
-                            reject_reason = f"order_exception={e!r}"
-                            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": reject_reason})
-                            self._log_strategy_error(market_id, sid, reject_reason)
-                            print(f"[LIVE_REJECTED] {market_id} sid={sid} strategy={slot.tag} reason={reject_reason}")
-                            continue
-
-                        order_reason = self._order_result_reason(orr)
-                        order_status = getattr(orr, "status", None) if orr is not None else None
-                        if order_status == "IDEMPOTENT_SKIPPED":
-                            self._log_trade_row({**trade_base, "status": "LIVE_SKIPPED", "reason": "IDEMPOTENT_SKIPPED"})
-                            print(f"[LIVE_SKIPPED] {market_id} sid={sid} strategy={slot.tag} reason=IDEMPOTENT_SKIPPED")
-                        elif orr and getattr(orr, "ok", False):
-                            self._log_trade_row({**trade_base, "status": "LIVE_PLACED", "reason": order_reason})
-                            print(f"[LIVE_PLACED] {market_id} sid={sid} strategy={slot.tag} reason={order_reason}")
-                            self.exposure.on_placed(
-                                Side(slot.side.value),
-                                market_id=market_id,
-                                selection_id=int(sid),
-                                stake=float(res.size),
-                                liability=float(res.liability or 0.0),
-                            )
+                        if execution_phase == _strategies.EXECUTION_PHASE_PRE:
+                            pre_orders.append(candidate)
                         else:
-                            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": order_reason})
-                            self._log_strategy_error(market_id, sid, order_reason)
-                            print(f"[LIVE_REJECTED] {market_id} sid={sid} strategy={slot.tag} reason={order_reason}")
+                            post_orders.append(candidate)
                         continue
 
+                    for final_order in _merge_order_candidates(pre_orders) + _merge_order_candidates(post_orders):
+                        self._handle_final_strategy_order(final_order)
                     self._log_strategy_eval_summary_row(ctx, runner_name, slots_tested, true_tags, error_count)
 
             except Exception as e:
@@ -1371,6 +1447,461 @@ class Executor:
                 print(f"[STRATEGY_LOOP_ERR] {market_id} sid={sid} err={e!r}")
 
     # ----- helpers -----
+    def _trade_base_for_final_order(self, order: _StrategyOrderCandidate, *, record_phase_stake: bool = True) -> dict:
+        final_system = (
+            f"MERGED_{order.execution_phase}"
+            if len(order.triggered_systems) > 1
+            else order.final_system
+        )
+        stake_fields = (
+            self._record_phase_stake(order)
+            if record_phase_stake
+            else self._phase_stake_preview_fields(order)
+        )
+        return {
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "run_id": self._trade_run_id(),
+            "evaluation_id": self._trade_evaluation_id(order),
+            "parent_market_id": order.course_id,
+            "milestone": "" if order.phase_send_seconds_before_off is None else order.phase_send_seconds_before_off,
+            "complete_after_post": str(order.execution_phase == _strategies.EXECUTION_PHASE_POST),
+            "post_checked": str(order.execution_phase == _strategies.EXECUTION_PHASE_POST),
+            "post_signal_count": 1 if order.execution_phase == _strategies.EXECUTION_PHASE_POST else 0,
+            "post_evaluated": str(order.execution_phase == _strategies.EXECUTION_PHASE_POST),
+            "post_missing_reason": "post_logged" if order.execution_phase == _strategies.EXECUTION_PHASE_POST else "post_not_checked_yet",
+            "market_id": order.market_id,
+            "market_type": order.market_type,
+            "selection_id": order.selection_id,
+            "course_id": order.course_id,
+            "side": order.side,
+            "price_req": order.price,
+            "size_req": order.size,
+            "liability": round(order.liability or 0.0, 2),
+            "strategy": final_system,
+            "market_family": getattr(order.slot, "market_family", None),
+            "strategy_group": order.strategy_group,
+            "strategy_region": order.strategy_region,
+            "strategy_signal": order.strategy_signal,
+            "strategy_bucket": order.strategy_bucket,
+            "execution_phase": order.execution_phase,
+            "triggered_systems": "|".join(order.triggered_systems),
+            "triggered_prices": "|".join(str(price) for price in order.triggered_prices),
+            "final_system": final_system,
+            "final_price": order.price,
+            "final_stake": order.size,
+            "merged": str(len(order.triggered_systems) > 1),
+            "processed_key": self._strategy_processed_key(order),
+            "exec_mode": order.exec_mode.value,
+            "ladder_enabled": "",
+            "ladder_preview": "",
+            "ladder_id": "",
+            "ladder_tracking_key": "",
+            "ladder_step": "",
+            "ladder_seconds_before_off": "",
+            "final_lim_price": "",
+            "final_lim_price_raw": "",
+            "final_lim_price_tick": "",
+            "start_price": "",
+            "start_price_raw": "",
+            "start_price_tick": "",
+            "tick_rounding_mode": "",
+            "ladder_prices": "",
+            "current_ladder_price": "",
+            "best_unmatched_back_offer": "",
+            "best_unmatched_lay_offer": "",
+            "best_same_side_back_offer": "",
+            "best_same_side_lay_offer": "",
+            "source_fields_used": "",
+            "no_better_ladder_range_reason": "",
+            "previous_order_status": "",
+            "matched_stake": "",
+            "remaining_stake": "",
+            "cancelled_previous": "",
+            "cancel_failed": "",
+            "stop_reason": "",
+            "current_step_stake": "",
+            "gruss_planned_trigger": "",
+            "gruss_trigger_allowed": "",
+            "gruss_bet_ref_required": "",
+            "gruss_bet_ref_present": "",
+            "gruss_bet_ref": "",
+            "gruss_update_confirmed": "",
+            "gruss_cancel_replace_confirmed": "",
+            "gruss_no_stack": "",
+            **stake_fields,
+        }
+
+    def _strategy_processed_key(self, order: _StrategyOrderCandidate) -> str:
+        return "|".join(
+            str(part)
+            for part in (
+                order.course_id,
+                order.market_id,
+                order.selection_id,
+                order.side,
+                order.market_type,
+                order.execution_phase,
+            )
+        )
+
+    def _trade_run_id(self) -> str:
+        run_id = getattr(self, "_run_id", None)
+        if run_id:
+            return str(run_id)
+        run_id = os.getenv("DOGBOT_RUN_ID")
+        if run_id:
+            self._run_id = run_id
+            return run_id
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        self._run_id = run_id
+        return run_id
+
+    def _trade_evaluation_id(self, order: _StrategyOrderCandidate) -> str:
+        return "|".join(str(part) for part in (self._trade_run_id(), order.course_id))
+
+    def _phase_stake_preview_fields(self, order: _StrategyOrderCandidate) -> dict:
+        key = (order.market_id, order.selection_id, order.market_type, order.side)
+        phase_stakes = self._phase_stakes_by_runner_side[key]
+        stake_pre = round(phase_stakes.get(_strategies.EXECUTION_PHASE_PRE, 0.0), 2)
+        stake_post = round(phase_stakes.get(_strategies.EXECUTION_PHASE_POST, 0.0), 2)
+        if order.execution_phase == _strategies.EXECUTION_PHASE_PRE:
+            stake_pre = round(max(stake_pre, float(order.size)), 2)
+        elif order.execution_phase == _strategies.EXECUTION_PHASE_POST:
+            stake_post = round(max(stake_post, float(order.size)), 2)
+        return {
+            "stake_pre": stake_pre,
+            "stake_post": stake_post,
+            "total_stake_same_runner_side": round(stake_pre + stake_post, 2),
+            "pre_post_cumulative": str(stake_pre > 0 and stake_post > 0),
+        }
+
+    def _record_phase_stake(self, order: _StrategyOrderCandidate) -> dict:
+        key = (order.market_id, order.selection_id, order.market_type, order.side)
+        phase_stakes = self._phase_stakes_by_runner_side[key]
+        phase_stakes[order.execution_phase] = round(
+            phase_stakes.get(order.execution_phase, 0.0) + float(order.size),
+            2,
+        )
+        stake_pre = round(phase_stakes.get(_strategies.EXECUTION_PHASE_PRE, 0.0), 2)
+        stake_post = round(phase_stakes.get(_strategies.EXECUTION_PHASE_POST, 0.0), 2)
+        return {
+            "stake_pre": stake_pre,
+            "stake_post": stake_post,
+            "total_stake_same_runner_side": round(stake_pre + stake_post, 2),
+            "pre_post_cumulative": str(stake_pre > 0 and stake_post > 0),
+        }
+
+    def _is_pre_ladder_order(self, order: _StrategyOrderCandidate) -> bool:
+        if order.execution_phase != _strategies.EXECUTION_PHASE_PRE:
+            return False
+        if order.exec_mode != ExecMode.LIMIT_LTP:
+            return False
+        return any(system in PRE_LADDER_SYSTEM_IDS for system in order.triggered_systems)
+
+    def _pre_ladder_id(self, order: _StrategyOrderCandidate) -> str:
+        final_system = (
+            f"MERGED_{order.execution_phase}"
+            if len(order.triggered_systems) > 1
+            else order.final_system
+        )
+        return f"{final_system}:{order.market_id}:{order.selection_id}:{order.market_type}:{order.side}:PRE"
+
+    def _pre_ladder_tracking_key(self, order: _StrategyOrderCandidate) -> str:
+        return "|".join(
+            str(part)
+            for part in (
+                order.market_id,
+                order.selection_id,
+                order.market_type,
+                order.side,
+                order.execution_phase,
+                self._pre_ladder_id(order),
+            )
+        )
+
+    def _pre_ladder_step_payload(self, order: _StrategyOrderCandidate) -> dict | None:
+        steps = tuple(self._pre_ladder_steps)
+        seconds = int(order.phase_send_seconds_before_off or 0)
+        if seconds not in steps:
+            return None
+        step_index = steps.index(seconds)
+        step_label = f"{step_index + 1}/{len(steps)}"
+        upper_side = str(order.side or "").upper()
+        same_side_offer = (
+            order.best_unmatched_back_offer
+            if upper_side == "BACK"
+            else order.best_unmatched_lay_offer
+        )
+        best_back = order.best_unmatched_back_offer
+        best_lay = order.best_unmatched_lay_offer
+        final_lim_price = order.price
+        fallback_reason = ""
+        final_tick_price = round_final_lim_to_ladder_tick(order.side, float(final_lim_price))
+        tick_rounding_mode = "BACK_CEIL" if upper_side == "BACK" else "LAY_FLOOR"
+        if upper_side == "BACK":
+            source_fields_used = (
+                "best_same_side_back_offer=runner.ex.available_to_back[0].price;"
+                "ignored_executable_against_back=runner.ex.available_to_lay[0].price"
+            )
+        else:
+            source_fields_used = (
+                "best_same_side_lay_offer=runner.ex.available_to_lay[0].price;"
+                "ignored_executable_against_lay=runner.ex.available_to_back[0].price"
+            )
+
+        if same_side_offer is None:
+            if step_index != len(steps) - 1:
+                return None
+            start_price = None
+            start_price_raw = None
+            start_price_tick = None
+            ladder_prices = [final_tick_price]
+            current_price = final_tick_price
+            fallback_reason = "no_same_side_offer"
+        else:
+            start_price_raw = float(same_side_offer)
+            price_plan = build_pre_ladder_from_same_side_offer(
+                order.side,
+                start_price_raw,
+                float(final_lim_price),
+                steps=len(steps),
+            )
+            start_price = price_plan.start_price
+            start_price_tick = price_plan.start_price
+            ladder_prices = price_plan.prices
+            fallback_reason = price_plan.reason
+            if fallback_reason:
+                current_price = final_tick_price
+            else:
+                current_price = ladder_prices[step_index]
+
+        decision = decide_pre_ladder_step(None, full_stake=float(order.size))
+        trigger_plan = plan_gruss_pre_ladder_trigger(
+            side=order.side,
+            step_index=step_index,
+            bet_ref=None,
+            update_confirmed=False,
+            cancel_replace_confirmed=False,
+        )
+        return {
+            "ladder_id": self._pre_ladder_id(order),
+            "ladder_tracking_key": self._pre_ladder_tracking_key(order),
+            "ladder_step": step_label,
+            "ladder_seconds_before_off": seconds,
+            "final_lim_price": final_lim_price,
+            "final_lim_price_raw": final_lim_price,
+            "final_lim_price_tick": final_tick_price,
+            "start_price": "" if start_price is None else start_price,
+            "start_price_raw": "" if start_price_raw is None else start_price_raw,
+            "start_price_tick": "" if start_price_tick is None else start_price_tick,
+            "tick_rounding_mode": tick_rounding_mode,
+            "ladder_prices": "|".join(str(price) for price in ladder_prices),
+            "current_ladder_price": current_price,
+            "best_unmatched_back_offer": "" if best_back is None else best_back,
+            "best_unmatched_lay_offer": "" if best_lay is None else best_lay,
+            "best_same_side_back_offer": "" if best_back is None else best_back,
+            "best_same_side_lay_offer": "" if best_lay is None else best_lay,
+            "source_fields_used": source_fields_used,
+            "no_better_ladder_range_reason": (
+                fallback_reason
+                if fallback_reason in {"no_better_back_ladder_range", "no_better_lay_ladder_range"}
+                else ""
+            ),
+            "previous_order_status": decision.previous_order_status,
+            "matched_stake": decision.matched_stake,
+            "remaining_stake": decision.remaining_stake,
+            "cancelled_previous": str(decision.cancelled_previous),
+            "cancel_failed": str(decision.cancel_failed),
+            "stop_reason": decision.stop_reason,
+            "current_step_stake": decision.current_step_stake,
+            "gruss_planned_trigger": trigger_plan.trigger,
+            "gruss_trigger_allowed": str(trigger_plan.allowed),
+            "gruss_bet_ref_required": str(trigger_plan.bet_ref_required),
+            "gruss_bet_ref_present": str(trigger_plan.bet_ref_present),
+            "gruss_bet_ref": "",
+            "gruss_update_confirmed": str(False),
+            "gruss_cancel_replace_confirmed": str(False),
+            "gruss_no_stack": str(trigger_plan.no_stack),
+            "trigger_plan_reason": trigger_plan.reason,
+            "fallback_reason": fallback_reason,
+        }
+
+    def _handle_pre_ladder_order(self, order: _StrategyOrderCandidate) -> bool:
+        if not self._is_pre_ladder_order(order):
+            return False
+        ladder_enabled = _env_flag("DOGBOT_PRE_LADDER_ENABLED", False)
+        ladder_preview = _env_flag("DOGBOT_PRE_LADDER_PREVIEW", True)
+        payload = self._pre_ladder_step_payload(order)
+        if payload is None:
+            return True
+
+        trade_base = self._trade_base_for_final_order(order, record_phase_stake=False)
+        row = {
+            **trade_base,
+            "price_req": payload["current_ladder_price"],
+            "size_req": payload["current_step_stake"] or order.size,
+            "final_price": payload["current_ladder_price"],
+            "final_stake": payload["current_step_stake"] or order.size,
+            "ladder_enabled": str(ladder_enabled),
+            "ladder_preview": str(ladder_preview),
+            "ladder_id": payload["ladder_id"],
+            "ladder_tracking_key": payload["ladder_tracking_key"],
+            "ladder_step": payload["ladder_step"],
+            "ladder_seconds_before_off": payload["ladder_seconds_before_off"],
+            "final_lim_price": payload["final_lim_price"],
+            "final_lim_price_raw": payload["final_lim_price_raw"],
+            "final_lim_price_tick": payload["final_lim_price_tick"],
+            "start_price": payload["start_price"],
+            "start_price_raw": payload["start_price_raw"],
+            "start_price_tick": payload["start_price_tick"],
+            "tick_rounding_mode": payload["tick_rounding_mode"],
+            "ladder_prices": payload["ladder_prices"],
+            "current_ladder_price": payload["current_ladder_price"],
+            "best_unmatched_back_offer": payload["best_unmatched_back_offer"],
+            "best_unmatched_lay_offer": payload["best_unmatched_lay_offer"],
+            "best_same_side_back_offer": payload["best_same_side_back_offer"],
+            "best_same_side_lay_offer": payload["best_same_side_lay_offer"],
+            "source_fields_used": payload["source_fields_used"],
+            "no_better_ladder_range_reason": payload["no_better_ladder_range_reason"],
+            "previous_order_status": payload["previous_order_status"],
+            "matched_stake": payload["matched_stake"],
+            "remaining_stake": payload["remaining_stake"],
+            "cancelled_previous": payload["cancelled_previous"],
+            "cancel_failed": payload["cancel_failed"],
+            "stop_reason": payload["stop_reason"],
+            "current_step_stake": payload["current_step_stake"],
+            "gruss_planned_trigger": payload["gruss_planned_trigger"],
+            "gruss_trigger_allowed": payload["gruss_trigger_allowed"],
+            "gruss_bet_ref_required": payload["gruss_bet_ref_required"],
+            "gruss_bet_ref_present": payload["gruss_bet_ref_present"],
+            "gruss_bet_ref": payload["gruss_bet_ref"],
+            "gruss_update_confirmed": payload["gruss_update_confirmed"],
+            "gruss_cancel_replace_confirmed": payload["gruss_cancel_replace_confirmed"],
+            "gruss_no_stack": payload["gruss_no_stack"],
+        }
+        if ladder_preview:
+            reason = payload["fallback_reason"] or payload["trigger_plan_reason"] or "pre_ladder_preview"
+            self._log_trade_row({**row, "status": "PRE_LADDER_PREVIEW", "reason": reason})
+            return True
+
+        self._log_trade_row(
+            {
+                **row,
+                "status": "PRE_LADDER_DISABLED",
+                "reason": "real_pre_ladder_requires_cancel_replace",
+                "stop_reason": "real_ladder_not_implemented",
+            }
+        )
+        return True
+
+    def _handle_final_strategy_order(self, order: _StrategyOrderCandidate) -> None:
+        if self._handle_pre_ladder_order(order):
+            return
+        trade_base = self._trade_base_for_final_order(order)
+        final_system = str(trade_base["final_system"])
+        if self.dry_run:
+            self._log_trade_row({**trade_base, "status": "DRYRUN", "reason": order.reason})
+            if getattr(order.slot, "bet_per_market", False):
+                self._slot_market_fired.add(order.bet_per_market_key)
+            return
+
+        self._log_trade_row({**trade_base, "status": "LIVE_INTENT", "reason": order.reason})
+        print(
+            f"[LIVE_INTENT] {order.market_id} sid={order.selection_id} strategy={final_system} "
+            f"phase={order.execution_phase} side={order.side} price={order.price} size={order.size}"
+        )
+
+        if getattr(order.slot, "bet_per_market", False):
+            self._slot_market_fired.add(order.bet_per_market_key)
+
+        can, reason = self.exposure.can_place(
+            Side(order.side),
+            market_id=order.market_id,
+            selection_id=order.selection_id,
+            planned_stake=float(order.size),
+            planned_liability=float(order.liability or 0.0),
+        )
+        if not can:
+            self._log_trade_row({**trade_base, "status": "LIVE_BLOCKED", "reason": reason})
+            print(f"[LIVE_BLOCKED] {order.market_id} sid={order.selection_id} strategy={final_system} reason={reason}")
+            return
+
+        orr = None
+        try:
+            if order.exec_mode == ExecMode.LIMIT_LTP:
+                idem_key = f"{order.market_id}:{order.selection_id}:{final_system}:{order.execution_phase}:{order.price}"
+                orr = self.order_executor.place_limit(
+                    market_id=order.market_id,
+                    selection_id=order.selection_id,
+                    side=order.side,
+                    price=float(order.price),
+                    size=float(order.size),
+                    strategy=final_system,
+                    persistence=os.getenv("PERSISTENCE", "LAPSE"),
+                    idem_key=idem_key,
+                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                )
+            elif order.exec_mode == ExecMode.SP_MOC:
+                qty = float(order.size) if order.side == "BACK" else float(order.liability or 0.0)
+                idem_key = f"{order.market_id}:{order.selection_id}:{final_system}:{order.execution_phase}:SP_MOC"
+                orr = self.order_executor.place_sp_market_on_close(
+                    market_id=order.market_id,
+                    selection_id=order.selection_id,
+                    side=order.side,
+                    size_or_liability=qty,
+                    strategy=final_system,
+                    idem_key=idem_key,
+                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                )
+            elif order.exec_mode == ExecMode.SP_LOC:
+                sp_lim = order.sp_limit if order.sp_limit is not None else getattr(order.slot, "sp_limit", None)
+                if sp_lim is None:
+                    sp_lim = order.price
+                sp_lim = float(sp_lim)
+                qty = float(order.size) if order.side == "BACK" else float(order.liability or 0.0)
+                idem_key = f"{order.market_id}:{order.selection_id}:{final_system}:{order.execution_phase}:SP_LOC:{sp_lim}"
+                orr = self.order_executor.place_sp_limit_on_close(
+                    market_id=order.market_id,
+                    selection_id=order.selection_id,
+                    side=order.side,
+                    size_or_liability=qty,
+                    sp_limit_price=sp_lim,
+                    strategy=final_system,
+                    idem_key=idem_key,
+                    retries=int(os.getenv("ORDER_RETRIES", "2")),
+                    backoff_ms=int(os.getenv("ORDER_BACKOFF_MS", "250")),
+                )
+            else:
+                raise ValueError(f"unsupported_exec_mode={order.exec_mode!r}")
+        except Exception as e:
+            reject_reason = f"order_exception={e!r}"
+            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": reject_reason})
+            self._log_strategy_error(order.market_id, order.selection_id, reject_reason)
+            print(f"[LIVE_REJECTED] {order.market_id} sid={order.selection_id} strategy={final_system} reason={reject_reason}")
+            return
+
+        order_reason = self._order_result_reason(orr)
+        order_status = getattr(orr, "status", None) if orr is not None else None
+        if order_status == "IDEMPOTENT_SKIPPED":
+            self._log_trade_row({**trade_base, "status": "LIVE_SKIPPED", "reason": "IDEMPOTENT_SKIPPED"})
+            print(f"[LIVE_SKIPPED] {order.market_id} sid={order.selection_id} strategy={final_system} reason=IDEMPOTENT_SKIPPED")
+        elif orr and getattr(orr, "ok", False):
+            self._log_trade_row({**trade_base, "status": "LIVE_PLACED", "reason": order_reason})
+            print(f"[LIVE_PLACED] {order.market_id} sid={order.selection_id} strategy={final_system} reason={order_reason}")
+            self.exposure.on_placed(
+                Side(order.side),
+                market_id=order.market_id,
+                selection_id=order.selection_id,
+                stake=float(order.size),
+                liability=float(order.liability or 0.0),
+            )
+        else:
+            self._log_trade_row({**trade_base, "status": "LIVE_REJECTED", "reason": order_reason})
+            self._log_strategy_error(order.market_id, order.selection_id, order_reason)
+            print(f"[LIVE_REJECTED] {order.market_id} sid={order.selection_id} strategy={final_system} reason={order_reason}")
+
     def _ensure_trade_header(self, path: Path) -> None:
         header = list(self.TRADE_HEADER)
         if path.exists():

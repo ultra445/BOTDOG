@@ -94,6 +94,20 @@ class GrussOrdersTests(unittest.TestCase):
 
         self.assertEqual(result.status, "GRUSS_DRYRUN")
 
+    def test_dryrun_provider_ignores_real_stake_cap_environment(self) -> None:
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussOrderProvider(tmp)
+            result = provider.place_order(_intent(stake=8.0))
+            rows = _read_rows(Path(tmp) / "orders_gruss_dryrun.csv")
+
+        self.assertEqual(result.status, "GRUSS_DRYRUN")
+        self.assertEqual(rows[0]["stake"], "8.0")
+        self.assertNotIn("stake_capped", rows[0])
+
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:

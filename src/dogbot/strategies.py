@@ -11,6 +11,10 @@ import csv
 
 from .staking import Side, StakingResult  # type: ignore
 
+EXECUTION_PHASE_PRE = "PRE"
+EXECUTION_PHASE_POST = "POST"
+EXECUTION_PHASES = {EXECUTION_PHASE_PRE, EXECUTION_PHASE_POST}
+
 # ================= Execution modes =================
 
 class ExecMode(str, Enum):
@@ -57,6 +61,8 @@ class RunnerCtx:
     place_theo: Optional[float] = None
     ev_place: Optional[float] = None
     bsp_place: Optional[float] = None
+    execution_phase: str = EXECUTION_PHASE_POST
+    phase_send_seconds_before_off: Optional[int] = None
 
 # Result of a fired slot (sizing already computed)
 @dataclass
@@ -567,6 +573,7 @@ class Slot:
     strategy_signal: Optional[str] = None
     strategy_bucket: Optional[str] = None
     requires_mom45: bool = False
+    execution_phase: str = EXECUTION_PHASE_POST
 
     # Staking params
     edge_env: Optional[str] = None       # env var for EDGE (e.g. EDGE_LAY_WIN_401)
@@ -575,6 +582,10 @@ class Slot:
     def __post_init__(self):
         if self.tag is None:
             self.tag = f"{self.family}_{self.slot}"
+        phase = str(self.execution_phase or EXECUTION_PHASE_POST).strip().upper()
+        if phase not in EXECUTION_PHASES:
+            raise ValueError(f"invalid execution_phase={self.execution_phase!r}")
+        self.execution_phase = phase
 
 
 # ================= Registry (declare your systems here) =================
@@ -649,6 +660,7 @@ def register_ev_place_uk(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_1.3_3.0",
         bet_per_market=False, edge_env="EDGE_EV1_PLACE_UK",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=102, side=Side.BACK,
@@ -658,6 +670,7 @@ def register_ev_place_uk(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_PLUS",
         bet_per_market=False, edge_env="EDGE_EV2_PLACE_UK",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.15),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=103, side=Side.BACK,
@@ -676,6 +689,7 @@ def register_ev_place_uk(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_7.0",
         bet_per_market=False, edge_env="EDGE_EV2BIS_PLACE_UK",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
 
 
@@ -705,6 +719,7 @@ def register_ev_place_row(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_1.3_3.0",
         bet_per_market=False, edge_env="EDGE_EV1_PLACE_ROW",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.35),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=202, side=Side.BACK,
@@ -714,6 +729,7 @@ def register_ev_place_row(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_4.8",
         bet_per_market=False, edge_env="EDGE_EV2_PLACE_ROW",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.30),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=203, side=Side.BACK,
@@ -723,6 +739,7 @@ def register_ev_place_row(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_4.8_PLUS",
         bet_per_market=False, edge_env="EDGE_EV3_PLACE_ROW",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
+        execution_phase=EXECUTION_PHASE_PRE,
     ))
     registry.append(Slot(
         family="BACK_PLACE", slot=204, side=Side.BACK,
@@ -792,31 +809,36 @@ def register_placelay_row(registry: List[Slot]):
         market_family="PLACE", strategy_group="PLACE_LAY_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_1.05_3.0",
         bet_per_market=False, edge_env="EDGE_EV1_PLACELAY_ROW",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.53)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.53),
+        execution_phase=EXECUTION_PHASE_PRE))
     registry.append(Slot(family="LAY_PLACE", slot=302, side=Side.LAY,
         condition=cond_ev2_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_4.8",
         bet_per_market=False, edge_env="EDGE_EV2_PLACELAY_ROW",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.55)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.55),
+        execution_phase=EXECUTION_PHASE_PRE))
     registry.append(Slot(family="LAY_PLACE", slot=303, side=Side.LAY,
         condition=cond_ev3_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_4.8_7.0",
         bet_per_market=False, edge_env="EDGE_EV3_PLACELAY_ROW",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.58)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.58),
+        execution_phase=EXECUTION_PHASE_PRE))
     registry.append(Slot(family="LAY_PLACE", slot=304, side=Side.LAY,
         condition=cond_ev4_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_7.0_15.0",
         bet_per_market=False, edge_env="EDGE_EV4_PLACELAY_ROW",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.60)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.60),
+        execution_phase=EXECUTION_PHASE_PRE))
     registry.append(Slot(family="LAY_PLACE", slot=305, side=Side.LAY,
         condition=cond_ev5_placelay_row, exec_mode=ExecMode.LIM, price_for_bounds="PLACE_BSP_THEN_LTP",
         market_family="PLACE", strategy_group="PLACE_LAY_ROW", strategy_region="ROW",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_15_PLUS",
         bet_per_market=False, edge_env="EDGE_EV5_PLACELAY_ROW",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.70)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.70),
+        execution_phase=EXECUTION_PHASE_PRE))
 
 # --- UK LAY ---
 def cond_ev1_placelay_uk(ctx: RunnerCtx) -> bool:
@@ -829,23 +851,13 @@ def register_placelay_uk(registry: List[Slot]):
         market_family="PLACE", strategy_group="PLACE_LAY_UK", strategy_region="UK",
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_15_PLUS",
         bet_per_market=False, edge_env="EDGE_EV1_PLACELAY_UK",
-        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.80)))
+        sp_limit_fn=lambda ctx: _lim_lay_from_place_theo(ctx, 0.80),
+        execution_phase=EXECUTION_PHASE_PRE))
 
 
 # ================= TRAP1 PLACE LAY BSP systems =================
 
 def register_trap1_place_lay_bsp(registry: List[Slot]):
-    def cond_trap1_place_lay_uk_15_plus(ctx: RunnerCtx) -> bool:
-        p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-        evp = getattr(ctx, "ev_place", None)
-        return (
-            ctx.market_type.upper() == "PLACE"
-            and getattr(ctx, "trap", None) == 1
-            and getattr(ctx, "region", None) == "UK"
-            and p is not None and p > 15.0
-            and evp is not None and evp <= 0.0
-        )
-
     def cond_trap1_place_lay_row_15_plus(ctx: RunnerCtx) -> bool:
         p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
         evp = getattr(ctx, "ev_place", None)
@@ -857,27 +869,6 @@ def register_trap1_place_lay_bsp(registry: List[Slot]):
             and evp is not None and evp <= 0.0
         )
 
-    def cond_trap1_place_lay_uk_7_15(ctx: RunnerCtx) -> bool:
-        p = _pick_bounds_price(ctx, "PLACE_BSP_THEN_LTP")
-        evp = getattr(ctx, "ev_place", None)
-        return (
-            ctx.market_type.upper() == "PLACE"
-            and getattr(ctx, "trap", None) == 1
-            and getattr(ctx, "region", None) == "UK"
-            and p is not None and p > 7.0 and p <= 15.0
-            and evp is not None and evp < -0.10
-        )
-
-    registry.append(Slot(
-        family="LAY_PLACE", slot=501, side=Side.LAY,
-        condition=cond_trap1_place_lay_uk_15_plus,
-        exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
-        market_family="PLACE", strategy_group="PLACE_LAY_TRAP1_UK", strategy_region="UK",
-        strategy_signal="TRAP1", strategy_bucket="PLACE_15_PLUS",
-        bet_per_market=False,
-        edge_env="EDGE_TRAP1_PLACE_LAY_UK_15_PLUS",
-        max_runner_stake_env="MAX_RUNNER_STAKE_TRAP1_PLACE_LAY_UK_15_PLUS",
-    ))
     registry.append(Slot(
         family="LAY_PLACE", slot=502, side=Side.LAY,
         condition=cond_trap1_place_lay_row_15_plus,
@@ -887,16 +878,6 @@ def register_trap1_place_lay_bsp(registry: List[Slot]):
         bet_per_market=False,
         edge_env="EDGE_TRAP1_PLACE_LAY_ROW_15_PLUS",
         max_runner_stake_env="MAX_RUNNER_STAKE_TRAP1_PLACE_LAY_ROW_15_PLUS",
-    ))
-    registry.append(Slot(
-        family="LAY_PLACE", slot=503, side=Side.LAY,
-        condition=cond_trap1_place_lay_uk_7_15,
-        exec_mode=ExecMode.SP_MOC, price_for_bounds="PLACE_BSP_THEN_LTP",
-        market_family="PLACE", strategy_group="PLACE_LAY_TRAP1_UK", strategy_region="UK",
-        strategy_signal="TRAP1", strategy_bucket="PLACE_7_15",
-        bet_per_market=False,
-        edge_env="EDGE_TRAP1_PLACE_LAY_UK_7_15",
-        max_runner_stake_env="MAX_RUNNER_STAKE_TRAP1_PLACE_LAY_UK_7_15",
     ))
 
 

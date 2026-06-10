@@ -18,11 +18,15 @@ from dogbot.gruss.gruss_dryrun_engine import (
     GrussDryRunRunner,
     ProcessedRaceStore,
     build_order_intents_from_trade_rows,
+    countdown_wait_reason as active_countdown_wait_reason,
     describe_state,
+    describe_current_strategy_milestone,
     gruss_region_for_snapshots,
+    current_strategy_milestone,
     print_strategy_registry_diagnostics,
     race_key,
     read_gruss_dryrun_state,
+    strategy_milestone_key,
 )
 from dogbot.gruss.gruss_excel_bridge import DEFAULT_WORKBOOK_PATH
 from dogbot.gruss.gruss_feed import GrussFeed
@@ -90,10 +94,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"tick={tick} {wait_reason}")
             _sleep(args, tick)
             continue
+        print(
+            f"tick={tick} "
+            f"{describe_current_strategy_milestone(state.win_snapshot.metadata.countdown_seconds, state.place_snapshot.metadata.countdown_seconds)}"
+        )
 
         key = race_key(state.win_snapshot, state.place_snapshot)
-        if runner.processed_store.has_seen(key):
-            print(f"tick={tick} skip: course deja traitee ({key})")
+        milestone = current_strategy_milestone(
+            state.win_snapshot.metadata.countdown_seconds,
+            state.place_snapshot.metadata.countdown_seconds,
+        )
+        processed_key = strategy_milestone_key(key, milestone)
+        if runner.processed_store.has_seen(processed_key):
+            print(f"tick={tick} skip: milestone deja traite ({processed_key})")
             _sleep(args, tick)
             continue
 
@@ -117,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 intents=intents,
                 context=context,
                 processed_store=runner.processed_store,
-                key=key,
+                key=processed_key,
                 win_market_id=state.win_snapshot.metadata.market_id,
                 place_market_id=state.place_snapshot.metadata.market_id,
             )
@@ -196,14 +209,7 @@ def countdown_wait_reason(
     win_countdown_seconds: int | None,
     place_countdown_seconds: int | None,
 ) -> str | None:
-    seconds = win_countdown_seconds
-    if seconds is None:
-        seconds = place_countdown_seconds
-    if seconds is None:
-        return "skip: countdown_seconds_unavailable"
-    if seconds > TRIGGER_SECONDS:
-        return f"wait: countdown_seconds={seconds} > trigger={TRIGGER_SECONDS}"
-    return None
+    return active_countdown_wait_reason(win_countdown_seconds, place_countdown_seconds)
 
 
 def build_write_no_trigger_context(state, key: str) -> GrussRealOrderContext:
