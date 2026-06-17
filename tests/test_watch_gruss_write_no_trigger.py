@@ -137,14 +137,15 @@ class WatchGrussWriteNoTriggerTests(unittest.TestCase):
         watch_gruss_write_no_trigger.validate_write_no_trigger_environment(env)
 
     def test_waits_only_outside_active_pre_post_milestones(self) -> None:
-        for seconds in (20, 15, 10, 5, 0):
+        for seconds in (45, 32, 20, 14, 1):
             with self.subTest(seconds=seconds):
                 self.assertIsNone(watch_gruss_write_no_trigger.countdown_wait_reason(seconds, seconds))
         self.assertEqual(
             watch_gruss_write_no_trigger.countdown_wait_reason(3, 3),
-            "wait: countdown_seconds=3 next_milestone=0 execution_phase=POST",
+            "wait: countdown_seconds=3 next_milestone=1 execution_phase=POST",
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+

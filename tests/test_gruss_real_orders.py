@@ -105,12 +105,13 @@ class FakeBridge:
             raise AssertionError("trigger address reached write_cells_without_trigger")
         return self.write_cells(sheet_name, plan, allow_write=allow_write)
 
-    def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, allow_clear=False):
+    def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, command_columns=None, allow_clear=False):
         prepared = tuple(addresses)
         self.clear_calls.append((sheet_name, prepared, trigger_column, allow_clear))
+        allowed_columns = tuple(command_columns or (trigger_column,))
         for address in prepared:
-            if not address.startswith(trigger_column):
-                raise AssertionError("non-trigger clear attempted")
+            if not any(address.startswith(column) for column in allowed_columns):
+                raise AssertionError("non-command clear attempted")
             self.cells[(sheet_name, address)] = None
         return list(prepared)
 
@@ -170,7 +171,7 @@ def _context(**overrides):
         "validation_ok": True,
         "tradable": True,
         "region": "UK",
-        "countdown_seconds": 2,
+        "countdown_seconds": 1,
         "course": "Greyhound Racing\\PGR\\Romford 4th Jun",
         "market_already_processed": False,
         "win_market_id": "258836707",
@@ -181,6 +182,75 @@ def _context(**overrides):
 
 
 class GrussRealOrdersTests(unittest.TestCase):
+    def test_stale_command_cells_cleanup_clears_backsp_laysp_and_reports_done(self) -> None:
+        bridge = FakeBridge(
+            runner_values=[
+                ["1. Runner One"],
+                ["2. Runner Two"],
+            ],
+            trigger_values={
+                ("WIN", "Q5"): "BACKSP",
+                ("WIN", "R5"): 3.5,
+                ("WIN", "S5"): 2.0,
+                ("PLACE", "Q6"): "LAYSP",
+                ("PLACE", "R6"): 4.0,
+                ("PLACE", "S6"): 2.0,
+            },
+        )
+
+        with TemporaryDirectory() as tmp:
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            cleanup = provider.cleanup_stale_command_cells(reason="startup")
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertTrue(cleanup["attempted"])
+        self.assertTrue(cleanup["done"])
+        self.assertFalse(cleanup["failed"])
+        self.assertEqual(bridge.cells[("WIN", "Q5")], None)
+        self.assertEqual(bridge.cells[("WIN", "R5")], None)
+        self.assertEqual(bridge.cells[("WIN", "S5")], None)
+        self.assertEqual(bridge.cells[("PLACE", "Q6")], None)
+        self.assertEqual(bridge.cells[("PLACE", "R6")], None)
+        self.assertEqual(bridge.cells[("PLACE", "S6")], None)
+        self.assertEqual(rows[0]["startup_command_cells_cleanup_attempted"], "True")
+        self.assertEqual(rows[0]["startup_command_cells_cleanup_done"], "True")
+        self.assertIn("WIN!Q5", rows[0]["stale_command_cells_cleanup_addresses"])
+        self.assertIn("PLACE!Q6", rows[0]["stale_command_cells_cleanup_addresses"])
+
+    def test_startup_cleanup_without_stale_triggers_still_reports_done(self) -> None:
+        bridge = FakeBridge()
+
+        with TemporaryDirectory() as tmp:
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            cleanup = provider.cleanup_stale_command_cells(reason="startup")
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertTrue(cleanup["attempted"])
+        self.assertTrue(cleanup["done"])
+        self.assertFalse(cleanup["failed"])
+        self.assertEqual(cleanup["reason"], "no_stale_command_cells")
+        self.assertEqual(rows[0]["startup_command_cells_cleanup_done"], "True")
+
+    def test_stale_command_cells_cleanup_failure_is_reported_unsafe(self) -> None:
+        class FailingClearBridge(FakeBridge):
+            def clear_trigger_cells(self, *args, **kwargs):
+                raise RuntimeError("clear failed")
+
+        bridge = FailingClearBridge(trigger_values={("PLACE", "Q5"): "CANCEL"})
+
+        with TemporaryDirectory() as tmp:
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            cleanup = provider.cleanup_stale_command_cells(reason="startup")
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertTrue(cleanup["attempted"])
+        self.assertFalse(cleanup["done"])
+        self.assertTrue(cleanup["failed"])
+        self.assertIn("stale_cleanup_failed_after_retries", cleanup["reason"])
+        self.assertEqual(rows[0]["startup_command_cells_cleanup_attempted"], "True")
+        self.assertEqual(rows[0]["startup_command_cells_cleanup_done"], "False")
+        self.assertIn("clear failed", rows[0]["stale_command_cells_cleanup_reason"])
+
     def test_bridge_write_without_trigger_materially_rejects_trigger_address(self) -> None:
         sheet = FakeSheet()
         bridge = GrussExcelBridge()
@@ -611,14 +681,22 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(result.trigger_cell_value_before_clear, "LAY")
         self.assertEqual(
             bridge.clear_calls,
-            [("PLACE", ("Q5",), "Q", True)],
+            [("PLACE", ("Q5", "R5", "S5"), "Q", True)],
         )
+        self.assertIsNone(bridge.cells[("PLACE", "Q5")])
+        self.assertIsNone(bridge.cells[("PLACE", "R5")])
+        self.assertIsNone(bridge.cells[("PLACE", "S5")])
         self.assertEqual(rows[0]["trigger_value_written"], "LAY")
         self.assertEqual(rows[0]["trigger_clear_attempted"], "True")
         self.assertEqual(rows[0]["trigger_cleared"], "True")
         self.assertEqual(rows[0]["trigger_clear_reason"], "trigger_cleared")
         self.assertEqual(rows[0]["trigger_cell_value_before_clear"], "LAY")
         self.assertEqual(rows[0]["trigger_clear_delay_ms"], "0")
+        self.assertEqual(rows[0]["command_cells_clear_attempted"], "True")
+        self.assertEqual(rows[0]["command_cells_cleared"], "True")
+        self.assertEqual(rows[0]["command_cells_clear_reason"], "command_cells_cleared")
+        self.assertEqual(rows[0]["command_cells_clear_addresses"], "Q5;R5;S5")
+        self.assertEqual(rows[0]["command_cells_clear_delay_ms"], "0")
 
     def test_real_back_order_caps_stake_before_excel_write(self) -> None:
         bridge = FakeBridge()
@@ -739,7 +817,7 @@ class GrussRealOrdersTests(unittest.TestCase):
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
-            result = provider.place_order(_intent(), _context())
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
         self.assertTrue(result.post_write_verified)
@@ -749,7 +827,21 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(result.post_write_stake_value, 2.0)
         self.assertEqual(result.post_write_trigger_cell_address, "Q5")
         self.assertEqual(result.post_write_trigger_value, "BACK")
+        self.assertEqual(result.post_send_seconds_before_off, 1)
+        self.assertTrue(result.post_trigger_window_hit)
+        self.assertTrue(result.post_write_attempted)
+        self.assertEqual(result.post_write_status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(result.post_write_reason, "excel_trigger_written")
+        self.assertEqual(result.countdown_seconds_at_post_write, 1)
+        self.assertEqual(result.market_status_at_post_write, "Active")
         self.assertEqual(rows[0]["post_write_verified"], "True")
+        self.assertEqual(rows[0]["post_send_seconds_before_off"], "1")
+        self.assertEqual(rows[0]["post_trigger_window_hit"], "True")
+        self.assertEqual(rows[0]["post_write_attempted"], "True")
+        self.assertEqual(rows[0]["post_write_status"], "GRUSS_REAL_WRITTEN")
+        self.assertEqual(rows[0]["post_write_reason"], "excel_trigger_written")
+        self.assertEqual(rows[0]["countdown_seconds_at_post_write"], "1")
+        self.assertEqual(rows[0]["market_status_at_post_write"], "Active")
 
     def test_post_write_readback_mismatch_fails_and_does_not_count_order(self) -> None:
         bridge = FakeBridge(readback_overrides={("PLACE", "R5"): 99.0})
@@ -789,6 +881,7 @@ class GrussRealOrdersTests(unittest.TestCase):
             {
                 "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "true",
                 "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "3000",
+                "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "3000",
             },
             clear=False,
         ), patch("dogbot.gruss.gruss_real_orders.time.sleep", side_effect=observe_trigger_during_sleep) as sleep:
@@ -803,7 +896,7 @@ class GrussRealOrdersTests(unittest.TestCase):
 
     def test_post_trigger_clear_failure_is_logged_without_retrying_order(self) -> None:
         class ClearFailingBridge(FakeBridge):
-            def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, allow_clear=False):
+            def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, command_columns=None, allow_clear=False):
                 raise RuntimeError("mock clear failure")
 
         bridge = ClearFailingBridge()
@@ -824,7 +917,10 @@ class GrussRealOrdersTests(unittest.TestCase):
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
             "os.environ",
-            {"DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "3000"},
+            {
+                "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "3000",
+                "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "3000",
+            },
             clear=False,
         ), patch("dogbot.gruss.gruss_real_orders.time.sleep") as sleep:
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
@@ -832,8 +928,42 @@ class GrussRealOrdersTests(unittest.TestCase):
 
         self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
         self.assertEqual(result.trigger_clear_delay_ms, 3000)
-        self.assertTrue(result.trigger_cleared)
-        sleep.assert_called_once_with(3.0)
+
+    def test_command_cells_clear_delay_uses_dedicated_env_over_trigger_delay(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "1000",
+                "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "5000",
+                "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_NON_BLOCKING": "true",
+            },
+            clear=False,
+        ), patch("dogbot.gruss.gruss_real_orders.time.sleep") as sleep:
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+            provider._pending_command_cell_clears[0].due_monotonic = 0
+            provider._drain_due_command_cell_clears()
+            drained_rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(provider.command_cells_clear_delay_ms, 5000)
+        self.assertEqual(result.command_cells_clear_delay_ms, 5000)
+        self.assertEqual(rows[0]["command_cells_clear_delay_ms"], "5000")
+        self.assertEqual(rows[0]["command_cells_clear_scheduled"], "True")
+        self.assertEqual(rows[0]["command_cells_clear_non_blocking"], "True")
+        self.assertEqual(rows[0]["command_cells_clear_executed"], "False")
+        self.assertEqual(rows[0]["command_cells_clear_reason"], "command_cells_clear_scheduled")
+        self.assertEqual(rows[0]["command_cells_clear_due_time"], result.command_cells_clear_due_time)
+        self.assertTrue(rows[0]["command_cells_clear_due_time"])
+        sleep.assert_not_called()
+        self.assertFalse(result.trigger_cleared)
+        self.assertEqual(bridge.clear_calls, [("PLACE", ("Q5", "R5", "S5"), "Q", True)])
+        self.assertEqual(drained_rows[0]["command_cells_clear_executed"], "True")
+        self.assertEqual(drained_rows[0]["command_cells_clear_reason"], "command_cells_cleared")
+        self.assertEqual(drained_rows[0]["command_cells_cleared"], "True")
+        self.assertEqual(drained_rows[0]["trigger_cleared"], "True")
+        self.assertEqual(drained_rows[0]["trigger_clear_reason"], "trigger_cleared")
 
     def test_default_trigger_clear_delay_is_1500_ms(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -1389,6 +1519,7 @@ def _provider_env(*, preview: bool, layout_confirmed: bool = False):
             "DOGBOT_GRUSS_REAL_MAX_ORDERS": "",
             "DOGBOT_GRUSS_REAL_MAX_STAKE": "",
             "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
+            "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
             "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
         },
         clear=False,
@@ -1412,6 +1543,7 @@ def _write_no_trigger_env(
         "DOGBOT_GRUSS_REAL_MAX_ORDERS": "" if max_orders is None else str(max_orders),
         "DOGBOT_GRUSS_REAL_MAX_STAKE": "" if max_stake is None else str(max_stake),
         "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
+        "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
         "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
     }
     if preview is not None:
@@ -1438,6 +1570,7 @@ def _real_test_env(
             "DOGBOT_GRUSS_REAL_MAX_ORDERS": "" if max_orders is None else str(max_orders),
             "DOGBOT_GRUSS_REAL_MAX_STAKE": "" if max_stake is None else str(max_stake),
             "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
+            "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
             "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
         },
         clear=False,

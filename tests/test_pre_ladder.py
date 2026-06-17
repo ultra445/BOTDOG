@@ -213,18 +213,26 @@ class PreLadderTests(unittest.TestCase):
         self.assertFalse(lay_plan.real_confirmed)
         self.assertEqual(lay_plan.trigger, "LAY")
 
-    def test_gruss_following_step_with_bet_ref_plans_update_preview_only(self) -> None:
+    def test_gruss_following_step_with_bet_ref_plans_replace_preview_only(self) -> None:
         plan = plan_gruss_pre_ladder_trigger(side="BACK", step_index=1, bet_ref="123456789")
 
         self.assertTrue(plan.allowed)
-        self.assertEqual(plan.trigger, "UPDATE")
+        self.assertEqual(plan.trigger, "BACKR")
         self.assertTrue(plan.bet_ref_required)
         self.assertTrue(plan.bet_ref_present)
         self.assertFalse(plan.no_stack)
         self.assertFalse(plan.real_confirmed)
-        self.assertEqual(plan.reason, "update_trigger_not_confirmed_preview_only")
+        self.assertEqual(plan.reason, "replace_trigger_not_confirmed_preview_only")
 
-    def test_gruss_following_step_without_bet_ref_never_updates_or_stacks(self) -> None:
+    def test_gruss_following_lay_step_with_bet_ref_plans_layr_preview_only(self) -> None:
+        plan = plan_gruss_pre_ladder_trigger(side="LAY", step_index=1, bet_ref="123456789")
+
+        self.assertTrue(plan.allowed)
+        self.assertEqual(plan.trigger, "LAYR")
+        self.assertTrue(plan.bet_ref_required)
+        self.assertTrue(plan.bet_ref_present)
+
+    def test_gruss_following_step_without_bet_ref_never_replaces_or_stacks(self) -> None:
         plan = plan_gruss_pre_ladder_trigger(side="BACK", step_index=1, bet_ref="")
 
         self.assertFalse(plan.allowed)
@@ -233,7 +241,7 @@ class PreLadderTests(unittest.TestCase):
         self.assertFalse(plan.bet_ref_present)
         self.assertTrue(plan.no_stack)
         self.assertFalse(plan.real_confirmed)
-        self.assertEqual(plan.reason, "missing_bet_ref_do_not_stack")
+        self.assertEqual(plan.reason, "bet_ref_not_ready")
 
 
 if __name__ == "__main__":

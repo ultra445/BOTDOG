@@ -32,9 +32,18 @@ class PreLadderConsolidationTests(unittest.TestCase):
         "tick_rounding_mode",
         "best_same_side_back_offer",
         "best_same_side_lay_offer",
+        "best_back_displayed",
+        "best_lay_displayed",
+        "start_price_source",
         "ladder_prices",
+        "ladder_prices_frozen",
         "ladder_step",
         "ladder_id",
+        "ladder_plan_frozen",
+        "current_ladder_price_from_frozen_plan",
+        "direct_lim_order_planned",
+        "direct_lim_order_written",
+        "no_replace_steps_for_direct_lim",
         "no_better_ladder_range_reason",
         "post_checked",
         "post_signal_count",
@@ -57,7 +66,14 @@ class PreLadderConsolidationTests(unittest.TestCase):
 
         self.assertEqual(values.get("DOGBOT_PRE_LADDER_ENABLED"), "false")
         self.assertEqual(values.get("DOGBOT_PRE_LADDER_PREVIEW"), "true")
-        self.assertEqual(values.get("DOGBOT_PRE_LADDER_STEPS"), "20,15,10,5")
+        self.assertEqual(values.get("DOGBOT_PRE_LADDER_STEPS"), "45,32,20,14")
+        self.assertEqual(values.get("DOGBOT_PRE_INITIAL_BATCH_WRITE_GRACE_SECONDS"), "10")
+        self.assertEqual(values.get("DOGBOT_PRE_CANCEL_BEFORE_POST"), "true")
+        self.assertEqual(values.get("DOGBOT_PRE_CANCEL_SECONDS_BEFORE_OFF"), "1")
+        self.assertEqual(values.get("DOGBOT_PRE_IGNORE_STALE_PRICE_BEFORE_WRITE"), "true")
+        self.assertEqual(values.get("DOGBOT_POST_SEND_SECONDS_BEFORE_OFF"), "1")
+        self.assertEqual(values.get("DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS"), "500")
+        self.assertEqual(values.get("DOGBOT_GRUSS_REAL_VARIABLE_STAKES"), "false")
 
     def test_analyzer_reports_clean_group_and_post_presence(self) -> None:
         analyzer = _load_analyzer_module()

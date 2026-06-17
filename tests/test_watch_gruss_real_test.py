@@ -31,6 +31,7 @@ VALID_ENV = {
     "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
     "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
     "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
+    "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
     "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
 }
 
@@ -100,7 +101,7 @@ class FakeBridge:
             self.cells[(sheet_name, address)] = value
         return [address for address, _ in plan]
 
-    def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, allow_clear=False):
+    def clear_trigger_cells(self, sheet_name, addresses, *, trigger_column, command_columns=None, allow_clear=False):
         for address in addresses:
             self.cells[(sheet_name, address)] = None
         return list(addresses)
@@ -523,12 +524,12 @@ class WatchGrussRealTestTests(unittest.TestCase):
             watch_gruss_real_test.ensure_open_visible_workbook(HiddenBridge())
 
     def test_waits_only_outside_active_pre_post_milestones(self) -> None:
-        for seconds in (20, 15, 10, 5, 0):
+        for seconds in (45, 32, 20, 14, 1):
             with self.subTest(seconds=seconds):
                 self.assertIsNone(watch_gruss_real_test.countdown_wait_reason(seconds, seconds))
         self.assertEqual(
             watch_gruss_real_test.countdown_wait_reason(3, 3),
-            "wait: countdown_seconds=3 next_milestone=0 execution_phase=POST",
+            "wait: countdown_seconds=3 next_milestone=1 execution_phase=POST",
         )
 
     def test_valid_environment_is_accepted(self) -> None:
@@ -540,3 +541,4 @@ class WatchGrussRealTestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

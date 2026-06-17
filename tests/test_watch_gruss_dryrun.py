@@ -117,7 +117,7 @@ def _run_main_with_countdowns(countdowns: list[int]) -> tuple[int, str, FakeRunn
 
 class WatchGrussDryRunTests(unittest.TestCase):
     def test_pre_ladder_milestones_do_not_wait_on_legacy_trigger(self) -> None:
-        for seconds in (20, 15, 10, 5):
+        for seconds in (45, 32, 20, 14):
             with self.subTest(seconds=seconds):
                 result, output, runner = _run_main_with_countdowns([seconds])
 
@@ -128,42 +128,43 @@ class WatchGrussDryRunTests(unittest.TestCase):
                 self.assertEqual(runner.evaluate_calls, [(seconds, seconds, True)])
 
     def test_post_milestone_evaluates_post_phase(self) -> None:
-        result, output, runner = _run_main_with_countdowns([0])
+        result, output, runner = _run_main_with_countdowns([1])
 
         self.assertEqual(result, 0)
-        self.assertIn("milestone=0 execution_phase=POST", output)
+        self.assertIn("milestone=1 execution_phase=POST", output)
         self.assertIn("evaluating POST systems", output)
-        self.assertEqual(runner.evaluate_calls, [(0, 0, True)])
+        self.assertEqual(runner.evaluate_calls, [(1, 1, True)])
 
     def test_processed_key_includes_execution_phase_and_milestone(self) -> None:
-        result, output, runner = _run_main_with_countdowns([20, 15])
+        result, output, runner = _run_main_with_countdowns([45, 32])
 
         self.assertEqual(result, 0)
-        self.assertIn("active_milestones=[20, 15, 10, 5, 0]", output)
-        self.assertEqual(runner.evaluate_calls, [(20, 20, True), (15, 15, True)])
+        self.assertIn("active_milestones=[45, 32, 20, 14, 1]", output)
+        self.assertEqual(runner.evaluate_calls, [(45, 45, True), (32, 32, True)])
         self.assertEqual(
             [call[0] for call in runner.processed_store.mark_calls],
             [
-                "parent:race-1|milestone=20|phase=PRE",
-                "parent:race-1|milestone=15|phase=PRE",
+                "parent:race-1|milestone=45|phase=PRE",
+                "parent:race-1|milestone=32|phase=PRE",
             ],
         )
 
-    def test_pre_five_does_not_block_post(self) -> None:
-        result, output, runner = _run_main_with_countdowns([5, 0])
+    def test_pre_fourteen_does_not_block_post(self) -> None:
+        result, output, runner = _run_main_with_countdowns([14, 1])
 
         self.assertEqual(result, 0)
-        self.assertIn("milestone=5 execution_phase=PRE", output)
-        self.assertIn("milestone=0 execution_phase=POST", output)
-        self.assertEqual(runner.evaluate_calls, [(5, 5, True), (0, 0, True)])
+        self.assertIn("milestone=14 execution_phase=PRE", output)
+        self.assertIn("milestone=1 execution_phase=POST", output)
+        self.assertEqual(runner.evaluate_calls, [(14, 14, True), (1, 1, True)])
         self.assertEqual(
             [call[0] for call in runner.processed_store.mark_calls],
             [
-                "parent:race-1|milestone=5|phase=PRE",
-                "parent:race-1|milestone=0|phase=POST",
+                "parent:race-1|milestone=14|phase=PRE",
+                "parent:race-1|milestone=1|phase=POST",
             ],
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+

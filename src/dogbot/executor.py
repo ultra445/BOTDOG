@@ -26,7 +26,7 @@ except Exception:
     from .placket import odds_to_win_probs, place_probabilities, fair_place_odds  # type: ignore
 
 # --- AJOUTS (Staking/Stratégies) ---
-from .config import load_config
+from .config import ORDER_PROVIDER_GRUSS_EXCEL_REAL, load_config
 from .staking import StakingEngine, Side
 from . import strategies as _strategies
 from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
@@ -42,9 +42,9 @@ from .pre_ladder import (
 from .execution.orders import OrderExecutor
 from .risk import ExposureManager
 
-PRE_LADDER_DEFAULT_STEPS_SECONDS = (20, 15, 10, 5)
-PRE_SEND_SECONDS_BEFORE_OFF = 5
-POST_SEND_SECONDS_BEFORE_OFF = 0
+PRE_LADDER_DEFAULT_STEPS_SECONDS = (45, 32, 20, 14)
+PRE_SEND_SECONDS_BEFORE_OFF = 45
+POST_SEND_SECONDS_BEFORE_OFF = 1
 
 
 @dataclass
@@ -68,10 +68,31 @@ class _StrategyOrderCandidate:
     phase_send_seconds_before_off: int | None = None
     best_unmatched_back_offer: float | None = None
     best_unmatched_lay_offer: float | None = None
+    market_reference_price: float | None = None
     strategy_group: Any = None
     strategy_region: Any = None
     strategy_signal: Any = None
     strategy_bucket: Any = None
+    strategy_edge: float | None = None
+    strategy_score: float | None = None
+    staking_formula: str = ""
+    staking_alpha: float | None = None
+    staking_back_alpha: float | None = None
+    staking_lay_alpha: float | None = None
+    stake_raw_before_caps: float | None = None
+    stake_after_caps: float | None = None
+    lay_liability_after_sizing: float | None = None
+    lay_liability_cap: float | None = None
+    lay_liability_cap_hit: bool = False
+    conflict_detected: bool = False
+    conflict_type: str = ""
+    conflict_group_key: str = ""
+    conflict_candidates_count: int = 0
+    selected_side: str = ""
+    rejected_side: str = ""
+    back_systems: str = ""
+    lay_systems: str = ""
+    conflict_resolution_reason: str = ""
 
     @property
     def merge_key(self) -> tuple[str, int, str, str, str]:
@@ -86,6 +107,25 @@ class _StrategyOrderCandidate:
     @property
     def final_system(self) -> str:
         return self.triggered_systems[0] if self.triggered_systems else str(getattr(self.slot, "tag", ""))
+
+
+@dataclass(frozen=True)
+class _FrozenPreLadderPlan:
+    ladder_id: str
+    side: str
+    start_price: float | None
+    start_price_raw: float | None
+    start_price_tick: float | None
+    final_lim_price_raw: float
+    final_lim_price_tick: float
+    ladder_prices: list[float]
+    reason: str
+    created_step: int
+    created_at_countdown: int
+    best_same_side_offer_at_creation: float | None
+    ladder_direction: str
+    disabled_lim_not_in_ladder_direction: bool = False
+    invalid_reason: str = ""
 
 
 def _execution_phase_for_milestone(milestone: int | None) -> str | None:
@@ -114,11 +154,54 @@ def _pre_ladder_steps_from_env() -> tuple[int, ...]:
     return tuple(steps or PRE_LADDER_DEFAULT_STEPS_SECONDS)
 
 
+def _pre_ladder_prices_are_valid_for_side(
+    side: str,
+    prices: list[float],
+    final_lim_price_tick: float,
+    *,
+    direct_plan: bool,
+) -> bool:
+    if not prices:
+        return False
+    upper_side = str(side or "").upper()
+    if upper_side == "BACK":
+        if any(price < final_lim_price_tick for price in prices):
+            return False
+        if direct_plan:
+            return all(abs(price - final_lim_price_tick) <= 1e-9 for price in prices)
+        if len(prices) > 1 and len(set(prices)) == 1:
+            return False
+        return all(prices[index] >= prices[index + 1] for index in range(len(prices) - 1))
+    if upper_side == "LAY":
+        if any(price > final_lim_price_tick for price in prices):
+            return False
+        if direct_plan:
+            return all(abs(price - final_lim_price_tick) <= 1e-9 for price in prices)
+        if len(prices) > 1 and len(set(prices)) == 1:
+            return False
+        return all(prices[index] <= prices[index + 1] for index in range(len(prices) - 1))
+    return False
+
+
 def _env_flag(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_false(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"0", "false", "no", "n", "off"}
+
+
+def _gruss_real_post_ready_for_trade_log() -> bool:
+    return (
+        _env_false("DRY_RUN")
+        and str(os.getenv("DOGBOT_ORDER_PROVIDER", "")).strip().lower() == ORDER_PROVIDER_GRUSS_EXCEL_REAL
+        and _env_flag("DOGBOT_GRUSS_ENABLE_REAL_ORDERS", False)
+        and not _env_flag("DOGBOT_GRUSS_REAL_PREVIEW", False)
+        and not _env_flag("DOGBOT_GRUSS_WRITE_NO_TRIGGER", False)
+    )
 
 
 def _merge_order_candidates(
@@ -154,6 +237,52 @@ def _merge_order_candidates(
             )
         )
     return merged
+
+
+def _reject_back_lay_same_phase_candidates(
+    candidates: list[_StrategyOrderCandidate],
+) -> tuple[list[_StrategyOrderCandidate], list[_StrategyOrderCandidate]]:
+    grouped: dict[tuple[str, str, int, str, str], list[_StrategyOrderCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        grouped[
+            (
+                candidate.course_id,
+                candidate.market_id,
+                candidate.selection_id,
+                candidate.market_type,
+                candidate.execution_phase,
+            )
+        ].append(candidate)
+
+    rejected_ids: set[int] = set()
+    rejected: list[_StrategyOrderCandidate] = []
+    for key, group in grouped.items():
+        backs = [candidate for candidate in group if candidate.side == "BACK"]
+        lays = [candidate for candidate in group if candidate.side == "LAY"]
+        if not backs or not lays:
+            continue
+        back_systems = [system for candidate in backs for system in candidate.triggered_systems]
+        lay_systems = [system for candidate in lays for system in candidate.triggered_systems]
+        fields = {
+            "conflict_detected": True,
+            "conflict_type": "back_lay_same_runner_market_phase",
+            "conflict_group_key": "|".join(str(part) for part in key),
+            "conflict_candidates_count": len(backs) + len(lays),
+            "selected_side": "NONE",
+            "rejected_side": "BOTH",
+            "back_systems": "|".join(back_systems),
+            "lay_systems": "|".join(lay_systems),
+            "conflict_resolution_reason": "conflicting_back_lay_no_bet",
+            "reason": "conflicting_back_lay_no_bet",
+        }
+        for candidate in group:
+            if candidate.side not in {"BACK", "LAY"}:
+                continue
+            rejected_ids.add(id(candidate))
+            rejected.append(replace(candidate, **fields))
+
+    selected = [candidate for candidate in candidates if id(candidate) not in rejected_ids]
+    return selected, rejected
 
 
 # ---------- utilitaires généraux ----------
@@ -206,6 +335,15 @@ def _runner_lpt_or_back(r) -> Optional[float]:
     ex = getattr(r, "ex", None)
     pb, _ = _best_at_side(ex, "BACK")
     return pb
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
 
 def _market_status(md) -> Optional[str]:
     try:
@@ -260,6 +398,31 @@ def _spread_pct(runners) -> Optional[float]:
         return None
     vals.sort()
     return vals[len(vals)//2] * 100.0
+
+def _first_positive(*values: Optional[float]) -> Optional[float]:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number) and number > 1.0:
+            return number
+    return None
+
+def _market_reference_price(
+    last_traded_price: Optional[float],
+    best_back: Optional[float],
+    best_lay: Optional[float],
+) -> Optional[float]:
+    midpoint = None
+    if best_back is not None and best_lay is not None:
+        try:
+            midpoint = (float(best_back) + float(best_lay)) / 2.0
+        except (TypeError, ValueError):
+            midpoint = None
+    return _first_positive(last_traded_price, midpoint, best_back, best_lay)
 
 def _rankings(runners) -> tuple[Dict[int,int], Dict[int,int]]:
     arr_ltp, arr_bb = [], []
@@ -378,20 +541,32 @@ class Executor:
         "market_id","market_type","selection_id","course_id",
         "side","price_req","size_req","liability","strategy",
         "market_family","strategy_group","strategy_region","strategy_signal","strategy_bucket",
+        "strategy_edge","strategy_score",
+        "staking_formula","staking_alpha","staking_back_alpha","staking_lay_alpha",
+        "stake_raw_before_caps","stake_after_caps","lay_liability_after_sizing",
+        "lay_liability_cap","lay_liability_cap_hit",
         "execution_phase","triggered_systems","triggered_prices","final_system","final_price","final_stake","merged",
         "stake_pre","stake_post","total_stake_same_runner_side","pre_post_cumulative",
         "processed_key","exec_mode",
         "ladder_enabled","ladder_preview","ladder_id","ladder_tracking_key","ladder_step",
         "ladder_seconds_before_off","final_lim_price","final_lim_price_raw","final_lim_price_tick",
         "start_price","start_price_raw","start_price_tick","tick_rounding_mode","ladder_prices",
+        "ladder_plan_frozen","ladder_plan_created_step","ladder_prices_frozen",
+        "current_ladder_price_from_frozen_plan","best_same_side_offer_at_creation",
+        "best_back_displayed","best_lay_displayed","start_price_source",
+        "ladder_direction","ladder_disabled_lim_not_in_ladder_direction",
+        "direct_lim_order_planned","direct_lim_order_written","no_replace_steps_for_direct_lim",
         "current_ladder_price","best_unmatched_back_offer","best_unmatched_lay_offer",
         "best_same_side_back_offer","best_same_side_lay_offer","source_fields_used",
+        "market_reference_price_at_signal",
         "no_better_ladder_range_reason",
         "previous_order_status","matched_stake","remaining_stake","cancelled_previous",
         "cancel_failed","stop_reason","current_step_stake",
         "gruss_planned_trigger","gruss_trigger_allowed","gruss_bet_ref_required",
-        "gruss_bet_ref_present","gruss_bet_ref","gruss_update_confirmed",
-        "gruss_cancel_replace_confirmed","gruss_no_stack",
+        "gruss_bet_ref_present","gruss_bet_ref","gruss_replace_confirmed",
+        "gruss_no_stack",
+        "conflict_detected","conflict_type","conflict_group_key","conflict_candidates_count",
+        "selected_side","rejected_side","back_systems","lay_systems","conflict_resolution_reason",
         "status","reason",
     ]
 
@@ -490,6 +665,7 @@ class Executor:
         self._phase_stakes_by_runner_side: Dict[tuple[str, int, str, str], Dict[str, float]] = defaultdict(
             lambda: {_strategies.EXECUTION_PHASE_PRE: 0.0, _strategies.EXECUTION_PHASE_POST: 0.0}
         )
+        self._pre_ladder_price_plans: dict[str, _FrozenPreLadderPlan] = {}
 
         # --- AJOUTS LIVE (OrderExecutor + ExposureManager) ---
         self.order_executor = OrderExecutor(
@@ -1427,10 +1603,22 @@ class Executor:
                             phase_send_seconds_before_off=milestone,
                             best_unmatched_back_offer=bb,
                             best_unmatched_lay_offer=bl,
+                            market_reference_price=_market_reference_price(lpt, bb, bl),
                             strategy_group=getattr(slot, "strategy_group", None),
                             strategy_region=getattr(slot, "strategy_region", None),
                             strategy_signal=getattr(slot, "strategy_signal", None),
                             strategy_bucket=getattr(slot, "strategy_bucket", None),
+                            strategy_edge=_finite_float_or_none(getattr(ctx, "ev_place", None)),
+                            strategy_score=None,
+                            staking_formula=getattr(res, "staking_formula", "") or "",
+                            staking_alpha=getattr(res, "staking_alpha", None),
+                            staking_back_alpha=getattr(res, "staking_back_alpha", None),
+                            staking_lay_alpha=getattr(res, "staking_lay_alpha", None),
+                            stake_raw_before_caps=getattr(res, "stake_raw_before_caps", None),
+                            stake_after_caps=getattr(res, "stake_after_caps", None),
+                            lay_liability_after_sizing=getattr(res, "lay_liability_after_sizing", None),
+                            lay_liability_cap=getattr(res, "lay_liability_cap", None),
+                            lay_liability_cap_hit=bool(getattr(res, "lay_liability_cap_hit", False)),
                         )
                         if execution_phase == _strategies.EXECUTION_PHASE_PRE:
                             pre_orders.append(candidate)
@@ -1438,6 +1626,16 @@ class Executor:
                             post_orders.append(candidate)
                         continue
 
+                    pre_orders, pre_conflict_rejections = _reject_back_lay_same_phase_candidates(pre_orders)
+                    post_orders, post_conflict_rejections = _reject_back_lay_same_phase_candidates(post_orders)
+                    for rejected_order in pre_conflict_rejections + post_conflict_rejections:
+                        self._log_trade_row(
+                            {
+                                **self._trade_base_for_final_order(rejected_order, record_phase_stake=False),
+                                "status": "REJECTED_REAL",
+                                "reason": "conflicting_back_lay_no_bet",
+                            }
+                        )
                     for final_order in _merge_order_candidates(pre_orders) + _merge_order_candidates(post_orders):
                         self._handle_final_strategy_order(final_order)
                     self._log_strategy_eval_summary_row(ctx, runner_name, slots_tested, true_tags, error_count)
@@ -1483,6 +1681,17 @@ class Executor:
             "strategy_region": order.strategy_region,
             "strategy_signal": order.strategy_signal,
             "strategy_bucket": order.strategy_bucket,
+            "strategy_edge": "" if order.strategy_edge is None else order.strategy_edge,
+            "strategy_score": "" if order.strategy_score is None else order.strategy_score,
+            "staking_formula": order.staking_formula,
+            "staking_alpha": "" if order.staking_alpha is None else order.staking_alpha,
+            "staking_back_alpha": "" if order.staking_back_alpha is None else order.staking_back_alpha,
+            "staking_lay_alpha": "" if order.staking_lay_alpha is None else order.staking_lay_alpha,
+            "stake_raw_before_caps": "" if order.stake_raw_before_caps is None else order.stake_raw_before_caps,
+            "stake_after_caps": "" if order.stake_after_caps is None else order.stake_after_caps,
+            "lay_liability_after_sizing": "" if order.lay_liability_after_sizing is None else order.lay_liability_after_sizing,
+            "lay_liability_cap": "" if order.lay_liability_cap is None else order.lay_liability_cap,
+            "lay_liability_cap_hit": str(bool(order.lay_liability_cap_hit)),
             "execution_phase": order.execution_phase,
             "triggered_systems": "|".join(order.triggered_systems),
             "triggered_prices": "|".join(str(price) for price in order.triggered_prices),
@@ -1506,12 +1715,26 @@ class Executor:
             "start_price_tick": "",
             "tick_rounding_mode": "",
             "ladder_prices": "",
+            "ladder_plan_frozen": "",
+            "ladder_plan_created_step": "",
+            "ladder_prices_frozen": "",
+            "current_ladder_price_from_frozen_plan": "",
+            "best_same_side_offer_at_creation": "",
+            "best_back_displayed": "",
+            "best_lay_displayed": "",
+            "start_price_source": "",
+            "ladder_direction": "",
+            "ladder_disabled_lim_not_in_ladder_direction": "",
+            "direct_lim_order_planned": "",
+            "direct_lim_order_written": "",
+            "no_replace_steps_for_direct_lim": "",
             "current_ladder_price": "",
             "best_unmatched_back_offer": "",
             "best_unmatched_lay_offer": "",
             "best_same_side_back_offer": "",
             "best_same_side_lay_offer": "",
             "source_fields_used": "",
+            "market_reference_price_at_signal": "" if order.market_reference_price is None else order.market_reference_price,
             "no_better_ladder_range_reason": "",
             "previous_order_status": "",
             "matched_stake": "",
@@ -1525,9 +1748,17 @@ class Executor:
             "gruss_bet_ref_required": "",
             "gruss_bet_ref_present": "",
             "gruss_bet_ref": "",
-            "gruss_update_confirmed": "",
-            "gruss_cancel_replace_confirmed": "",
+            "gruss_replace_confirmed": "",
             "gruss_no_stack": "",
+            "conflict_detected": str(bool(order.conflict_detected)),
+            "conflict_type": order.conflict_type,
+            "conflict_group_key": order.conflict_group_key,
+            "conflict_candidates_count": order.conflict_candidates_count or "",
+            "selected_side": order.selected_side,
+            "rejected_side": order.rejected_side,
+            "back_systems": order.back_systems,
+            "lay_systems": order.lay_systems,
+            "conflict_resolution_reason": order.conflict_resolution_reason,
             **stake_fields,
         }
 
@@ -1619,6 +1850,100 @@ class Executor:
             )
         )
 
+    def _ensure_pre_ladder_price_plans(self) -> dict[str, _FrozenPreLadderPlan]:
+        plans = getattr(self, "_pre_ladder_price_plans", None)
+        if plans is None:
+            plans = {}
+            self._pre_ladder_price_plans = plans
+        return plans
+
+    def _create_frozen_pre_ladder_plan(
+        self,
+        order: _StrategyOrderCandidate,
+        *,
+        ladder_id: str,
+        step_index: int,
+        seconds: int,
+    ) -> _FrozenPreLadderPlan:
+        steps = tuple(self._pre_ladder_steps)
+        upper_side = str(order.side or "").upper()
+        final_lim_price_raw = float(order.price)
+        final_tick_price = round_final_lim_to_ladder_tick(order.side, final_lim_price_raw)
+        best_back_displayed = order.best_unmatched_back_offer
+        best_lay_displayed = order.best_unmatched_lay_offer
+        start_reference = best_lay_displayed if upper_side == "BACK" else best_back_displayed
+        direction = "BACK_DESCENDING" if upper_side == "BACK" else "LAY_ASCENDING"
+        start_price_raw = None
+        start_price_tick = None
+        start_price = None
+        reason = ""
+        disabled_direct = False
+        if start_reference is None:
+            ladder_prices = [final_tick_price]
+            reason = "no_start_price_source"
+            disabled_direct = True
+        else:
+            start_price_raw = float(start_reference)
+            price_plan = build_pre_ladder_from_same_side_offer(
+                order.side,
+                start_price_raw,
+                final_lim_price_raw,
+                steps=len(steps),
+            )
+            reason = price_plan.reason
+            start_price = price_plan.start_price
+            start_price_tick = price_plan.start_price
+            if reason:
+                ladder_prices = [final_tick_price]
+                disabled_direct = reason in {"no_better_back_ladder_range", "no_better_lay_ladder_range"}
+            else:
+                ladder_prices = list(price_plan.prices)
+
+        invalid_reason = ""
+        if not _pre_ladder_prices_are_valid_for_side(
+            upper_side,
+            ladder_prices,
+            final_tick_price,
+            direct_plan=bool(reason),
+        ):
+            invalid_reason = "invalid_non_monotonic_ladder_plan"
+
+        return _FrozenPreLadderPlan(
+            ladder_id=ladder_id,
+            side=upper_side,
+            start_price=start_price,
+            start_price_raw=start_price_raw,
+            start_price_tick=start_price_tick,
+            final_lim_price_raw=final_lim_price_raw,
+            final_lim_price_tick=final_tick_price,
+            ladder_prices=ladder_prices,
+            reason=reason,
+            created_step=step_index + 1,
+            created_at_countdown=seconds,
+            best_same_side_offer_at_creation=None if start_reference is None else float(start_reference),
+            ladder_direction=direction,
+            disabled_lim_not_in_ladder_direction=disabled_direct,
+            invalid_reason=invalid_reason,
+        )
+
+    def _frozen_pre_ladder_plan(
+        self,
+        order: _StrategyOrderCandidate,
+        *,
+        ladder_id: str,
+        step_index: int,
+        seconds: int,
+    ) -> _FrozenPreLadderPlan:
+        plans = self._ensure_pre_ladder_price_plans()
+        if step_index == 0 or ladder_id not in plans:
+            plans[ladder_id] = self._create_frozen_pre_ladder_plan(
+                order,
+                ladder_id=ladder_id,
+                step_index=step_index,
+                seconds=seconds,
+            )
+        return plans[ladder_id]
+
     def _pre_ladder_step_payload(self, order: _StrategyOrderCandidate) -> dict | None:
         steps = tuple(self._pre_ladder_steps)
         seconds = int(order.phase_send_seconds_before_off or 0)
@@ -1627,81 +1952,89 @@ class Executor:
         step_index = steps.index(seconds)
         step_label = f"{step_index + 1}/{len(steps)}"
         upper_side = str(order.side or "").upper()
-        same_side_offer = (
-            order.best_unmatched_back_offer
-            if upper_side == "BACK"
-            else order.best_unmatched_lay_offer
-        )
         best_back = order.best_unmatched_back_offer
         best_lay = order.best_unmatched_lay_offer
-        final_lim_price = order.price
-        fallback_reason = ""
-        final_tick_price = round_final_lim_to_ladder_tick(order.side, float(final_lim_price))
+        ladder_id = self._pre_ladder_id(order)
+        price_plan = self._frozen_pre_ladder_plan(
+            order,
+            ladder_id=ladder_id,
+            step_index=step_index,
+            seconds=seconds,
+        )
+        final_lim_price = price_plan.final_lim_price_raw
+        fallback_reason = price_plan.invalid_reason or price_plan.reason
+        final_tick_price = price_plan.final_lim_price_tick
         tick_rounding_mode = "BACK_CEIL" if upper_side == "BACK" else "LAY_FLOOR"
         if upper_side == "BACK":
             source_fields_used = (
-                "best_same_side_back_offer=runner.ex.available_to_back[0].price;"
-                "ignored_executable_against_back=runner.ex.available_to_lay[0].price"
+                "best_lay_displayed=runner.ex.available_to_lay[0].price;"
+                "best_back_displayed=runner.ex.available_to_back[0].price;"
+                "start_price_source=best_lay_displayed"
             )
         else:
             source_fields_used = (
-                "best_same_side_lay_offer=runner.ex.available_to_lay[0].price;"
-                "ignored_executable_against_lay=runner.ex.available_to_back[0].price"
+                "best_back_displayed=runner.ex.available_to_back[0].price;"
+                "best_lay_displayed=runner.ex.available_to_lay[0].price;"
+                "start_price_source=best_back_displayed"
             )
 
-        if same_side_offer is None:
-            if step_index != len(steps) - 1:
-                return None
-            start_price = None
-            start_price_raw = None
-            start_price_tick = None
-            ladder_prices = [final_tick_price]
-            current_price = final_tick_price
-            fallback_reason = "no_same_side_offer"
-        else:
-            start_price_raw = float(same_side_offer)
-            price_plan = build_pre_ladder_from_same_side_offer(
-                order.side,
-                start_price_raw,
-                float(final_lim_price),
-                steps=len(steps),
-            )
-            start_price = price_plan.start_price
-            start_price_tick = price_plan.start_price
-            ladder_prices = price_plan.prices
-            fallback_reason = price_plan.reason
-            if fallback_reason:
-                current_price = final_tick_price
-            else:
-                current_price = ladder_prices[step_index]
+        ladder_prices = list(price_plan.ladder_prices)
+        if not ladder_prices:
+            return None
+        if step_index >= len(ladder_prices):
+            return None
+        current_price = ladder_prices[min(step_index, len(ladder_prices) - 1)]
 
         decision = decide_pre_ladder_step(None, full_stake=float(order.size))
         trigger_plan = plan_gruss_pre_ladder_trigger(
             side=order.side,
             step_index=step_index,
             bet_ref=None,
-            update_confirmed=False,
-            cancel_replace_confirmed=False,
+            replace_confirmed=False,
         )
         return {
-            "ladder_id": self._pre_ladder_id(order),
+            "ladder_id": ladder_id,
             "ladder_tracking_key": self._pre_ladder_tracking_key(order),
             "ladder_step": step_label,
             "ladder_seconds_before_off": seconds,
             "final_lim_price": final_lim_price,
             "final_lim_price_raw": final_lim_price,
             "final_lim_price_tick": final_tick_price,
-            "start_price": "" if start_price is None else start_price,
-            "start_price_raw": "" if start_price_raw is None else start_price_raw,
-            "start_price_tick": "" if start_price_tick is None else start_price_tick,
+            "start_price": "" if price_plan.start_price is None else price_plan.start_price,
+            "start_price_raw": "" if price_plan.start_price_raw is None else price_plan.start_price_raw,
+            "start_price_tick": "" if price_plan.start_price_tick is None else price_plan.start_price_tick,
             "tick_rounding_mode": tick_rounding_mode,
             "ladder_prices": "|".join(str(price) for price in ladder_prices),
+            "ladder_plan_frozen": str(True),
+            "ladder_plan_created_step": price_plan.created_step,
+            "ladder_prices_frozen": "|".join(str(price) for price in ladder_prices),
+            "current_ladder_price_from_frozen_plan": str(True),
+            "best_same_side_offer_at_creation": (
+                "" if price_plan.best_same_side_offer_at_creation is None else price_plan.best_same_side_offer_at_creation
+            ),
+            "best_back_displayed": "" if best_back is None else best_back,
+            "best_lay_displayed": "" if best_lay is None else best_lay,
+            "start_price_source": (
+                "best_lay_displayed" if upper_side == "BACK" else "best_back_displayed"
+            ),
+            "ladder_direction": price_plan.ladder_direction,
+            "ladder_disabled_lim_not_in_ladder_direction": str(
+                bool(price_plan.disabled_lim_not_in_ladder_direction)
+            ),
+            "direct_lim_order_planned": str(bool(price_plan.disabled_lim_not_in_ladder_direction)),
+            "direct_lim_order_written": str(False),
+            "no_replace_steps_for_direct_lim": str(bool(price_plan.disabled_lim_not_in_ladder_direction)),
             "current_ladder_price": current_price,
             "best_unmatched_back_offer": "" if best_back is None else best_back,
             "best_unmatched_lay_offer": "" if best_lay is None else best_lay,
             "best_same_side_back_offer": "" if best_back is None else best_back,
             "best_same_side_lay_offer": "" if best_lay is None else best_lay,
             "source_fields_used": source_fields_used,
+            "market_reference_price_at_signal": _first_positive(
+                order.market_reference_price,
+                (best_back + best_lay) / 2.0 if best_back is not None and best_lay is not None else None,
+                price_plan.best_same_side_offer_at_creation,
+            ),
             "no_better_ladder_range_reason": (
                 fallback_reason
                 if fallback_reason in {"no_better_back_ladder_range", "no_better_lay_ladder_range"}
@@ -1719,8 +2052,7 @@ class Executor:
             "gruss_bet_ref_required": str(trigger_plan.bet_ref_required),
             "gruss_bet_ref_present": str(trigger_plan.bet_ref_present),
             "gruss_bet_ref": "",
-            "gruss_update_confirmed": str(False),
-            "gruss_cancel_replace_confirmed": str(False),
+            "gruss_replace_confirmed": str(False),
             "gruss_no_stack": str(trigger_plan.no_stack),
             "trigger_plan_reason": trigger_plan.reason,
             "fallback_reason": fallback_reason,
@@ -1756,12 +2088,28 @@ class Executor:
             "start_price_tick": payload["start_price_tick"],
             "tick_rounding_mode": payload["tick_rounding_mode"],
             "ladder_prices": payload["ladder_prices"],
+            "ladder_plan_frozen": payload["ladder_plan_frozen"],
+            "ladder_plan_created_step": payload["ladder_plan_created_step"],
+            "ladder_prices_frozen": payload["ladder_prices_frozen"],
+            "current_ladder_price_from_frozen_plan": payload["current_ladder_price_from_frozen_plan"],
+            "best_same_side_offer_at_creation": payload["best_same_side_offer_at_creation"],
+            "best_back_displayed": payload["best_back_displayed"],
+            "best_lay_displayed": payload["best_lay_displayed"],
+            "start_price_source": payload["start_price_source"],
+            "ladder_direction": payload["ladder_direction"],
+            "ladder_disabled_lim_not_in_ladder_direction": payload[
+                "ladder_disabled_lim_not_in_ladder_direction"
+            ],
+            "direct_lim_order_planned": payload["direct_lim_order_planned"],
+            "direct_lim_order_written": payload["direct_lim_order_written"],
+            "no_replace_steps_for_direct_lim": payload["no_replace_steps_for_direct_lim"],
             "current_ladder_price": payload["current_ladder_price"],
             "best_unmatched_back_offer": payload["best_unmatched_back_offer"],
             "best_unmatched_lay_offer": payload["best_unmatched_lay_offer"],
             "best_same_side_back_offer": payload["best_same_side_back_offer"],
             "best_same_side_lay_offer": payload["best_same_side_lay_offer"],
             "source_fields_used": payload["source_fields_used"],
+            "market_reference_price_at_signal": payload["market_reference_price_at_signal"],
             "no_better_ladder_range_reason": payload["no_better_ladder_range_reason"],
             "previous_order_status": payload["previous_order_status"],
             "matched_stake": payload["matched_stake"],
@@ -1775,13 +2123,19 @@ class Executor:
             "gruss_bet_ref_required": payload["gruss_bet_ref_required"],
             "gruss_bet_ref_present": payload["gruss_bet_ref_present"],
             "gruss_bet_ref": payload["gruss_bet_ref"],
-            "gruss_update_confirmed": payload["gruss_update_confirmed"],
-            "gruss_cancel_replace_confirmed": payload["gruss_cancel_replace_confirmed"],
+            "gruss_replace_confirmed": payload["gruss_replace_confirmed"],
             "gruss_no_stack": payload["gruss_no_stack"],
         }
+        if payload["fallback_reason"] == "invalid_non_monotonic_ladder_plan":
+            self._log_trade_row({**row, "status": "PRE_LADDER_INVALID", "reason": payload["fallback_reason"]})
+            return True
         if ladder_preview:
             reason = payload["fallback_reason"] or payload["trigger_plan_reason"] or "pre_ladder_preview"
             self._log_trade_row({**row, "status": "PRE_LADDER_PREVIEW", "reason": reason})
+            return True
+        if ladder_enabled:
+            reason = payload["fallback_reason"] or payload["trigger_plan_reason"] or "pre_ladder_real_ready"
+            self._log_trade_row({**row, "status": "PRE_LADDER_REAL_READY", "reason": reason})
             return True
 
         self._log_trade_row(
@@ -1800,7 +2154,17 @@ class Executor:
         trade_base = self._trade_base_for_final_order(order)
         final_system = str(trade_base["final_system"])
         if self.dry_run:
-            self._log_trade_row({**trade_base, "status": "DRYRUN", "reason": order.reason})
+            real_ready = (
+                order.execution_phase == _strategies.EXECUTION_PHASE_POST
+                and _gruss_real_post_ready_for_trade_log()
+            )
+            self._log_trade_row(
+                {
+                    **trade_base,
+                    "status": "REAL_READY" if real_ready else "DRYRUN",
+                    "reason": "post_real_provider_armed" if real_ready else order.reason,
+                }
+            )
             if getattr(order.slot, "bet_per_market", False):
                 self._slot_market_fired.add(order.bet_per_market_key)
             return
@@ -2017,6 +2381,12 @@ class Executor:
         if tto is None:
             return None
         ms_list = self._next_ms[mid]
+        forced = getattr(self, "_forced_strategy_milestones", None)
+        if isinstance(forced, dict) and mid in forced:
+            ms = forced.pop(mid)
+            if ms in ms_list:
+                ms_list.remove(ms)
+            return ms
         for ms in list(ms_list):
             if abs(tto - ms) <= self.TOLERANCE_S:
                 ms_list.remove(ms)

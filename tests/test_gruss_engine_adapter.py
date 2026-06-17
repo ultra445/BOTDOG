@@ -4,6 +4,7 @@ import csv
 import unittest
 from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from dogbot.gruss.gruss_dryrun_engine import (
     GRUSS_TRADE_DIAGNOSTIC_FIELDS,
@@ -183,6 +184,100 @@ class GrussEngineAdapterTests(unittest.TestCase):
         executor._log_trade_row({"ts": "now", "selection_id": 1})
         self.assertEqual(logged_rows[0]["data_provider"], "gruss_excel")
 
+    def test_gruss_trade_diagnostics_marks_real_ready_pre_ladder_rows_as_real_provider(self) -> None:
+        win_rows = _sample_sheet("Hove WIN", 258835465.0)
+        place_rows = _sample_sheet("Hove PLACE", 258835466.0, winners=2.0)
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        class FakeExecutor:
+            TRADE_HEADER = ["ts", "selection_id", "status"]
+
+            def _log_trade_row(self, row: dict) -> None:
+                pass
+
+        executor = FakeExecutor()
+        install_gruss_trade_diagnostics(executor, win, place)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_ORDER_PROVIDER": "gruss_excel_real",
+                "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+            },
+            clear=True,
+        ):
+            diagnostics = build_gruss_trade_diagnostics(
+                executor,
+                {"selection_id": 1, "status": "PRE_LADDER_REAL_READY"},
+            )
+
+        self.assertEqual(diagnostics["order_provider"], "gruss_excel_real")
+
+    def test_gruss_trade_diagnostics_marks_armed_post_rows_as_real_provider(self) -> None:
+        win_rows = _sample_sheet("Hove WIN", 258835465.0)
+        place_rows = _sample_sheet("Hove PLACE", 258835466.0, winners=2.0)
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        class FakeExecutor:
+            TRADE_HEADER = ["ts", "selection_id", "status"]
+
+            def _log_trade_row(self, row: dict) -> None:
+                pass
+
+        executor = FakeExecutor()
+        install_gruss_trade_diagnostics(executor, win, place)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_ORDER_PROVIDER": "gruss_excel_real",
+                "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+                "DOGBOT_GRUSS_REAL_PREVIEW": "false",
+                "DOGBOT_GRUSS_WRITE_NO_TRIGGER": "false",
+            },
+            clear=True,
+        ):
+            diagnostics = build_gruss_trade_diagnostics(
+                executor,
+                {"selection_id": 1, "status": "DRYRUN", "execution_phase": "POST"},
+            )
+
+        self.assertEqual(diagnostics["order_provider"], "gruss_excel_real")
+
+    def test_gruss_trade_diagnostics_keeps_preview_and_write_no_trigger_rows_dryrun(self) -> None:
+        win_rows = _sample_sheet("Hove WIN", 258835465.0)
+        place_rows = _sample_sheet("Hove PLACE", 258835466.0, winners=2.0)
+        win = parse_gruss_sheet(win_rows, "WIN")
+        place = parse_gruss_sheet(place_rows, "PLACE")
+
+        class FakeExecutor:
+            TRADE_HEADER = ["ts", "selection_id", "status"]
+
+            def _log_trade_row(self, row: dict) -> None:
+                pass
+
+        executor = FakeExecutor()
+        install_gruss_trade_diagnostics(executor, win, place)
+
+        for flag in ("DOGBOT_GRUSS_REAL_PREVIEW", "DOGBOT_GRUSS_WRITE_NO_TRIGGER"):
+            with self.subTest(flag=flag), patch.dict(
+                "os.environ",
+                {
+                    "DOGBOT_ORDER_PROVIDER": "gruss_excel_real",
+                    "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+                    flag: "true",
+                },
+                clear=True,
+            ):
+                diagnostics = build_gruss_trade_diagnostics(
+                    executor,
+                    {"selection_id": 1, "status": "DRYRUN", "execution_phase": "POST"},
+                )
+
+            self.assertEqual(diagnostics["order_provider"], "gruss_excel_dryrun")
+
     def test_build_order_intents_from_trade_rows(self) -> None:
         win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
         place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
@@ -215,6 +310,131 @@ class GrussEngineAdapterTests(unittest.TestCase):
         self.assertEqual(intents[0].trap, 1)
         self.assertEqual(intents[0].price, 3.2)
         self.assertEqual(intents[0].stake, 2.0)
+
+    def test_build_order_intents_accepts_post_real_ready_rows(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "BACK",
+                    "price_req": "3.2",
+                    "size_req": "2.0",
+                    "strategy": "BACK_PLACE_999",
+                    "course_id": "course-1",
+                    "status": "REAL_READY",
+                    "parent_id": "35678242",
+                    "execution_phase": "POST",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(len(intents), 1)
+        self.assertFalse(intents[0].pre_ladder)
+        self.assertEqual(intents[0].execution_phase, "POST")
+        self.assertEqual(intents[0].price, 3.2)
+        self.assertEqual(intents[0].stake, 2.0)
+
+    def test_build_order_intents_maps_pre_ladder_real_ready_rows(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "BACK",
+                    "price_req": "5.0",
+                    "size_req": "99.0",
+                    "current_ladder_price": "6.8",
+                    "current_step_stake": "2.0",
+                    "strategy": "BACK_PLACE_101",
+                    "course_id": "course-1",
+                    "status": "PRE_LADDER_REAL_READY",
+                    "parent_id": "35678242",
+                    "execution_phase": "PRE",
+                    "ladder_id": "ladder-1",
+                    "ladder_step": "1/4",
+                    "ladder_tracking_key": "ladder-1:tracking",
+                    "gruss_planned_trigger": "BACK",
+                    "matched_stake": "0.0",
+                    "ladder_plan_frozen": "True",
+                    "ladder_plan_created_step": "1",
+                    "ladder_prices_frozen": "6.8|6.2|5.6|5.0",
+                    "current_ladder_price_from_frozen_plan": "True",
+                    "best_same_side_offer_at_creation": "7.0",
+                    "ladder_direction": "BACK_DESCENDING",
+                    "ladder_disabled_lim_not_in_ladder_direction": "False",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(len(intents), 1)
+        self.assertTrue(intents[0].pre_ladder)
+        self.assertEqual(intents[0].execution_phase, "PRE")
+        self.assertEqual(intents[0].price, 6.8)
+        self.assertEqual(intents[0].stake, 2.0)
+        self.assertEqual(intents[0].ladder_id, "ladder-1")
+        self.assertEqual(intents[0].ladder_step, "1/4")
+        self.assertEqual(intents[0].gruss_planned_trigger, "BACK")
+        self.assertEqual(intents[0].matched_stake, 0.0)
+        self.assertTrue(intents[0].ladder_plan_frozen)
+        self.assertEqual(intents[0].ladder_prices_frozen, "6.8|6.2|5.6|5.0")
+        self.assertEqual(intents[0].best_same_side_offer_at_creation, 7.0)
+        self.assertEqual(intents[0].ladder_direction, "BACK_DESCENDING")
+
+    def test_build_order_intents_treats_legacy_direct_lim_written_as_planned_only(self) -> None:
+        win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")
+        place = parse_gruss_sheet(_sample_sheet("Hove PLACE", 258835466.0, winners=2.0), "PLACE")
+
+        intents = build_order_intents_from_trade_rows(
+            [
+                {
+                    "ts": "2026-06-03T18:00:00Z",
+                    "market_type": "PLACE",
+                    "market_id": "258835466",
+                    "selection_id": "1",
+                    "side": "BACK",
+                    "price_req": "5.0",
+                    "size_req": "99.0",
+                    "final_lim_price": "5.0",
+                    "final_stake": "2.0",
+                    "strategy": "BACK_PLACE_101",
+                    "course_id": "course-1",
+                    "status": "PRE_LADDER_REAL_READY",
+                    "parent_id": "35678242",
+                    "execution_phase": "PRE",
+                    "ladder_id": "ladder-1",
+                    "ladder_step": "1/4",
+                    "ladder_tracking_key": "ladder-1:tracking",
+                    "gruss_planned_trigger": "BACK",
+                    "ladder_disabled_lim_not_in_ladder_direction": "True",
+                    "direct_lim_order_written": "True",
+                    "no_replace_steps_for_direct_lim": "True",
+                }
+            ],
+            win,
+            place,
+        )
+
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0].price, 5.0)
+        self.assertEqual(intents[0].stake, 2.0)
+        self.assertTrue(intents[0].direct_lim_order_planned)
+        self.assertFalse(intents[0].direct_lim_order_written)
+        self.assertTrue(intents[0].no_replace_steps_for_direct_lim)
 
     def test_build_order_intents_accepts_lay_place_signal(self) -> None:
         win = parse_gruss_sheet(_sample_sheet("Hove WIN", 258835465.0), "WIN")

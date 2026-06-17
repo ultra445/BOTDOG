@@ -109,8 +109,27 @@ class GrussMapperTests(unittest.TestCase):
 
     def test_runner_name_helpers(self) -> None:
         self.assertEqual(extract_trap("1. Gingers Layla"), 1)
+        self.assertEqual(extract_trap("7. Late Runner"), 7)
+        self.assertEqual(extract_trap("Trap 8 Wide Runner"), 8)
         self.assertEqual(normalize_runner_name("1. Ginger's  Layla"), "ginger s layla")
         self.assertEqual(GrussMapper.extract_trap("2. Coppeen Class"), 2)
+
+    def test_parse_gruss_sheet_keeps_traps_seven_and_eight_after_blank_row(self) -> None:
+        rows = _sample_sheet("Hove WIN", 258835465.0)
+        rows[6][0] = ""
+        rows[7][0] = "7. Seven Runner"
+        rows[7][5] = 6.0
+        rows[7][7] = 6.2
+        rows[8][0] = "8. Eight Runner"
+        rows[8][5] = 7.0
+        rows[8][7] = 7.2
+
+        snapshot = parse_gruss_sheet(rows, "WIN")
+
+        self.assertIn(7, [runner.trap for runner in snapshot.runners])
+        self.assertIn(8, [runner.trap for runner in snapshot.runners])
+        self.assertEqual(snapshot.runners[-2].runner_name, "Seven Runner")
+        self.assertEqual(snapshot.runners[-1].runner_name, "Eight Runner")
 
     def test_countdown_helpers_parse_excel_fraction_and_text(self) -> None:
         self.assertEqual(parse_countdown_seconds(0.00047453703703703704), 41)

@@ -187,21 +187,86 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
         except TypeError:
             pass
 
-    # Fallback: basic proportional model (capital * edge) with sane floors/caps handled in staking engine absent
+    # Fallback: same odds-decay model as StakingEngine when a custom engine is injected.
     capital = _env_float("CAPITAL", 1000.0)
     base = max(0.0, capital * max(0.0, edge))
+    default_alpha = _env_float("DOGBOT_STAKE_ODDS_DECAY_ALPHA", 0.60)
+    global_alpha_present = os.getenv("DOGBOT_STAKE_ODDS_DECAY_ALPHA") not in (None, "")
+    max_market_stake = _env_float("MAX_MARKET_STAKE", 25.0)
+    global_runner_cap = _env_float("MAX_RUNNER_STAKE", 999999.0)
+    min_stake = _env_float("MIN_STAKE", 2.0)
     if side == Side.BACK:
-        stake = base / max(1.01, price)
+        alpha = _env_float("DOGBOT_STAKE_BACK_ODDS_DECAY_ALPHA", default_alpha)
+        stake_raw = base / (max(1.01, price) ** alpha)
+        stake = min(stake_raw, max_market_stake)
+        stake = min(stake, max_runner_cap if max_runner_cap is not None else global_runner_cap)
         if max_runner_cap is not None:
             stake = min(stake, max_runner_cap)
-        return StakingResult(ok=True, price=price, size=round(stake, 2), liability=None, reason="fallback")
+        if 0.0 < stake < min_stake:
+            stake = min_stake
+        return StakingResult(
+            ok=True,
+            price=price,
+            size=round(stake, 2),
+            liability=None,
+            reason="fallback",
+            staking_formula="capital_edge_over_odds_power",
+            staking_alpha=alpha,
+            stake_raw_before_caps=stake_raw,
+            stake_after_caps=round(stake, 2),
+        )
     else:
-        liability = base
-        stake = liability / max(0.01, price - 1.0)
-        if max_runner_cap is not None:
-            stake = min(stake, max_runner_cap)
+        alpha = _env_float(
+            "DOGBOT_STAKE_LAY_ODDS_DECAY_ALPHA",
+            default_alpha if global_alpha_present else 0.70,
+        )
+        stake_raw = base / (max(1.01, price) ** alpha)
+        stake = min(stake_raw, max_market_stake)
+        stake = min(stake, max_runner_cap if max_runner_cap is not None else global_runner_cap)
+        liability_cap = _env_float("DOGBOT_MAX_LAY_LIABILITY_PER_ORDER", 50.0)
+        liability = stake * max(0.01, price - 1.0)
+        liability_cap_hit = False
+        if liability_cap > 0 and liability > liability_cap:
+            stake = liability_cap / max(0.01, price - 1.0)
             liability = stake * max(0.01, price - 1.0)
-        return StakingResult(ok=True, price=price, size=round(stake, 2), liability=round(liability, 2), reason="fallback")
+            liability_cap_hit = True
+        min_stake_would_exceed_cap = bool(
+            liability_cap > 0
+            and 0.0 < stake < min_stake
+            and min_stake * max(0.01, price - 1.0) > liability_cap
+        )
+        if 0.0 < stake < min_stake and (liability_cap_hit or min_stake_would_exceed_cap):
+            return StakingResult(
+                ok=False,
+                price=price,
+                size=round(stake, 2),
+                liability=round(liability, 2),
+                reason="lay_liability_cap_below_min_stake",
+                staking_formula="capital_edge_over_odds_power",
+                staking_alpha=alpha,
+                stake_raw_before_caps=stake_raw,
+                stake_after_caps=stake,
+                lay_liability_after_sizing=liability,
+                lay_liability_cap=liability_cap,
+                lay_liability_cap_hit=True,
+            )
+        if 0.0 < stake < min_stake:
+            stake = min_stake
+            liability = stake * max(0.01, price - 1.0)
+        return StakingResult(
+            ok=True,
+            price=price,
+            size=round(stake, 2),
+            liability=round(liability, 2),
+            reason="fallback",
+            staking_formula="capital_edge_over_odds_power",
+            staking_alpha=alpha,
+            stake_raw_before_caps=stake_raw,
+            stake_after_caps=round(stake, 2),
+            lay_liability_after_sizing=round(liability, 2),
+            lay_liability_cap=liability_cap,
+            lay_liability_cap_hit=liability_cap_hit,
+        )
 
 
 # ---- Region helper -----------------------------------------------------------
@@ -689,7 +754,6 @@ def register_ev_place_uk(registry: List[Slot]):
         strategy_signal="EV_PLACE", strategy_bucket="PLACE_3.0_7.0",
         bet_per_market=False, edge_env="EDGE_EV2BIS_PLACE_UK",
         sp_limit_fn=lambda ctx: _lim_from_place_theo(ctx, 1.20),
-        execution_phase=EXECUTION_PHASE_PRE,
     ))
 
 

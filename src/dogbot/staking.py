@@ -18,6 +18,15 @@ class StakingResult:
     size: float
     liability: Optional[float]
     reason: str
+    staking_formula: str = ""
+    staking_alpha: float | None = None
+    staking_back_alpha: float | None = None
+    staking_lay_alpha: float | None = None
+    stake_raw_before_caps: float | None = None
+    stake_after_caps: float | None = None
+    lay_liability_after_sizing: float | None = None
+    lay_liability_cap: float | None = None
+    lay_liability_cap_hit: bool = False
 
 # ================= Odds ladder (ticks) =================
 # Barème standard Betfair
@@ -84,18 +93,30 @@ class StakingEngine:
         reason_lay: str,
     ) -> StakingResult:
         price = max(1.01, float(price_ltp))
+        back_alpha = float(self.cfg.stake_back_odds_decay_alpha)
+        lay_alpha = float(self.cfg.stake_lay_odds_decay_alpha)
 
         if edge <= 0.0:
-            return StakingResult(False, round_to_tick(price), 0.0, None, "edge_zero_or_missing")
+            return StakingResult(
+                False,
+                round_to_tick(price),
+                0.0,
+                None,
+                "edge_zero_or_missing",
+                staking_formula="capital_edge_over_odds_power",
+                staking_back_alpha=back_alpha,
+                staking_lay_alpha=lay_alpha,
+            )
 
         if side == Side.BACK:
-            stake_raw = (self.cfg.capital * edge) / price
+            alpha = back_alpha
+            stake_raw = (self.cfg.capital * edge) / (price ** alpha)
             liability = None
             reason = reason_back
         else:
-            liability_raw = self.cfg.capital * edge
-            stake_raw = liability_raw / max(0.01, price - 1.0)
-            liability = liability_raw
+            alpha = lay_alpha
+            stake_raw = (self.cfg.capital * edge) / (price ** alpha)
+            liability = None
             reason = reason_lay
 
         stake = stake_raw
@@ -107,17 +128,67 @@ class StakingEngine:
         runner_cap = self.cfg.max_runner_stake if max_runner_cap is None else max_runner_cap
         stake = min(stake, float(runner_cap))
 
+        price_req = round_to_tick(price)
+        lay_liability_cap = None
+        lay_liability_cap_hit = False
+        if side == Side.LAY:
+            lay_liability_cap = float(self.cfg.max_lay_liability_per_order)
+            liability_after_caps = stake * max(0.01, price_req - 1.0)
+            if lay_liability_cap > 0.0 and liability_after_caps > lay_liability_cap:
+                stake = lay_liability_cap / max(0.01, price_req - 1.0)
+                lay_liability_cap_hit = True
+
         min_stake = float(self.cfg.risk.min_stake)
+        lay_min_stake_would_exceed_cap = bool(
+            side == Side.LAY
+            and lay_liability_cap is not None
+            and lay_liability_cap > 0.0
+            and 0.0 < stake < min_stake
+            and min_stake * max(0.01, price_req - 1.0) > lay_liability_cap
+        )
+        if side == Side.LAY and 0.0 < stake < min_stake and (
+            lay_liability_cap_hit or lay_min_stake_would_exceed_cap
+        ):
+            return StakingResult(
+                False,
+                price_req,
+                round(stake, 2),
+                round(stake * max(0.01, price_req - 1.0), 2),
+                "lay_liability_cap_below_min_stake",
+                staking_formula="capital_edge_over_odds_power",
+                staking_alpha=alpha,
+                staking_back_alpha=back_alpha,
+                staking_lay_alpha=lay_alpha,
+                stake_raw_before_caps=stake_raw,
+                stake_after_caps=stake,
+                lay_liability_after_sizing=stake * max(0.01, price_req - 1.0),
+                lay_liability_cap=lay_liability_cap,
+                lay_liability_cap_hit=True,
+            )
         if 0.0 < stake < min_stake:
             stake = min_stake
 
-        price_req = round_to_tick(price)
         stake_req = round(stake, 2)
 
         if side == Side.LAY:
             liability = round(stake_req * max(0.01, price_req - 1.0), 2)
 
-        return StakingResult(True, price_req, stake_req, liability, reason)
+        return StakingResult(
+            True,
+            price_req,
+            stake_req,
+            liability,
+            reason,
+            staking_formula="capital_edge_over_odds_power",
+            staking_alpha=alpha,
+            staking_back_alpha=back_alpha,
+            staking_lay_alpha=lay_alpha,
+            stake_raw_before_caps=stake_raw,
+            stake_after_caps=stake_req,
+            lay_liability_after_sizing=liability,
+            lay_liability_cap=lay_liability_cap,
+            lay_liability_cap_hit=lay_liability_cap_hit,
+        )
 
     def quote(
         self,
@@ -131,8 +202,8 @@ class StakingEngine:
             price_ltp=price_ltp,
             edge=edge,
             max_runner_cap=max_runner_cap,
-            reason_back="back_capital_edge_over_price",
-            reason_lay="lay_capital_edge_liability",
+            reason_back="back_capital_edge_over_odds_power",
+            reason_lay="lay_capital_edge_over_odds_power",
         )
 
     def compute(
@@ -154,6 +225,6 @@ class StakingEngine:
             price_ltp=price_ltp,
             edge=edge,
             max_runner_cap=runner_cap,
-            reason_back="back_capital_edge_over_price",
-            reason_lay="lay_capital_edge_liability",
+            reason_back="back_capital_edge_over_odds_power",
+            reason_lay="lay_capital_edge_over_odds_power",
         )

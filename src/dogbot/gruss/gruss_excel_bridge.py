@@ -78,6 +78,10 @@ class GrussExcelBridge:
         workbook = self._require_workbook()
         return any(sheet.name.upper() == sheet_name.upper() for sheet in workbook.sheets)
 
+    def sheet_names(self) -> list[str]:
+        workbook = self._require_workbook()
+        return [str(sheet.name) for sheet in workbook.sheets]
+
     def get_sheet(self, sheet_name: str) -> Any:
         workbook = self._require_workbook()
         for sheet in workbook.sheets:
@@ -152,16 +156,33 @@ class GrussExcelBridge:
         addresses: Iterable[str],
         *,
         trigger_column: str,
+        command_columns: Iterable[str] | None = None,
         allow_clear: bool = False,
     ) -> list[str]:
-        """Clear only validated trigger-column cells after explicit opt-in."""
+        """Clear validated command cells after explicit opt-in.
+
+        By default this remains limited to the trigger column. Real Gruss order
+        cleanup may explicitly pass Q/R/S command columns.
+        """
         prepared = tuple(str(address).strip().upper() for address in addresses)
-        column = str(trigger_column).strip().upper()
-        pattern = re.compile(rf"^{re.escape(column)}[1-9][0-9]*$")
+        columns = tuple(
+            dict.fromkeys(
+                str(column).strip().upper()
+                for column in (command_columns or (trigger_column,))
+                if str(column).strip()
+            )
+        )
+        patterns = tuple(re.compile(rf"^{re.escape(column)}[1-9][0-9]*$") for column in columns)
         if not prepared:
             return []
-        if not column.isalpha() or any(not pattern.fullmatch(address) for address in prepared):
-            raise PermissionError("Only trigger-column cells may be cleared")
+        if (
+            not columns
+            or any(not column.isalpha() for column in columns)
+            or any(not any(pattern.fullmatch(address) for pattern in patterns) for address in prepared)
+        ):
+            if command_columns is None:
+                raise PermissionError("Only trigger-column cells may be cleared")
+            raise PermissionError("Only validated command cells may be cleared")
         if not allow_clear:
             raise PermissionError("Trigger clearing requires allow_clear=True")
 
