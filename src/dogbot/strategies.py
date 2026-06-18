@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Callable, List, Optional, Dict, Any
 import os
 import inspect
+import math
 from pathlib import Path
 from datetime import datetime, timezone
 import csv
@@ -194,7 +195,7 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
     global_alpha_present = os.getenv("DOGBOT_STAKE_ODDS_DECAY_ALPHA") not in (None, "")
     max_market_stake = _env_float("MAX_MARKET_STAKE", 25.0)
     global_runner_cap = _env_float("MAX_RUNNER_STAKE", 999999.0)
-    min_stake = _env_float("MIN_STAKE", 2.0)
+    min_stake = 1.0
     if side == Side.BACK:
         alpha = _env_float("DOGBOT_STAKE_BACK_ODDS_DECAY_ALPHA", default_alpha)
         stake_raw = base / (max(1.01, price) ** alpha)
@@ -202,6 +203,18 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
         stake = min(stake, max_runner_cap if max_runner_cap is not None else global_runner_cap)
         if max_runner_cap is not None:
             stake = min(stake, max_runner_cap)
+        if not math.isfinite(stake) or stake <= 0.0:
+            return StakingResult(
+                ok=False,
+                price=price,
+                size=0.0,
+                liability=None,
+                reason="stake_zero_or_invalid",
+                staking_formula="capital_edge_over_odds_power",
+                staking_alpha=alpha,
+                stake_raw_before_caps=stake_raw,
+                stake_after_caps=stake,
+            )
         if 0.0 < stake < min_stake:
             stake = min_stake
         return StakingResult(
@@ -230,25 +243,20 @@ def _compute_stake_safe(staking_engine, side: Side, price: float, edge: float, m
             stake = liability_cap / max(0.01, price - 1.0)
             liability = stake * max(0.01, price - 1.0)
             liability_cap_hit = True
-        min_stake_would_exceed_cap = bool(
-            liability_cap > 0
-            and 0.0 < stake < min_stake
-            and min_stake * max(0.01, price - 1.0) > liability_cap
-        )
-        if 0.0 < stake < min_stake and (liability_cap_hit or min_stake_would_exceed_cap):
+        if not math.isfinite(stake) or stake <= 0.0:
             return StakingResult(
                 ok=False,
                 price=price,
-                size=round(stake, 2),
-                liability=round(liability, 2),
-                reason="lay_liability_cap_below_min_stake",
+                size=0.0,
+                liability=None,
+                reason="stake_zero_or_invalid",
                 staking_formula="capital_edge_over_odds_power",
                 staking_alpha=alpha,
                 stake_raw_before_caps=stake_raw,
                 stake_after_caps=stake,
                 lay_liability_after_sizing=liability,
                 lay_liability_cap=liability_cap,
-                lay_liability_cap_hit=True,
+                lay_liability_cap_hit=liability_cap_hit,
             )
         if 0.0 < stake < min_stake:
             stake = min_stake

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Optional
 
 from .config import AppConfig, load_config
@@ -138,33 +139,28 @@ class StakingEngine:
                 stake = lay_liability_cap / max(0.01, price_req - 1.0)
                 lay_liability_cap_hit = True
 
-        min_stake = float(self.cfg.risk.min_stake)
-        lay_min_stake_would_exceed_cap = bool(
-            side == Side.LAY
-            and lay_liability_cap is not None
-            and lay_liability_cap > 0.0
-            and 0.0 < stake < min_stake
-            and min_stake * max(0.01, price_req - 1.0) > lay_liability_cap
-        )
-        if side == Side.LAY and 0.0 < stake < min_stake and (
-            lay_liability_cap_hit or lay_min_stake_would_exceed_cap
-        ):
+        if not isinstance(stake, (int, float)) or not math.isfinite(stake) or stake <= 0.0:
             return StakingResult(
                 False,
                 price_req,
-                round(stake, 2),
-                round(stake * max(0.01, price_req - 1.0), 2),
-                "lay_liability_cap_below_min_stake",
+                0.0,
+                None,
+                "stake_zero_or_invalid",
                 staking_formula="capital_edge_over_odds_power",
                 staking_alpha=alpha,
                 staking_back_alpha=back_alpha,
                 staking_lay_alpha=lay_alpha,
                 stake_raw_before_caps=stake_raw,
                 stake_after_caps=stake,
-                lay_liability_after_sizing=stake * max(0.01, price_req - 1.0),
+                lay_liability_after_sizing=(
+                    stake * max(0.01, price_req - 1.0)
+                    if side == Side.LAY and isinstance(stake, (int, float)) and math.isfinite(stake)
+                    else None
+                ),
                 lay_liability_cap=lay_liability_cap,
-                lay_liability_cap_hit=True,
+                lay_liability_cap_hit=lay_liability_cap_hit,
             )
+        min_stake = 1.0
         if 0.0 < stake < min_stake:
             stake = min_stake
 

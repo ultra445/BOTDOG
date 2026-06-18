@@ -152,6 +152,10 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "stake_original",
     "stake_used",
     "stake_forced",
+    "stake_min_floor_applied",
+    "stake_before_min_floor",
+    "stake_after_min_floor",
+    "stake_final",
     "stake_capped",
     "stake_cap_value",
     "staking_formula",
@@ -459,6 +463,10 @@ class GrussRealOrderResult:
     stake_original: float | None = None
     stake_used: float | None = None
     stake_forced: bool = False
+    stake_min_floor_applied: bool = False
+    stake_before_min_floor: float | None = None
+    stake_after_min_floor: float | None = None
+    stake_final: float | None = None
     stake_capped: bool = False
     stake_cap_value: float | None = None
     execution_phase: str = "POST"
@@ -2059,6 +2067,20 @@ class GrussExcelOrderProvider:
                 excel_sheet=sheet_name,
             )
 
+        try:
+            stake_value = float(intent.stake)
+        except (TypeError, ValueError):
+            stake_value = math.nan
+        if not math.isfinite(stake_value) or stake_value <= 0.0:
+            return self._finish(
+                intent,
+                context,
+                "REJECTED_REAL",
+                "invalid_stake",
+                excel_sheet=sheet_name,
+                excel_row=runner_row,
+            )
+
         plan = self._build_write_plan(intent, runner_row)
         if self.write_no_trigger_guard:
             try:
@@ -3001,7 +3023,7 @@ class GrussExcelOrderProvider:
             if max_orders is not None and self.real_order_counts.get(max_key, 0) >= max_orders:
                 errors.append("max_orders_reached")
 
-        minimum_stake = 0.01 if self._is_true_real_mode() and self.real_test_mode else 2.0
+        minimum_stake = float("-inf")
         errors.extend(validate_order_intent(intent, minimum_stake=minimum_stake))
         if str(intent.order_type or "").upper() not in {"LIMIT", "SP_MOC"}:
             errors.append("invalid_order_type")
@@ -3364,18 +3386,26 @@ class GrussExcelOrderProvider:
 
     def _cap_real_stake(self, intent: OrderIntent) -> tuple[OrderIntent, bool, float | None]:
         cap_value = self.real_max_stake
+        try:
+            stake_to_write = float(intent.stake)
+        except (TypeError, ValueError):
+            return intent, False, cap_value
+        if not math.isfinite(stake_to_write) or stake_to_write <= 0.0:
+            return intent, False, cap_value
+        stake_original = intent.stake_original if intent.stake_original is not None else stake_to_write
+        if 0.0 < stake_to_write < 1.0:
+            intent = replace(intent, stake=1.0, stake_original=stake_original)
+            stake_to_write = 1.0
         if cap_value is None:
             return intent, False, None
         try:
             cap = float(cap_value)
-            stake_to_write = float(intent.stake)
         except (TypeError, ValueError):
             return intent, False, cap_value
         if not math.isfinite(cap) or cap <= 0:
             return intent, False, cap
         if stake_to_write <= cap:
             return intent, False, cap
-        stake_original = intent.stake_original if intent.stake_original is not None else stake_to_write
         return replace(intent, stake=cap, stake_original=stake_original), True, cap
 
     def _trigger_for(self, intent: OrderIntent) -> str:
@@ -4079,6 +4109,21 @@ class GrussExcelOrderProvider:
         )
         matched_after_step_stake = _matched_stake_value(matched_stake_cell_value)
         matched_after_step_avg_odds = _positive_float_or_none(avg_matched_odds_cell_value)
+        stake_before_min_floor = _finite_float_or_none(
+            intent.stake_original if intent.stake_original is not None else intent.stake
+        )
+        stake_final = _finite_float_or_none(intent.stake)
+        stake_min_floor_applied = bool(
+            stake_before_min_floor is not None
+            and stake_final is not None
+            and 0.0 < stake_before_min_floor < 1.0
+            and stake_final >= 1.0
+        )
+        stake_after_min_floor = (
+            1.0
+            if stake_min_floor_applied
+            else stake_before_min_floor
+        )
         internal_ladder_step_index = _ladder_step_index(intent.ladder_step) if intent.ladder_step else None
         ladder_step_index = (
             internal_ladder_step_index + 1
@@ -4363,6 +4408,10 @@ class GrussExcelOrderProvider:
             stake_original=intent.stake_original if intent.stake_original is not None else intent.stake,
             stake_used=intent.stake,
             stake_forced=bool(intent.stake_forced),
+            stake_min_floor_applied=stake_min_floor_applied,
+            stake_before_min_floor=stake_before_min_floor,
+            stake_after_min_floor=stake_after_min_floor,
+            stake_final=stake_final,
             stake_capped=stake_capped,
             stake_cap_value=stake_cap_value,
             execution_phase=_execution_phase(intent),
@@ -4899,6 +4948,17 @@ class GrussExcelOrderProvider:
         cells_written = ";".join(excel_cells_written)
         mode = "WRITE_NO_TRIGGER" if self.write_no_trigger_guard else ("PREVIEW" if self.preview else "REAL")
         write_timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        stake_before_min_floor = _finite_float_or_none(
+            intent.stake_original if intent.stake_original is not None else intent.stake
+        )
+        stake_final = _finite_float_or_none(intent.stake)
+        stake_min_floor_applied = bool(
+            stake_before_min_floor is not None
+            and stake_final is not None
+            and 0.0 < stake_before_min_floor < 1.0
+            and stake_final >= 1.0
+        )
+        stake_after_min_floor = 1.0 if stake_min_floor_applied else stake_before_min_floor
         row = {
             "timestamp": write_timestamp,
             "dry_run_or_real": mode,
@@ -5076,6 +5136,10 @@ class GrussExcelOrderProvider:
             "stake_original": intent.stake_original if intent.stake_original is not None else intent.stake,
             "stake_used": intent.stake,
             "stake_forced": str(bool(intent.stake_forced)),
+            "stake_min_floor_applied": str(bool(stake_min_floor_applied)),
+            "stake_before_min_floor": _blank_if_none(stake_before_min_floor),
+            "stake_after_min_floor": _blank_if_none(stake_after_min_floor),
+            "stake_final": _blank_if_none(stake_final),
             "stake_capped": str(bool(stake_capped)),
             "stake_cap_value": "" if stake_cap_value is None else stake_cap_value,
             "staking_formula": getattr(intent, "staking_formula", "") or "",
@@ -6407,6 +6471,14 @@ def _positive_float_or_none(value: Any) -> float | None:
     if not math.isfinite(number) or number <= 1.0:
         return None
     return number
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _first_positive(*values: float | None) -> float | None:
