@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import csv
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,13 +11,14 @@ from typing import Any
 from dogbot.config import (
     DATA_PROVIDER_GRUSS_EXCEL,
     ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN,
+    ORDER_PROVIDER_GRUSS_EXCEL_REAL,
     ProviderConfig,
     load_provider_config,
 )
 from dogbot.executor import Executor
 from dogbot.executor import (
-    POST_SEND_SECONDS_BEFORE_OFF,
     _execution_phase_for_milestone,
+    _post_send_seconds_before_off_from_env,
     _pre_ladder_steps_from_env,
 )
 from dogbot.feed_selector import create_data_feed_from_config
@@ -111,9 +112,15 @@ class GrussDryRunRunner:
         *,
         debug_strategies: bool = False,
         momentum_buffer: GrussMomentumBuffer | None = None,
+        force_milestone: int | None = None,
     ) -> None:
         bundle = build_engine_bundle(win_snapshot, place_snapshot)
         executor = self.ensure_executor(bundle)
+        if force_milestone is not None:
+            executor._forced_strategy_milestones = {
+                bundle.win_book.market_id: force_milestone,
+                bundle.place_book.market_id: force_milestone,
+            }
         momentum_values = seed_gruss_momentum_into_executor(
             executor,
             bundle,
@@ -382,7 +389,7 @@ def print_strategy_registry_diagnostics() -> None:
 
 
 def active_strategy_milestones() -> tuple[int, ...]:
-    milestones = {POST_SEND_SECONDS_BEFORE_OFF}
+    milestones = {_post_send_seconds_before_off_from_env()}
     has_pre_systems = any(
         str(getattr(slot, "execution_phase", "POST")).upper() == "PRE"
         for slot in build_registry()
@@ -533,7 +540,7 @@ def build_gruss_trade_diagnostics(executor: Executor, row: dict) -> dict[str, An
 
     return {
         "data_provider": DATA_PROVIDER_GRUSS_EXCEL,
-        "order_provider": ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN,
+        "order_provider": _diagnostic_order_provider_for_trade_row(row),
         "win_market_id": win_market_id,
         "place_market_id": place_market_id,
         "parent_id": win_meta.parent_id or place_meta.parent_id,
@@ -569,6 +576,20 @@ def build_gruss_trade_diagnostics(executor: Executor, row: dict) -> dict[str, An
         "gruss_win_market_title": win_meta.market_title,
         "gruss_place_market_title": place_meta.market_title,
     }
+
+
+def _diagnostic_order_provider_for_trade_row(row: dict[str, Any]) -> str:
+    status = str(row.get("status") or "").strip().upper()
+    configured = str(os.getenv("DOGBOT_ORDER_PROVIDER") or "").strip().lower()
+    if (
+        status in {"DRYRUN", "REAL_READY", "PRE_LADDER_REAL_READY"}
+        and configured == ORDER_PROVIDER_GRUSS_EXCEL_REAL
+        and _env_true(os.getenv("DOGBOT_GRUSS_ENABLE_REAL_ORDERS"), default=False)
+        and not _env_true(os.getenv("DOGBOT_GRUSS_REAL_PREVIEW"), default=False)
+        and not _env_true(os.getenv("DOGBOT_GRUSS_WRITE_NO_TRIGGER"), default=False)
+    ):
+        return ORDER_PROVIDER_GRUSS_EXCEL_REAL
+    return ORDER_PROVIDER_GRUSS_EXCEL_DRYRUN
 
 
 def install_gruss_strategy_debug_logger(executor: Executor) -> None:
@@ -655,12 +676,14 @@ def build_order_intents_from_trade_rows(
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
     for row in trade_rows:
-        if str(row.get("status", "")).upper() != "DRYRUN":
+        status = str(row.get("status", "")).upper()
+        if status not in {"DRYRUN", "REAL_READY", "PRE_LADDER_REAL_READY"}:
             continue
         trap = _as_int_or_none(row.get("selection_id"))
         market_type = str(row.get("market_type") or "").upper()
         snapshot = win_snapshot if market_type == "WIN" else place_snapshot
         runner = _runner_by_trap(snapshot, trap)
+        pre_ladder = status == "PRE_LADDER_REAL_READY"
         intents.append(
             make_order_intent(
                 provider=DATA_PROVIDER_GRUSS_EXCEL,
@@ -671,8 +694,25 @@ def build_order_intents_from_trade_rows(
                 trap=trap,
                 side=row.get("side") or "",
                 order_type=_order_type_for_trade_row(row),
-                price=_as_float_or_none(row.get("price_req")),
-                stake=_as_float_or_none(row.get("size_req")),
+                price=_as_float_or_none(
+                    _first_non_blank(
+                        row.get("current_ladder_price"),
+                        row.get("final_lim_price"),
+                        row.get("final_lim_price_tick"),
+                        row.get("price_req"),
+                    )
+                    if pre_ladder
+                    else row.get("price_req")
+                ),
+                stake=_as_float_or_none(
+                    _first_non_blank(
+                        row.get("current_step_stake"),
+                        row.get("final_stake"),
+                        row.get("size_req"),
+                    )
+                    if pre_ladder
+                    else row.get("size_req")
+                ),
                 strategy_id=row.get("strategy") or "",
                 course_id=row.get("course_id") or None,
                 timestamp=row.get("ts") or None,
@@ -681,9 +721,108 @@ def build_order_intents_from_trade_rows(
                 execution_phase=row.get("execution_phase") or "POST",
                 triggered_systems=row.get("triggered_systems") or row.get("strategy") or "",
                 triggered_prices=row.get("triggered_prices") or row.get("price_req") or "",
+                pre_ladder=pre_ladder,
+                ladder_id=row.get("ladder_id") or None,
+                ladder_step=row.get("ladder_step") or None,
+                ladder_tracking_key=row.get("ladder_tracking_key") or None,
+                gruss_planned_trigger=row.get("gruss_planned_trigger") or None,
+                matched_stake=_as_float_or_none(row.get("matched_stake")),
+                signal_countdown_seconds=_as_int_or_none(row.get("milestone")),
+                market_reference_price_at_signal=_as_float_or_none(
+                    row.get("market_reference_price_at_signal")
+                ),
+                best_same_side_back_offer=_as_float_or_none(row.get("best_same_side_back_offer")),
+                best_same_side_lay_offer=_as_float_or_none(row.get("best_same_side_lay_offer")),
+                ladder_plan_frozen=_env_true(row.get("ladder_plan_frozen"), default=False),
+                ladder_plan_created_step=row.get("ladder_plan_created_step") or None,
+                ladder_prices_frozen=row.get("ladder_prices_frozen") or None,
+                current_ladder_price_from_frozen_plan=_env_true(
+                    row.get("current_ladder_price_from_frozen_plan"),
+                    default=False,
+                ),
+                best_same_side_offer_at_creation=_as_float_or_none(
+                    row.get("best_same_side_offer_at_creation")
+                ),
+                best_back_displayed=_as_float_or_none(row.get("best_back_displayed")),
+                best_lay_displayed=_as_float_or_none(row.get("best_lay_displayed")),
+                start_price_source=row.get("start_price_source") or None,
+                ladder_direction=row.get("ladder_direction") or None,
+                ladder_disabled_lim_not_in_ladder_direction=_env_true(
+                    row.get("ladder_disabled_lim_not_in_ladder_direction"),
+                    default=False,
+                ),
+                direct_lim_order_planned=_env_true(
+                    row.get("direct_lim_order_planned")
+                    or row.get("direct_lim_order_written"),
+                    default=False,
+                ),
+                direct_lim_order_written=False,
+                no_replace_steps_for_direct_lim=_env_true(
+                    row.get("no_replace_steps_for_direct_lim"),
+                    default=False,
+                ),
+                strategy_edge=_as_float_or_none(
+                    row.get("strategy_edge")
+                    or row.get("signal_edge")
+                    or row.get("edge")
+                    or row.get("ev_place")
+                    or row.get("EV_PLACE")
+                ),
+                strategy_score=_as_float_or_none(
+                    row.get("strategy_score")
+                    or row.get("signal_score")
+                    or row.get("score")
+                ),
+                conflict_detected=_env_true(row.get("conflict_detected"), default=False),
+                conflict_type=row.get("conflict_type") or None,
+                back_price=_as_float_or_none(row.get("back_price")),
+                lay_price=_as_float_or_none(row.get("lay_price")),
+                market_reference_price=_as_float_or_none(row.get("market_reference_price")),
+                back_distance=_as_float_or_none(row.get("back_distance")),
+                lay_distance=_as_float_or_none(row.get("lay_distance")),
+                selected_side=row.get("selected_side") or None,
+                rejected_side=row.get("rejected_side") or None,
+                conflict_resolution_reason=row.get("conflict_resolution_reason") or None,
+                conflict_group_key=row.get("conflict_group_key") or None,
+                conflict_candidates_count=_as_int_or_none(row.get("conflict_candidates_count")),
+                back_systems=row.get("back_systems") or None,
+                lay_systems=row.get("lay_systems") or None,
+                pre_back_lay_conflict=_env_true(row.get("pre_back_lay_conflict"), default=False),
+                pre_conflict_resolution=row.get("pre_conflict_resolution") or None,
+                pre_conflict_chosen_side=row.get("pre_conflict_chosen_side") or None,
+                pre_conflict_rejected_side=row.get("pre_conflict_rejected_side") or None,
+                pre_conflict_reason=row.get("pre_conflict_reason") or None,
+                pre_conflict_group_key=row.get("pre_conflict_group_key") or None,
+                pre_conflict_course_id=row.get("pre_conflict_course_id") or None,
+                pre_conflict_market_id=row.get("pre_conflict_market_id") or None,
+                pre_conflict_market_type=row.get("pre_conflict_market_type") or None,
+                pre_conflict_selection_id=row.get("pre_conflict_selection_id") or None,
+                pre_conflict_runner_name=row.get("pre_conflict_runner_name") or None,
+                pre_back_target_price=_as_float_or_none(row.get("pre_back_target_price")),
+                pre_lay_target_price=_as_float_or_none(row.get("pre_lay_target_price")),
+                pre_current_best_lay=_as_float_or_none(row.get("pre_current_best_lay")),
+                pre_current_best_back=_as_float_or_none(row.get("pre_current_best_back")),
+                pre_back_distance_ticks=_as_float_or_none(row.get("pre_back_distance_ticks")),
+                pre_lay_distance_ticks=_as_float_or_none(row.get("pre_lay_distance_ticks")),
+                staking_formula=row.get("staking_formula") or None,
+                staking_alpha=_as_float_or_none(row.get("staking_alpha")),
+                staking_back_alpha=_as_float_or_none(row.get("staking_back_alpha")),
+                staking_lay_alpha=_as_float_or_none(row.get("staking_lay_alpha")),
+                stake_raw_before_caps=_as_float_or_none(row.get("stake_raw_before_caps")),
+                stake_after_caps=_as_float_or_none(row.get("stake_after_caps")),
+                lay_liability_after_sizing=_as_float_or_none(row.get("lay_liability_after_sizing")),
+                lay_liability_cap=_as_float_or_none(row.get("lay_liability_cap")),
+                lay_liability_cap_hit=_env_true(row.get("lay_liability_cap_hit"), default=False),
             )
         )
     return intents
+
+
+def _first_non_blank(*values: object) -> object:
+    for value in values:
+        if str(value or "").strip():
+            return value
+    return ""
 
 
 def _order_type_for_trade_row(row: dict[str, str]) -> str:
@@ -711,11 +850,26 @@ def seed_gruss_momentum_into_executor(
     if momentum_buffer is None:
         return {}
     momentum_values = momentum_buffer.momentum_by_trap(win_snapshot, place_snapshot)
+    if not hasattr(executor, "_last_mom45_by_market"):
+        executor._last_mom45_by_market = defaultdict(dict)
+    available_count = 0
+    missing_count = 0
     for trap, value in momentum_values.items():
         if value.anchor_value is not None:
             executor._base_win_ms[bundle.win_book.market_id][int(trap)][45] = float(value.anchor_value)
         if value.place_ltp_anchor is not None:
             executor._ltp_place_ms[bundle.place_book.market_id][int(trap)][45] = float(value.place_ltp_anchor)
+        if value.has_mom45 and value.mom45 is not None:
+            executor._last_mom45_by_market[str(bundle.win_book.market_id)][int(trap)] = float(value.mom45)
+            available_count += 1
+        else:
+            missing_count += 1
+    executor._gruss_mom45_diagnostics = {
+        "mom45_available_count": available_count,
+        "mom45_missing_count": missing_count,
+        "mom45_source": "gruss_momentum_buffer",
+        "mom45_injected_before_strategy_eval": True,
+    }
     return momentum_values
 
 

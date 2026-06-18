@@ -6,7 +6,6 @@ from dataclasses import dataclass
 PRE_LADDER_SYSTEM_IDS = {
     "BACK_PLACE_101",
     "BACK_PLACE_102",
-    "BACK_PLACE_104",
     "BACK_PLACE_201",
     "BACK_PLACE_202",
     "BACK_PLACE_203",
@@ -257,8 +256,7 @@ def plan_gruss_pre_ladder_trigger(
     side: str,
     step_index: int,
     bet_ref: str | None,
-    update_confirmed: bool = False,
-    cancel_replace_confirmed: bool = False,
+    replace_confirmed: bool = False,
 ) -> GrussPreLadderTriggerPlan:
     """Plan the Gruss trigger for diagnostics without authorising real ladder writes."""
     upper_side = str(side or "").upper()
@@ -284,20 +282,21 @@ def plan_gruss_pre_ladder_trigger(
             bet_ref_present=False,
             no_stack=True,
             real_confirmed=False,
-            reason="missing_bet_ref_do_not_stack",
+            reason="bet_ref_not_ready",
         )
 
+    replace_trigger = "BACKR" if upper_side == "BACK" else "LAYR"
     return GrussPreLadderTriggerPlan(
-        trigger="UPDATE",
+        trigger=replace_trigger,
         allowed=True,
         bet_ref_required=True,
         bet_ref_present=True,
         no_stack=False,
-        real_confirmed=bool(update_confirmed and not cancel_replace_confirmed),
+        real_confirmed=bool(replace_confirmed),
         reason=(
-            "update_with_existing_bet_ref"
-            if update_confirmed
-            else "update_trigger_not_confirmed_preview_only"
+            "replace_with_existing_bet_ref"
+            if replace_confirmed
+            else "replace_trigger_not_confirmed_preview_only"
         ),
     )
 

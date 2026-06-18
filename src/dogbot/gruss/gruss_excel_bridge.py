@@ -164,7 +164,7 @@ class GrussExcelBridge:
         By default this remains limited to the trigger column. Real Gruss order
         cleanup may explicitly pass Q/R/S command columns.
         """
-        prepared = tuple(str(address).strip().upper() for address in addresses)
+        prepared = _normalize_cell_addresses(addresses)
         columns = tuple(
             dict.fromkeys(
                 str(column).strip().upper()
@@ -267,3 +267,16 @@ class GrussExcelBridge:
         if len(padded) < columns:
             padded.extend([None] * (columns - len(padded)))
         return padded[:columns]
+
+
+def _normalize_cell_addresses(addresses: Iterable[str] | str) -> tuple[str, ...]:
+    if isinstance(addresses, str):
+        raw_parts = re.split(r"[;,]", addresses)
+    else:
+        raw_parts = []
+        for address in addresses:
+            if isinstance(address, str):
+                raw_parts.extend(re.split(r"[;,]", address))
+            else:
+                raw_parts.append(str(address))
+    return tuple(part.strip().upper() for part in raw_parts if part and part.strip())

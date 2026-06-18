@@ -31,11 +31,13 @@ from .staking import StakingEngine, Side
 from . import strategies as _strategies
 from .strategies import build_registry, try_fire_slot, RunnerCtx, ExecMode  # <-- ExecMode ajouté
 from .pre_ladder import (
+    BETFAIR_PRICE_BANDS,
     PRE_LADDER_SYSTEM_IDS,
     build_pre_ladder_from_same_side_offer,
     decide_pre_ladder_step,
     plan_gruss_pre_ladder_trigger,
     round_final_lim_to_ladder_tick,
+    round_to_betfair_tick,
 )
 
 # --- AJOUTS LIVE (Step 3) ---
@@ -45,6 +47,7 @@ from .risk import ExposureManager
 PRE_LADDER_DEFAULT_STEPS_SECONDS = (45, 32, 20, 14)
 PRE_SEND_SECONDS_BEFORE_OFF = 45
 POST_SEND_SECONDS_BEFORE_OFF = 1
+POST_SEND_SECONDS_BEFORE_OFF_DEFAULT = 1
 
 
 @dataclass
@@ -84,6 +87,7 @@ class _StrategyOrderCandidate:
     lay_liability_after_sizing: float | None = None
     lay_liability_cap: float | None = None
     lay_liability_cap_hit: bool = False
+    runner_name: str = ""
     conflict_detected: bool = False
     conflict_type: str = ""
     conflict_group_key: str = ""
@@ -93,6 +97,23 @@ class _StrategyOrderCandidate:
     back_systems: str = ""
     lay_systems: str = ""
     conflict_resolution_reason: str = ""
+    pre_back_lay_conflict: bool = False
+    pre_conflict_resolution: str = ""
+    pre_conflict_chosen_side: str = ""
+    pre_conflict_rejected_side: str = ""
+    pre_conflict_reason: str = ""
+    pre_conflict_group_key: str = ""
+    pre_conflict_course_id: str = ""
+    pre_conflict_market_id: str = ""
+    pre_conflict_market_type: str = ""
+    pre_conflict_selection_id: str = ""
+    pre_conflict_runner_name: str = ""
+    pre_back_target_price: float | None = None
+    pre_lay_target_price: float | None = None
+    pre_current_best_lay: float | None = None
+    pre_current_best_back: float | None = None
+    pre_back_distance_ticks: float | None = None
+    pre_lay_distance_ticks: float | None = None
 
     @property
     def merge_key(self) -> tuple[str, int, str, str, str]:
@@ -131,7 +152,7 @@ class _FrozenPreLadderPlan:
 def _execution_phase_for_milestone(milestone: int | None) -> str | None:
     if milestone in _pre_ladder_steps_from_env():
         return _strategies.EXECUTION_PHASE_PRE
-    if milestone == POST_SEND_SECONDS_BEFORE_OFF:
+    if milestone == _post_send_seconds_before_off_from_env():
         return _strategies.EXECUTION_PHASE_POST
     return None
 
@@ -152,6 +173,17 @@ def _pre_ladder_steps_from_env() -> tuple[int, ...]:
         if value > 0:
             steps.append(value)
     return tuple(steps or PRE_LADDER_DEFAULT_STEPS_SECONDS)
+
+
+def _post_send_seconds_before_off_from_env() -> int:
+    raw = os.getenv("DOGBOT_POST_SEND_SECONDS_BEFORE_OFF")
+    if raw in (None, ""):
+        return POST_SEND_SECONDS_BEFORE_OFF_DEFAULT
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return POST_SEND_SECONDS_BEFORE_OFF_DEFAULT
+    return min(60, max(0, value))
 
 
 def _pre_ladder_prices_are_valid_for_side(
@@ -239,7 +271,7 @@ def _merge_order_candidates(
     return merged
 
 
-def _reject_back_lay_same_phase_candidates(
+def _resolve_back_lay_same_phase_candidates(
     candidates: list[_StrategyOrderCandidate],
 ) -> tuple[list[_StrategyOrderCandidate], list[_StrategyOrderCandidate]]:
     grouped: dict[tuple[str, str, int, str, str], list[_StrategyOrderCandidate]] = defaultdict(list)
@@ -255,6 +287,7 @@ def _reject_back_lay_same_phase_candidates(
         ].append(candidate)
 
     rejected_ids: set[int] = set()
+    selected_replacements: dict[int, _StrategyOrderCandidate] = {}
     rejected: list[_StrategyOrderCandidate] = []
     for key, group in grouped.items():
         backs = [candidate for candidate in group if candidate.side == "BACK"]
@@ -263,6 +296,63 @@ def _reject_back_lay_same_phase_candidates(
             continue
         back_systems = [system for candidate in backs for system in candidate.triggered_systems]
         lay_systems = [system for candidate in lays for system in candidate.triggered_systems]
+        if str(key[4] or "").upper() == _strategies.EXECUTION_PHASE_PRE:
+            selected_side, pre_reason, back_distance, lay_distance = _pre_conflict_choice(backs, lays)
+            back_price = _first_positive_price(backs)
+            lay_price = _first_positive_price(lays)
+            best_lay = _first_positive_reference(backs, reference_side="LAY")
+            best_back = _first_positive_reference(lays, reference_side="BACK")
+            pre_base = {
+                "conflict_detected": True,
+                "conflict_type": "back_lay_same_runner_market_phase",
+                "conflict_group_key": "|".join(str(part) for part in key),
+                "conflict_candidates_count": len(backs) + len(lays),
+                "back_systems": "|".join(back_systems),
+                "lay_systems": "|".join(lay_systems),
+                "conflict_resolution_reason": "per_runner_nearest_price",
+                "pre_back_lay_conflict": True,
+                "pre_conflict_resolution": "per_runner_nearest_price",
+                "pre_conflict_chosen_side": selected_side,
+                "pre_conflict_rejected_side": "LAY" if selected_side == "BACK" else ("BACK" if selected_side == "LAY" else "BOTH"),
+                "pre_conflict_reason": pre_reason,
+                "back_distance": back_distance,
+                "lay_distance": lay_distance,
+                "selected_side": selected_side if selected_side in {"BACK", "LAY"} else "NONE",
+                "rejected_side": "LAY" if selected_side == "BACK" else ("BACK" if selected_side == "LAY" else "BOTH"),
+                "pre_conflict_group_key": "|".join(str(part) for part in key),
+                "pre_conflict_course_id": str(key[0]),
+                "pre_conflict_market_id": str(key[1]),
+                "pre_conflict_selection_id": str(key[2]),
+                "pre_conflict_market_type": str(key[3]),
+                "pre_conflict_runner_name": backs[0].runner_name or lays[0].runner_name,
+                "pre_back_target_price": back_price,
+                "pre_lay_target_price": lay_price,
+                "pre_current_best_lay": best_lay,
+                "pre_current_best_back": best_back,
+                "pre_back_distance_ticks": back_distance,
+                "pre_lay_distance_ticks": lay_distance,
+            }
+            if selected_side in {"BACK", "LAY"}:
+                for candidate in group:
+                    if candidate.side == selected_side:
+                        selected_replacements[id(candidate)] = replace(candidate, **pre_base)
+                        continue
+                    if candidate.side not in {"BACK", "LAY"}:
+                        continue
+                    rejected_ids.add(id(candidate))
+                    rejected.append(replace(candidate, **pre_base, reason="conflicting_back_lay_lost_priority"))
+                for candidate in group:
+                    if candidate.side == selected_side:
+                        rejected_ids.discard(id(candidate))
+                continue
+            fields = {**pre_base, "reason": pre_reason}
+            for candidate in group:
+                if candidate.side not in {"BACK", "LAY"}:
+                    continue
+                rejected_ids.add(id(candidate))
+                rejected.append(replace(candidate, **fields))
+            continue
+
         fields = {
             "conflict_detected": True,
             "conflict_type": "back_lay_same_runner_market_phase",
@@ -281,8 +371,151 @@ def _reject_back_lay_same_phase_candidates(
             rejected_ids.add(id(candidate))
             rejected.append(replace(candidate, **fields))
 
-    selected = [candidate for candidate in candidates if id(candidate) not in rejected_ids]
+    selected = [
+        selected_replacements.get(id(candidate), candidate)
+        for candidate in candidates
+        if id(candidate) not in rejected_ids
+    ]
     return selected, rejected
+
+
+def _pre_conflict_choice(
+    backs: list[_StrategyOrderCandidate],
+    lays: list[_StrategyOrderCandidate],
+) -> tuple[str, str, float | None, float | None]:
+    back_distance = _nearest_pre_conflict_distance(backs, reference_side="LAY")
+    lay_distance = _nearest_pre_conflict_distance(lays, reference_side="BACK")
+    if back_distance is None or lay_distance is None:
+        return "NONE", "pre_conflict_missing_reference_no_bet", back_distance, lay_distance
+    if math.isclose(back_distance, lay_distance, rel_tol=1e-9, abs_tol=1e-9):
+        return "NONE", "pre_conflict_equal_distance_no_bet", back_distance, lay_distance
+    if back_distance < lay_distance:
+        return "BACK", "pre_conflict_back_nearer", back_distance, lay_distance
+    return "LAY", "pre_conflict_lay_nearer", back_distance, lay_distance
+
+
+def _first_positive_price(candidates: list[_StrategyOrderCandidate]) -> float | None:
+    for candidate in candidates:
+        value = _positive_float(candidate.price)
+        if value is not None:
+            return value
+    return None
+
+
+def _first_positive_reference(candidates: list[_StrategyOrderCandidate], *, reference_side: str) -> float | None:
+    for candidate in candidates:
+        reference = (
+            candidate.best_unmatched_lay_offer
+            if reference_side == "LAY"
+            else candidate.best_unmatched_back_offer
+        )
+        value = _positive_float(reference)
+        if value is not None:
+            return value
+    return None
+
+
+def _nearest_pre_conflict_distance(
+    candidates: list[_StrategyOrderCandidate],
+    *,
+    reference_side: str,
+) -> float | None:
+    distances: list[float] = []
+    for candidate in candidates:
+        reference = (
+            candidate.best_unmatched_lay_offer
+            if reference_side == "LAY"
+            else candidate.best_unmatched_back_offer
+        )
+        distance = _betfair_tick_distance(candidate.price, reference)
+        if distance is not None:
+            distances.append(distance)
+    return min(distances) if distances else None
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _betfair_tick_distance(price: Any, reference: Any) -> float | None:
+    price_value = _positive_float(price)
+    reference_value = _positive_float(reference)
+    if price_value is None or reference_value is None:
+        return None
+    ticks = _betfair_ticks_for_distance()
+    try:
+        price_tick = round_to_betfair_tick(price_value)
+        reference_tick = round_to_betfair_tick(reference_value)
+        return float(abs(ticks.index(price_tick) - ticks.index(reference_tick)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _betfair_ticks_for_distance() -> tuple[float, ...]:
+    ticks: list[float] = []
+    for start, end, step in BETFAIR_PRICE_BANDS:
+        value = start
+        while value < end - 1e-9:
+            rounded = round(value, 2)
+            if not ticks or not math.isclose(ticks[-1], rounded, rel_tol=1e-9, abs_tol=1e-9):
+                ticks.append(rounded)
+            value += step
+    ticks.append(1000.0)
+    return tuple(ticks)
+
+
+def _pre_pipeline_candidate_id(ctx: RunnerCtx, side: str, strategy_id: str) -> str:
+    return "|".join(
+        str(part)
+        for part in (
+            ctx.course_id,
+            ctx.market_id,
+            ctx.market_type,
+            ctx.selection_id,
+            ctx.execution_phase,
+            side,
+            strategy_id,
+        )
+    )
+
+
+def _runner_debug_summary(runner_name: Optional[str], signals: Iterable[dict[str, Any]]) -> str:
+    values = [
+        f"{signal.get('side')}:{signal.get('strategy_id')}"
+        for signal in signals
+    ]
+    return _value_by_runner(runner_name, "|".join(str(value) for value in values if value))
+
+
+def _candidate_debug_summary(
+    runner_name: Optional[str],
+    candidates: Iterable[_StrategyOrderCandidate],
+) -> str:
+    values = [
+        f"{candidate.side}:{'&'.join(candidate.triggered_systems)}"
+        for candidate in candidates
+    ]
+    return _value_by_runner(runner_name, "|".join(str(value) for value in values if value))
+
+
+def _value_by_runner(runner_name: Optional[str], value: str) -> str:
+    name = str(runner_name or "").strip() or "<unknown>"
+    return f"{name}={value}" if value else f"{name}="
+
+
+def _relative_distance(price: float | None, reference: float | None) -> float | None:
+    try:
+        price_value = float(price)
+        reference_value = float(reference)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(price_value) or not math.isfinite(reference_value) or reference_value <= 0:
+        return None
+    return abs(price_value - reference_value) / reference_value
 
 
 # ---------- utilitaires généraux ----------
@@ -489,7 +722,7 @@ class _MetaStub:
 
 class Executor:
     MILESTONES = sorted(
-        {300, 150, 80, 45, 2, *PRE_LADDER_DEFAULT_STEPS_SECONDS, POST_SEND_SECONDS_BEFORE_OFF},
+        {300, 150, 80, 45, 2, *PRE_LADDER_DEFAULT_STEPS_SECONDS, _post_send_seconds_before_off_from_env()},
         reverse=True,
     )
     TOLERANCE_S = 1.5
@@ -547,6 +780,8 @@ class Executor:
         "lay_liability_cap","lay_liability_cap_hit",
         "execution_phase","triggered_systems","triggered_prices","final_system","final_price","final_stake","merged",
         "stake_pre","stake_post","total_stake_same_runner_side","pre_post_cumulative",
+        "pre_existing_order_detected","pre_existing_order_side","pre_existing_order_market_type",
+        "pre_existing_order_stake","post_stake",
         "processed_key","exec_mode",
         "ladder_enabled","ladder_preview","ladder_id","ladder_tracking_key","ladder_step",
         "ladder_seconds_before_off","final_lim_price","final_lim_price_raw","final_lim_price_tick",
@@ -567,6 +802,12 @@ class Executor:
         "gruss_no_stack",
         "conflict_detected","conflict_type","conflict_group_key","conflict_candidates_count",
         "selected_side","rejected_side","back_systems","lay_systems","conflict_resolution_reason",
+        "pre_back_lay_conflict","pre_conflict_resolution","pre_conflict_chosen_side",
+        "pre_conflict_rejected_side","pre_conflict_reason",
+        "pre_conflict_group_key","pre_conflict_course_id","pre_conflict_market_id",
+        "pre_conflict_market_type","pre_conflict_selection_id","pre_conflict_runner_name",
+        "pre_back_target_price","pre_lay_target_price","pre_current_best_lay",
+        "pre_current_best_back","pre_back_distance_ticks","pre_lay_distance_ticks",
         "status","reason",
     ]
 
@@ -575,15 +816,60 @@ class Executor:
         "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
         "execution_phase",
         "condition_result","fail_reason",
-        "trap","region","winbet","place_price","ev_place","mom45","place_theo","bb","bl",
+        "trap","region","winbet","place_price","ev_place","has_mom45","mom45","mom45_source",
+        "mom45_injected_before_strategy_eval","place_theo","bb","bl",
         "place_winners","k_place_used","fallback_k_place_used","requires_mom45",
     ]
 
     STRATEGY_EVAL_SUMMARY_HEADER = [
         "ts","market_id","market_type","selection_id","runner_name",
-        "trap","region","winbet","place_price","place_theo","ev_place","mom45",
+        "trap","region","winbet","place_price","place_theo","ev_place","has_mom45","mom45",
+        "mom45_available_count","mom45_missing_count","mom45_source",
+        "mom45_injected_before_strategy_eval","mom45_strategy_slots_evaluated_count",
+        "mom45_strategy_slots_missing_count",
         "place_winners","k_place_used","fallback_k_place_used",
         "execution_phase","slots_tested","conditions_true_count","true_tags","error_count",
+    ]
+
+    PRE_PIPELINE_DEBUG_HEADER = [
+        "ts","row_type",
+        "course_id","market_id","market_type",
+        "pre_pipeline_course_id","pre_pipeline_market_id","pre_pipeline_market_type",
+        "pre_pipeline_region","pre_pipeline_runner_count",
+        "selection_id","runner_name","trap",
+        "candidate_id","side","strategy_id","execution_phase",
+        "created_from_tag","candidate_created","removed",
+        "removed_stage","removed_reason","removed_detail",
+        "pre_strategy_signals_count","pre_strategy_signals_by_runner",
+        "pre_strategy_back_signals_by_runner","pre_strategy_lay_signals_by_runner",
+        "pre_raw_candidates_count","pre_raw_candidates_by_runner",
+        "pre_raw_back_candidates_by_runner","pre_raw_lay_candidates_by_runner",
+        "pre_after_filters_count","pre_after_filters_by_runner",
+        "pre_removed_candidates_count","pre_removed_candidates_detail",
+        "pre_conflict_groups_count","pre_conflict_groups_by_runner","pre_conflict_group_key",
+        "pre_after_conflict_resolution_count","pre_after_conflict_resolution_by_runner",
+        "pre_after_ladder_planning_count","pre_after_ladder_planning_by_runner",
+        "pre_trades_created_count","pre_trades_created_by_runner",
+        "pre_gruss_orders_attempted_count","pre_gruss_orders_attempted_by_runner",
+        "strategy_back_signal","strategy_lay_signal",
+        "raw_back_candidate_created","raw_lay_candidate_created",
+        "conflict_detected","chosen_side","rejected_side",
+        "conflict_group_key","conflict_course_id","conflict_market_id",
+        "conflict_market_type","conflict_selection_id","conflict_runner_name",
+        "conflict_execution_phase","conflict_back_candidates_count",
+        "conflict_lay_candidates_count","conflict_resolution",
+        "conflict_chosen_side","conflict_rejected_side","conflict_reason",
+        "final_pre_order_created","removed_reason_if_no_order",
+        "lay_signal_seen","lay_candidate_created","lay_reached_conflict_resolver",
+        "lay_removed_stage","lay_removed_reason","lay_selected",
+        "lay_reached_trade","lay_reached_gruss_writer",
+        "pre_lay_signal_seen","pre_lay_candidate_created","pre_lay_candidate_removed",
+        "pre_lay_removed_stage","pre_lay_removed_reason",
+        "pre_lay_reached_conflict_resolver","pre_lay_reached_ladder_planner",
+        "pre_lay_reached_gruss_writer",
+        "pre_existing_order_detected","pre_existing_order_side",
+        "pre_existing_order_market_type","pre_existing_order_stake",
+        "post_stake","total_stake_same_runner_side","pre_post_cumulative",
     ]
 
 
@@ -609,7 +895,7 @@ class Executor:
 
         self._pre_ladder_steps = _pre_ladder_steps_from_env()
         self._configured_milestones = sorted(
-            {300, 150, 80, 45, 2, *self._pre_ladder_steps, POST_SEND_SECONDS_BEFORE_OFF},
+            {300, 150, 80, 45, 2, *self._pre_ladder_steps, _post_send_seconds_before_off_from_env()},
             reverse=True,
         )
         self._next_ms: Dict[str, List[int]] = defaultdict(lambda: list(self._configured_milestones))
@@ -766,6 +1052,121 @@ class Executor:
             return "missing_mom45"
         return "condition_false"
 
+    def _debug_try_fire_slot_none_detail(self, slot, ctx: RunnerCtx) -> str:
+        parts: list[str] = ["condition_true_but_try_fire_slot_returned_none"]
+        try:
+            side = getattr(getattr(slot, "side", None), "value", getattr(slot, "side", ""))
+            mode = getattr(slot, "exec_mode", None)
+            limit_style = getattr(slot, "limit_style", None)
+            decision: dict[str, Any] = {}
+            effective_mode = mode
+            effective_limit_style = limit_style
+            sp_limit = getattr(slot, "sp_limit", None)
+            if getattr(slot, "sp_limit_fn", None) is not None:
+                try:
+                    computed_sp_limit = slot.sp_limit_fn(ctx)
+                    if computed_sp_limit is not None and float(computed_sp_limit) > 1.0:
+                        sp_limit = float(computed_sp_limit)
+                except Exception as exc:
+                    parts.append(f"sp_limit_fn_error={exc!r}")
+            if mode == _strategies.ExecMode.HYB:
+                try:
+                    decision = _strategies._hyb_decide(ctx, slot)
+                    effective_mode = decision.get("mode", effective_mode)
+                    effective_limit_style = decision.get("limit_style", effective_limit_style)
+                    sp_limit = decision.get("sp_limit", sp_limit)
+                except Exception as exc:
+                    parts.append(f"hyb_decide_error={exc!r}")
+            try:
+                bounds_price = _strategies._pick_bounds_price(ctx, getattr(slot, "price_for_bounds", "BASE"))
+            except Exception as exc:
+                bounds_price = None
+                parts.append(f"bounds_price_error={exc!r}")
+            order_price = None
+            limit_choice = decision.get("limit_price") if decision else ""
+            if bounds_price is None:
+                reason = "no_bounds_price"
+            else:
+                reason = "unknown_no_fire"
+                if effective_mode == _strategies.ExecMode.LIMIT_LTP:
+                    if getattr(slot, "sp_limit_fn", None) is not None:
+                        if sp_limit is None or float(sp_limit) <= 1.0:
+                            reason = "no_theo_limit_price"
+                        else:
+                            order_price = float(sp_limit)
+                            limit_choice = "THEO_LIMIT"
+                    else:
+                        choice = str(limit_choice or "").upper()
+                        if choice == "CROSS":
+                            order_price = ctx.bl if str(side).upper() == "BACK" else ctx.bb
+                        elif choice == "OWN":
+                            order_price = ctx.bb if str(side).upper() == "BACK" else ctx.bl
+                        elif choice == "MID":
+                            if ctx.bb is not None and ctx.bl is not None:
+                                order_price = (ctx.bb + ctx.bl) / 2.0
+                        if order_price is None:
+                            order_price = _strategies._choose_limit_price(slot.side, effective_limit_style, ctx)
+                    if order_price is None:
+                        fallback_enabled = str(os.getenv("HYB_FALLBACK_TO_SP_MOC", "true")).strip().lower() not in {
+                            "0",
+                            "false",
+                            "no",
+                            "off",
+                        }
+                        if fallback_enabled:
+                            order_price = _strategies._choose_limit_price(slot.side, effective_limit_style, ctx) or bounds_price
+                            reason = "fallback_sp_moc_price_ref" if order_price is not None else "no_order_price"
+                        else:
+                            reason = "no_order_price"
+                else:
+                    order_price = _strategies._choose_limit_price(slot.side, effective_limit_style, ctx) or bounds_price
+
+                if order_price is not None:
+                    edge_env = getattr(slot, "edge_env", None) or f"EDGE_{slot.family}_{slot.slot}"
+                    edge = _strategies._env_float(edge_env, 0.02)
+                    cap_env = getattr(slot, "max_runner_stake_env", None) or f"MAX_RUNNER_STAKE_{slot.family}_{slot.slot}"
+                    cap_raw = os.getenv(cap_env)
+                    max_runner_cap = float(cap_raw) if cap_raw not in (None, "") else None
+                    sr = _strategies._compute_stake_safe(
+                        self.staking_engine,
+                        slot.side,
+                        float(order_price),
+                        edge,
+                        max_runner_cap,
+                    )
+                    reason = getattr(sr, "reason", "stake_not_ok") if not getattr(sr, "ok", False) else "unexpected_ok"
+                    parts.extend(
+                        [
+                            f"edge_env={edge_env}",
+                            f"edge={edge}",
+                            f"max_runner_cap_env={cap_env}",
+                            f"max_runner_cap={max_runner_cap}",
+                            f"stake_ok={getattr(sr, 'ok', False)}",
+                            f"stake={getattr(sr, 'size', None)}",
+                            f"liability={getattr(sr, 'liability', None)}",
+                        ]
+                    )
+            parts.extend(
+                [
+                    f"reason={reason}",
+                    f"side={side}",
+                    f"exec_mode={effective_mode}",
+                    f"limit_style={effective_limit_style}",
+                    f"limit_choice={limit_choice}",
+                    f"bounds_price={bounds_price}",
+                    f"order_price={order_price}",
+                    f"bb={ctx.bb}",
+                    f"bl={ctx.bl}",
+                    f"ltp={ctx.ltp}",
+                    f"bsp_place={ctx.bsp_place}",
+                    f"ev_place={ctx.ev_place}",
+                    f"place_theo={ctx.place_theo}",
+                ]
+            )
+        except Exception as exc:
+            parts.append(f"diagnostic_error={exc!r}")
+        return ";".join(str(part) for part in parts)
+
     def _log_strategy_debug_row(
         self,
         slot,
@@ -798,7 +1199,13 @@ class Executor:
             "winbet": ctx.winbet,
             "place_price": self._debug_place_price(ctx),
             "ev_place": ctx.ev_place,
+            "has_mom45": ctx.mom45 is not None,
             "mom45": ctx.mom45,
+            "mom45_source": getattr(self, "_gruss_mom45_diagnostics", {}).get("mom45_source", ""),
+            "mom45_injected_before_strategy_eval": getattr(self, "_gruss_mom45_diagnostics", {}).get(
+                "mom45_injected_before_strategy_eval",
+                "",
+            ),
             "place_theo": ctx.place_theo,
             "bb": ctx.bb,
             "bl": ctx.bl,
@@ -810,6 +1217,212 @@ class Executor:
         with fname.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
 
+    def _pre_pipeline_debug_enabled(self, ctx: RunnerCtx) -> bool:
+        raw = str(os.getenv("DOGBOT_PRE_PIPELINE_DEBUG", "")).strip().lower()
+        explicit = raw in ("1", "true", "yes", "y", "on")
+        return explicit or self._strategy_debug_enabled(ctx)
+
+    def _log_pre_pipeline_debug_row(
+        self,
+        ctx: RunnerCtx,
+        runner_name: Optional[str],
+        *,
+        row_type: str,
+        candidate_id: str = "",
+        side: str = "",
+        strategy_id: str = "",
+        removed_stage: str = "",
+        removed_reason: str = "",
+        removed_detail: str = "",
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        if not self._pre_pipeline_debug_enabled(ctx):
+            return
+        summary = summary or {}
+        fname = self.data_dir / f"pre_pipeline_debug_{datetime.now(timezone.utc):%Y%m%d}.csv"
+        self._ensure_header(fname, self.PRE_PIPELINE_DEBUG_HEADER)
+        row = {field: "" for field in self.PRE_PIPELINE_DEBUG_HEADER}
+        row.update(
+            {
+                "ts": _now_utc_iso(),
+                "row_type": row_type,
+                "course_id": ctx.course_id,
+                "market_id": ctx.market_id,
+                "market_type": ctx.market_type,
+                "pre_pipeline_course_id": ctx.course_id,
+                "pre_pipeline_market_id": ctx.market_id,
+                "pre_pipeline_market_type": ctx.market_type,
+                "pre_pipeline_region": ctx.region,
+                "selection_id": ctx.selection_id,
+                "runner_name": runner_name,
+                "trap": ctx.trap,
+                "candidate_id": candidate_id,
+                "side": side,
+                "strategy_id": strategy_id,
+                "execution_phase": ctx.execution_phase,
+                "created_from_tag": strategy_id,
+                "candidate_created": str(row_type in {"raw_candidate", "trade_created"}),
+                "removed": str(row_type == "candidate_removed"),
+                "removed_stage": removed_stage,
+                "removed_reason": removed_reason,
+                "removed_detail": removed_detail,
+            }
+        )
+        for key, value in summary.items():
+            if key in row:
+                row[key] = value
+        with fname.open("a", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=self.PRE_PIPELINE_DEBUG_HEADER).writerow(row)
+
+    def _log_pre_pipeline_summary_row(
+        self,
+        ctx: RunnerCtx,
+        runner_name: Optional[str],
+        *,
+        pre_strategy_signals: list[dict[str, Any]],
+        pre_raw_candidates: list[_StrategyOrderCandidate],
+        pre_after_conflict: list[_StrategyOrderCandidate],
+        pre_after_merge: list[_StrategyOrderCandidate],
+        pre_removed_candidates: list[dict[str, Any]],
+    ) -> None:
+        if not pre_strategy_signals and not pre_raw_candidates and not pre_removed_candidates:
+            return
+        back_signals = [signal for signal in pre_strategy_signals if str(signal.get("side", "")).upper() == "BACK"]
+        lay_signals = [signal for signal in pre_strategy_signals if str(signal.get("side", "")).upper() == "LAY"]
+        raw_backs = [candidate for candidate in pre_raw_candidates if candidate.side == "BACK"]
+        raw_lays = [candidate for candidate in pre_raw_candidates if candidate.side == "LAY"]
+        final_backs = [candidate for candidate in pre_after_merge if candidate.side == "BACK"]
+        final_lays = [candidate for candidate in pre_after_merge if candidate.side == "LAY"]
+        conflict_groups = {
+            candidate.pre_conflict_group_key or candidate.conflict_group_key
+            for candidate in [*pre_after_conflict]
+            if candidate.pre_back_lay_conflict
+        }
+        conflict_groups.update(
+            str(removed.get("removed_detail") or "")
+            for removed in pre_removed_candidates
+            if str(removed.get("removed_stage") or "") == "conflict_resolution"
+        )
+        conflict_groups.discard("")
+        lay_removed = next(
+            (
+                removed
+                for removed in pre_removed_candidates
+                if str(removed.get("side", "")).upper() == "LAY"
+            ),
+            {},
+        )
+        conflict_candidates = [
+            candidate for candidate in pre_after_conflict if candidate.conflict_detected or candidate.pre_back_lay_conflict
+        ]
+        conflict_candidate = conflict_candidates[0] if conflict_candidates else None
+        conflict_rejections = [
+            removed for removed in pre_removed_candidates if str(removed.get("removed_stage") or "") == "conflict_resolution"
+        ]
+        conflict_rejection = conflict_rejections[0] if conflict_rejections else {}
+        conflict_back_count = len(raw_backs) if conflict_groups else 0
+        conflict_lay_count = len(raw_lays) if conflict_groups else 0
+        removed_detail = "|".join(
+            f"{item.get('strategy_id')}:{item.get('side')}:{item.get('removed_stage')}:{item.get('removed_reason')}"
+            for item in pre_removed_candidates
+        )
+        summary = {
+            "pre_strategy_signals_count": len(pre_strategy_signals),
+            "pre_strategy_signals_by_runner": _runner_debug_summary(runner_name, pre_strategy_signals),
+            "pre_strategy_back_signals_by_runner": _runner_debug_summary(runner_name, back_signals),
+            "pre_strategy_lay_signals_by_runner": _runner_debug_summary(runner_name, lay_signals),
+            "pre_raw_candidates_count": len(pre_raw_candidates),
+            "pre_raw_candidates_by_runner": _candidate_debug_summary(runner_name, pre_raw_candidates),
+            "pre_raw_back_candidates_by_runner": _candidate_debug_summary(runner_name, raw_backs),
+            "pre_raw_lay_candidates_by_runner": _candidate_debug_summary(runner_name, raw_lays),
+            "pre_after_filters_count": len(pre_raw_candidates),
+            "pre_after_filters_by_runner": _candidate_debug_summary(runner_name, pre_raw_candidates),
+            "pre_removed_candidates_count": len(pre_removed_candidates),
+            "pre_removed_candidates_detail": removed_detail,
+            "pre_conflict_groups_count": len(conflict_groups),
+            "pre_conflict_groups_by_runner": _value_by_runner(runner_name, "|".join(sorted(conflict_groups))),
+            "pre_conflict_group_key": "|".join(sorted(conflict_groups)),
+            "pre_after_conflict_resolution_count": len(pre_after_conflict),
+            "pre_after_conflict_resolution_by_runner": _candidate_debug_summary(runner_name, pre_after_conflict),
+            "pre_after_ladder_planning_count": len(pre_after_merge),
+            "pre_after_ladder_planning_by_runner": _candidate_debug_summary(runner_name, pre_after_merge),
+            "pre_trades_created_count": len(pre_after_merge),
+            "pre_trades_created_by_runner": _candidate_debug_summary(runner_name, pre_after_merge),
+            "pre_gruss_orders_attempted_count": "",
+            "pre_gruss_orders_attempted_by_runner": "",
+            "strategy_back_signal": str(bool(back_signals)),
+            "strategy_lay_signal": str(bool(lay_signals)),
+            "raw_back_candidate_created": str(bool(raw_backs)),
+            "raw_lay_candidate_created": str(bool(raw_lays)),
+            "conflict_detected": str(bool(conflict_groups)),
+            "chosen_side": (
+                pre_after_conflict[0].pre_conflict_chosen_side
+                if conflict_groups and pre_after_conflict
+                else conflict_rejection.get("selected_side", "")
+            ),
+            "rejected_side": (
+                pre_after_conflict[0].pre_conflict_rejected_side
+                if conflict_groups and pre_after_conflict
+                else conflict_rejection.get("rejected_side", "")
+            ),
+            "conflict_group_key": (
+                getattr(conflict_candidate, "conflict_group_key", "")
+                or getattr(conflict_candidate, "pre_conflict_group_key", "")
+                or "|".join(sorted(conflict_groups))
+            ),
+            "conflict_course_id": getattr(conflict_candidate, "pre_conflict_course_id", "") or ctx.course_id,
+            "conflict_market_id": getattr(conflict_candidate, "pre_conflict_market_id", "") or ctx.market_id,
+            "conflict_market_type": getattr(conflict_candidate, "pre_conflict_market_type", "") or ctx.market_type,
+            "conflict_selection_id": getattr(conflict_candidate, "pre_conflict_selection_id", "") or ctx.selection_id,
+            "conflict_runner_name": getattr(conflict_candidate, "pre_conflict_runner_name", "") or runner_name,
+            "conflict_execution_phase": ctx.execution_phase,
+            "conflict_back_candidates_count": conflict_back_count,
+            "conflict_lay_candidates_count": conflict_lay_count,
+            "conflict_resolution": (
+                getattr(conflict_candidate, "conflict_resolution_reason", "")
+                or conflict_rejection.get("conflict_resolution_reason", "")
+            ),
+            "conflict_chosen_side": (
+                getattr(conflict_candidate, "selected_side", "")
+                or getattr(conflict_candidate, "pre_conflict_chosen_side", "")
+                or conflict_rejection.get("selected_side", "")
+            ),
+            "conflict_rejected_side": (
+                getattr(conflict_candidate, "rejected_side", "")
+                or getattr(conflict_candidate, "pre_conflict_rejected_side", "")
+                or conflict_rejection.get("rejected_side", "")
+            ),
+            "conflict_reason": (
+                getattr(conflict_candidate, "conflict_resolution_reason", "")
+                or conflict_rejection.get("conflict_resolution_reason", "")
+                or conflict_rejection.get("removed_reason", "")
+            ),
+            "final_pre_order_created": str(bool(pre_after_merge)),
+            "removed_reason_if_no_order": "" if pre_after_merge else removed_detail,
+            "lay_signal_seen": str(bool(lay_signals)),
+            "lay_candidate_created": str(bool(raw_lays)),
+            "lay_reached_conflict_resolver": str(bool(raw_lays)),
+            "lay_removed_stage": lay_removed.get("removed_stage", ""),
+            "lay_removed_reason": lay_removed.get("removed_reason", ""),
+            "lay_selected": str(bool(final_lays)),
+            "lay_reached_trade": str(bool(final_lays)),
+            "lay_reached_gruss_writer": str(bool(final_lays)),
+            "pre_lay_signal_seen": str(bool(lay_signals)),
+            "pre_lay_candidate_created": str(bool(raw_lays)),
+            "pre_lay_candidate_removed": str(bool(lay_removed)),
+            "pre_lay_removed_stage": lay_removed.get("removed_stage", ""),
+            "pre_lay_removed_reason": lay_removed.get("removed_reason", ""),
+            "pre_lay_reached_conflict_resolver": str(bool(raw_lays)),
+            "pre_lay_reached_ladder_planner": str(bool(final_lays)),
+            "pre_lay_reached_gruss_writer": str(bool(final_lays)),
+        }
+        self._log_pre_pipeline_debug_row(
+            ctx,
+            runner_name,
+            row_type="runner_summary",
+            summary=summary,
+        )
+
     def _log_strategy_eval_summary_row(
         self,
         ctx: RunnerCtx,
@@ -817,9 +1430,12 @@ class Executor:
         slots_tested: int,
         true_tags: List[str],
         error_count: int,
+        mom45_slots_tested: int = 0,
+        mom45_slots_missing: int = 0,
     ) -> None:
         if ctx.milestone != 2:
             return
+        mom45_diagnostics = getattr(self, "_gruss_mom45_diagnostics", {}) or {}
         fname = self.data_dir / f"strategy_eval_summary_{datetime.now(timezone.utc):%Y%m%d}.csv"
         self._ensure_header(fname, self.STRATEGY_EVAL_SUMMARY_HEADER)
         row = {
@@ -834,7 +1450,17 @@ class Executor:
             "place_price": self._debug_place_price(ctx),
             "place_theo": ctx.place_theo,
             "ev_place": ctx.ev_place,
+            "has_mom45": ctx.mom45 is not None,
             "mom45": ctx.mom45,
+            "mom45_available_count": mom45_diagnostics.get("mom45_available_count", ""),
+            "mom45_missing_count": mom45_diagnostics.get("mom45_missing_count", ""),
+            "mom45_source": mom45_diagnostics.get("mom45_source", ""),
+            "mom45_injected_before_strategy_eval": mom45_diagnostics.get(
+                "mom45_injected_before_strategy_eval",
+                "",
+            ),
+            "mom45_strategy_slots_evaluated_count": mom45_slots_tested,
+            "mom45_strategy_slots_missing_count": mom45_slots_missing,
             "place_winners": getattr(ctx, "place_winners", None),
             "k_place_used": getattr(ctx, "k_place_used", None),
             "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
@@ -1319,6 +1945,13 @@ class Executor:
             mom80  = ratio(base_2,  base_80)  if is_win else None
             mom150 = ratio(base_2,  base_150) if is_win else None
             mom300 = ratio(base_2,  base_300) if is_win else None
+            external_mom45 = (
+                self._last_mom45_by_market.get(str(win_id or market_id), {}).get(sid)
+                if is_win
+                else None
+            )
+            if is_win and mom45 is None and external_mom45 is not None:
+                mom45 = external_mom45
             if is_win and mom45 is not None:
                 self._last_mom45_by_market[str(win_id or market_id)][sid] = float(mom45)
             linked_mom45 = self._last_mom45_by_market.get(str(win_id), {}).get(sid) if (is_place and win_id) else None
@@ -1538,8 +2171,13 @@ class Executor:
                     slots_tested = 0
                     true_tags: List[str] = []
                     error_count = 0
+                    mom45_slots_tested = 0
+                    mom45_slots_missing = 0
                     pre_orders: List[_StrategyOrderCandidate] = []
                     post_orders: List[_StrategyOrderCandidate] = []
+                    pre_strategy_signals: list[dict[str, Any]] = []
+                    pre_raw_candidates: list[_StrategyOrderCandidate] = []
+                    pre_removed_candidates: list[dict[str, Any]] = []
 
                     for slot in self.strategy_registry:
                         slot_phase = str(
@@ -1554,6 +2192,10 @@ class Executor:
                             continue
 
                         slots_tested += 1
+                        if getattr(slot, "requires_mom45", False):
+                            mom45_slots_tested += 1
+                            if ctx.mom45 is None:
+                                mom45_slots_missing += 1
                         debug_enabled = self._strategy_debug_enabled(ctx)
                         debug_condition_result: Optional[bool] = None
                         debug_fail_reason = ""
@@ -1572,6 +2214,25 @@ class Executor:
                                 error_count += 1
                         if debug_condition_result is True:
                             true_tags.append(str(slot.tag))
+                            signal_side = str(getattr(getattr(slot, "side", None), "value", getattr(slot, "side", "")))
+                            signal = {
+                                "candidate_id": _pre_pipeline_candidate_id(
+                                    ctx,
+                                    signal_side,
+                                    str(getattr(slot, "tag", "")),
+                                ),
+                                "side": signal_side,
+                                "strategy_id": str(getattr(slot, "tag", "")),
+                            }
+                            pre_strategy_signals.append(signal)
+                            self._log_pre_pipeline_debug_row(
+                                ctx,
+                                runner_name,
+                                row_type="strategy_signal",
+                                candidate_id=signal["candidate_id"],
+                                side=signal_side,
+                                strategy_id=signal["strategy_id"],
+                            )
 
                         res = try_fire_slot(self.staking_engine, slot, ctx)
                         if debug_enabled:
@@ -1581,6 +2242,35 @@ class Executor:
                                 slot, ctx, runner_name, bool(debug_condition_result), debug_fail_reason
                             )
                         if not res:
+                            if debug_condition_result is True:
+                                signal_side = str(getattr(getattr(slot, "side", None), "value", getattr(slot, "side", "")))
+                                candidate_id = _pre_pipeline_candidate_id(
+                                    ctx,
+                                    signal_side,
+                                    str(getattr(slot, "tag", "")),
+                                )
+                                detail = self._debug_try_fire_slot_none_detail(slot, ctx)
+                                pre_removed_candidates.append(
+                                    {
+                                        "candidate_id": candidate_id,
+                                        "side": signal_side,
+                                        "strategy_id": str(getattr(slot, "tag", "")),
+                                        "removed_stage": "strategy_to_candidate",
+                                        "removed_reason": "no_fire_result_after_condition",
+                                        "removed_detail": detail,
+                                    }
+                                )
+                                self._log_pre_pipeline_debug_row(
+                                    ctx,
+                                    runner_name,
+                                    row_type="candidate_removed",
+                                    candidate_id=candidate_id,
+                                    side=signal_side,
+                                    strategy_id=str(getattr(slot, "tag", "")),
+                                    removed_stage="strategy_to_candidate",
+                                    removed_reason="no_fire_result_after_condition",
+                                    removed_detail=detail,
+                                )
                             continue
 
                         candidate = _StrategyOrderCandidate(
@@ -1619,26 +2309,126 @@ class Executor:
                             lay_liability_after_sizing=getattr(res, "lay_liability_after_sizing", None),
                             lay_liability_cap=getattr(res, "lay_liability_cap", None),
                             lay_liability_cap_hit=bool(getattr(res, "lay_liability_cap_hit", False)),
+                            runner_name=runner_name or "",
                         )
                         if execution_phase == _strategies.EXECUTION_PHASE_PRE:
                             pre_orders.append(candidate)
                         else:
                             post_orders.append(candidate)
+                        pre_raw_candidates.append(candidate)
+                        self._log_pre_pipeline_debug_row(
+                            ctx,
+                            runner_name,
+                            row_type="raw_candidate",
+                            candidate_id=_pre_pipeline_candidate_id(ctx, candidate.side, str(slot.tag)),
+                            side=candidate.side,
+                            strategy_id=str(slot.tag),
+                        )
                         continue
 
-                    pre_orders, pre_conflict_rejections = _reject_back_lay_same_phase_candidates(pre_orders)
-                    post_orders, post_conflict_rejections = _reject_back_lay_same_phase_candidates(post_orders)
+                    pre_orders, pre_conflict_rejections = _resolve_back_lay_same_phase_candidates(pre_orders)
+                    post_orders, post_conflict_rejections = _resolve_back_lay_same_phase_candidates(post_orders)
+                    current_conflict_rejections = (
+                        pre_conflict_rejections
+                        if execution_phase == _strategies.EXECUTION_PHASE_PRE
+                        else post_conflict_rejections
+                    )
+                    for rejected_order in current_conflict_rejections:
+                        removed = {
+                            "candidate_id": _pre_pipeline_candidate_id(
+                                ctx,
+                                rejected_order.side,
+                                "|".join(rejected_order.triggered_systems),
+                            ),
+                            "side": rejected_order.side,
+                            "strategy_id": "|".join(rejected_order.triggered_systems),
+                            "removed_stage": "conflict_resolution",
+                            "removed_reason": rejected_order.reason,
+                            "removed_detail": rejected_order.pre_conflict_group_key or rejected_order.conflict_group_key,
+                            "conflict_resolution_reason": rejected_order.conflict_resolution_reason,
+                            "selected_side": rejected_order.selected_side,
+                            "rejected_side": rejected_order.rejected_side,
+                        }
+                        pre_removed_candidates.append(removed)
+                        self._log_pre_pipeline_debug_row(
+                            ctx,
+                            runner_name,
+                            row_type="candidate_removed",
+                            candidate_id=removed["candidate_id"],
+                            side=removed["side"],
+                            strategy_id=removed["strategy_id"],
+                            removed_stage=removed["removed_stage"],
+                            removed_reason=removed["removed_reason"],
+                            removed_detail=removed["removed_detail"],
+                        )
                     for rejected_order in pre_conflict_rejections + post_conflict_rejections:
                         self._log_trade_row(
                             {
                                 **self._trade_base_for_final_order(rejected_order, record_phase_stake=False),
                                 "status": "REJECTED_REAL",
-                                "reason": "conflicting_back_lay_no_bet",
+                                "reason": rejected_order.reason,
                             }
                         )
-                    for final_order in _merge_order_candidates(pre_orders) + _merge_order_candidates(post_orders):
+                    merged_pre_orders = _merge_order_candidates(pre_orders)
+                    merged_post_orders = _merge_order_candidates(post_orders)
+                    current_orders = pre_orders if execution_phase == _strategies.EXECUTION_PHASE_PRE else post_orders
+                    current_merged_orders = (
+                        merged_pre_orders
+                        if execution_phase == _strategies.EXECUTION_PHASE_PRE
+                        else merged_post_orders
+                    )
+                    if len(current_orders) > len(current_merged_orders):
+                        for merged_order in current_merged_orders:
+                            if len(merged_order.triggered_systems) <= 1:
+                                continue
+                            self._log_pre_pipeline_debug_row(
+                                ctx,
+                                runner_name,
+                                row_type="duplicate_merge",
+                                candidate_id=_pre_pipeline_candidate_id(
+                                    ctx,
+                                    merged_order.side,
+                                    "|".join(merged_order.triggered_systems),
+                                ),
+                                side=merged_order.side,
+                                strategy_id="|".join(merged_order.triggered_systems),
+                                removed_stage="duplicate_merge",
+                                removed_reason="same_phase_same_runner_side_merged",
+                                removed_detail=merged_order.merge_key,
+                            )
+                    for final_order in current_merged_orders:
+                        self._log_pre_pipeline_debug_row(
+                            ctx,
+                            runner_name,
+                            row_type="trade_created",
+                            candidate_id=_pre_pipeline_candidate_id(
+                                ctx,
+                                final_order.side,
+                                "|".join(final_order.triggered_systems),
+                            ),
+                            side=final_order.side,
+                            strategy_id="|".join(final_order.triggered_systems),
+                        )
+                    self._log_pre_pipeline_summary_row(
+                        ctx,
+                        runner_name,
+                        pre_strategy_signals=pre_strategy_signals,
+                        pre_raw_candidates=pre_raw_candidates,
+                        pre_after_conflict=current_orders,
+                        pre_after_merge=current_merged_orders,
+                        pre_removed_candidates=pre_removed_candidates,
+                    )
+                    for final_order in merged_pre_orders + merged_post_orders:
                         self._handle_final_strategy_order(final_order)
-                    self._log_strategy_eval_summary_row(ctx, runner_name, slots_tested, true_tags, error_count)
+                    self._log_strategy_eval_summary_row(
+                        ctx,
+                        runner_name,
+                        slots_tested,
+                        true_tags,
+                        error_count,
+                        mom45_slots_tested=mom45_slots_tested,
+                        mom45_slots_missing=mom45_slots_missing,
+                    )
 
             except Exception as e:
                 # Ne jamais casser le snapshotting pour une erreur staking/ordre
@@ -1759,6 +2549,23 @@ class Executor:
             "back_systems": order.back_systems,
             "lay_systems": order.lay_systems,
             "conflict_resolution_reason": order.conflict_resolution_reason,
+            "pre_back_lay_conflict": str(bool(order.pre_back_lay_conflict)),
+            "pre_conflict_resolution": order.pre_conflict_resolution,
+            "pre_conflict_chosen_side": order.pre_conflict_chosen_side,
+            "pre_conflict_rejected_side": order.pre_conflict_rejected_side,
+            "pre_conflict_reason": order.pre_conflict_reason,
+            "pre_conflict_group_key": order.pre_conflict_group_key,
+            "pre_conflict_course_id": order.pre_conflict_course_id,
+            "pre_conflict_market_id": order.pre_conflict_market_id,
+            "pre_conflict_market_type": order.pre_conflict_market_type,
+            "pre_conflict_selection_id": order.pre_conflict_selection_id,
+            "pre_conflict_runner_name": order.pre_conflict_runner_name,
+            "pre_back_target_price": order.pre_back_target_price,
+            "pre_lay_target_price": order.pre_lay_target_price,
+            "pre_current_best_lay": order.pre_current_best_lay,
+            "pre_current_best_back": order.pre_current_best_back,
+            "pre_back_distance_ticks": order.pre_back_distance_ticks,
+            "pre_lay_distance_ticks": order.pre_lay_distance_ticks,
             **stake_fields,
         }
 
@@ -1804,6 +2611,11 @@ class Executor:
             "stake_post": stake_post,
             "total_stake_same_runner_side": round(stake_pre + stake_post, 2),
             "pre_post_cumulative": str(stake_pre > 0 and stake_post > 0),
+            "pre_existing_order_detected": str(stake_pre > 0),
+            "pre_existing_order_side": order.side if stake_pre > 0 else "",
+            "pre_existing_order_market_type": order.market_type if stake_pre > 0 else "",
+            "pre_existing_order_stake": stake_pre if stake_pre > 0 else "",
+            "post_stake": stake_post if order.execution_phase == _strategies.EXECUTION_PHASE_POST else "",
         }
 
     def _record_phase_stake(self, order: _StrategyOrderCandidate) -> dict:
@@ -1820,7 +2632,22 @@ class Executor:
             "stake_post": stake_post,
             "total_stake_same_runner_side": round(stake_pre + stake_post, 2),
             "pre_post_cumulative": str(stake_pre > 0 and stake_post > 0),
+            "pre_existing_order_detected": str(stake_pre > 0),
+            "pre_existing_order_side": order.side if stake_pre > 0 else "",
+            "pre_existing_order_market_type": order.market_type if stake_pre > 0 else "",
+            "pre_existing_order_stake": stake_pre if stake_pre > 0 else "",
+            "post_stake": stake_post if order.execution_phase == _strategies.EXECUTION_PHASE_POST else "",
         }
+
+    def _remember_pre_phase_stake(self, order: _StrategyOrderCandidate) -> None:
+        if order.execution_phase != _strategies.EXECUTION_PHASE_PRE:
+            return
+        key = (order.market_id, order.selection_id, order.market_type, order.side)
+        phase_stakes = self._phase_stakes_by_runner_side[key]
+        phase_stakes[_strategies.EXECUTION_PHASE_PRE] = round(
+            max(phase_stakes.get(_strategies.EXECUTION_PHASE_PRE, 0.0), float(order.size)),
+            2,
+        )
 
     def _is_pre_ladder_order(self, order: _StrategyOrderCandidate) -> bool:
         if order.execution_phase != _strategies.EXECUTION_PHASE_PRE:
@@ -2129,6 +2956,7 @@ class Executor:
         if payload["fallback_reason"] == "invalid_non_monotonic_ladder_plan":
             self._log_trade_row({**row, "status": "PRE_LADDER_INVALID", "reason": payload["fallback_reason"]})
             return True
+        self._remember_pre_phase_stake(order)
         if ladder_preview:
             reason = payload["fallback_reason"] or payload["trigger_plan_reason"] or "pre_ladder_preview"
             self._log_trade_row({**row, "status": "PRE_LADDER_PREVIEW", "reason": reason})

@@ -143,14 +143,20 @@ class FakeTemporaryComRejectBridge(FakeBetRefBridge):
 
 
 class FakeTemporaryRunnerRangeRejectBridge(FakeBetRefBridge):
-    def __init__(self, *, failures_before_success: int) -> None:
+    def __init__(
+        self,
+        *,
+        failures_before_success: int,
+        message: str = "This object does not support enumeration",
+    ) -> None:
         super().__init__()
         self.failures_before_success = failures_before_success
+        self.message = message
 
     def read_range(self, sheet_name, address):
         if sheet_name == "PLACE" and address == "A5:A84" and self.failures_before_success > 0:
             self.failures_before_success -= 1
-            raise TypeError("This object does not support enumeration")
+            raise RuntimeError(-2147418111, self.message)
         return super().read_range(sheet_name, address)
 
 
@@ -872,9 +878,37 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
         self.assertEqual(result.status, "GRUSS_PRE_LADDER_WRITTEN")
         self.assertEqual(result.mapping_attempt_count, 3)
+        self.assertTrue(result.excel_unavailable_recovered)
         self.assertGreaterEqual(result.excel_com_retry_count, 0)
         self.assertEqual(rows[0]["mapping_attempt_count"], "3")
+        self.assertEqual(rows[0]["excel_unavailable_recovered"], "True")
         self.assertNotEqual(rows[0]["excel_write_attempt"], "0")
+
+    def test_pre_ladder_mapping_retry_recovers_mojibake_french_com_rejection(self) -> None:
+        bridge = FakeTemporaryRunnerRangeRejectBridge(
+            failures_before_success=1,
+            message="Lâ€™appel a Ã©tÃ© rejetÃ© par lâ€™appelÃ©.",
+        )
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
+        env = dict(
+            PRE_LADDER_REAL_ENV,
+            DOGBOT_GRUSS_EXCEL_COM_RETRIES="3",
+            DOGBOT_GRUSS_EXCEL_COM_RETRY_BACKOFF_MS="0,0,0",
+        )
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(
+                replace(_pre_ladder_intent("1/4", stake=2.0), stake_forced=True, stake_original=2.0),
+                replace(_context(), countdown_seconds=45, milestone_seen=45),
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_PRE_LADDER_WRITTEN")
+        self.assertEqual(result.mapping_attempt_count, 2)
+        self.assertTrue(result.excel_unavailable_recovered)
+        self.assertEqual(rows[0]["mapping_attempt_count"], "2")
+        self.assertEqual(rows[0]["excel_unavailable_recovered"], "True")
 
     def test_stale_command_cells_cleanup_retries_temporary_com_rejection(self) -> None:
         bridge = FakeTemporaryCleanupRejectBridge()
@@ -1760,6 +1794,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
     def test_pre_ladder_step_one_writes_initial_back_and_reads_bet_ref_after(self) -> None:
         bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
 
         env = dict(PRE_LADDER_REAL_ENV, DOGBOT_GRUSS_REAL_MAX_ORDERS="2")
 
@@ -1768,7 +1803,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[_pre_ladder_intent("1/4")],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -1796,6 +1831,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
     def test_pre_ladder_initial_polls_briefly_and_stores_bet_ref_by_ladder(self) -> None:
         bridge = FakeDelayedBetRefBridge(reads_before_ref=2)
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
         intents = [
             _pre_ladder_intent("1/4", ladder_id=f"ladder-{trap}", trap=trap)
             for trap in (1, 2, 3)
@@ -1813,7 +1849,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=intents,
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2671,6 +2707,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
     def test_pre_ladder_conflict_keeps_back_when_back_price_is_closer(self) -> None:
         bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
         env = dict(
             PRE_LADDER_REAL_ENV,
             DOGBOT_GRUSS_REAL_MAX_ORDERS="2",
@@ -2679,12 +2716,14 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
         back = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-back", trap=1, side="BACK"),
             price=5.7,
-            market_reference_price_at_signal=5.6,
+            best_same_side_lay_offer=5.6,
+            best_same_side_back_offer=2.0,
         )
         lay = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-lay", trap=1, side="LAY"),
             price=1.06,
-            market_reference_price_at_signal=5.6,
+            best_same_side_lay_offer=5.6,
+            best_same_side_back_offer=2.0,
         )
 
         with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
@@ -2692,7 +2731,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[back, lay],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2701,19 +2740,24 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             )
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
-        self.assertEqual(bridge.write_calls, [])
-        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "REJECTED_REAL"])
-        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_no_bet"] * 2)
+        self.assertEqual(bridge.write_calls[0][1][-1], ("Q5", "BACK"))
+        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "GRUSS_PRE_LADDER_WRITTEN"])
+        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_lost_priority", "pre_ladder_step_written"])
         self.assertEqual(rows[0]["conflict_detected"], "True")
         self.assertEqual(rows[0]["conflict_type"], "back_lay_same_runner_market_phase")
-        self.assertEqual(rows[0]["selected_side"], "NONE")
-        self.assertEqual(rows[0]["rejected_side"], "BOTH")
+        self.assertEqual(rows[0]["selected_side"], "BACK")
+        self.assertEqual(rows[0]["rejected_side"], "LAY")
         self.assertEqual(rows[0]["back_systems"], "BACK_PLACE_101")
         self.assertEqual(rows[0]["lay_systems"], "LAY_PLACE_301")
-        self.assertEqual(rows[0]["conflict_resolution_reason"], "conflicting_back_lay_no_bet")
+        self.assertEqual(rows[0]["conflict_resolution_reason"], "per_runner_nearest_price")
+        self.assertEqual(rows[0]["pre_back_lay_conflict"], "True")
+        self.assertEqual(rows[0]["pre_conflict_chosen_side"], "BACK")
+        self.assertEqual(rows[0]["pre_conflict_rejected_side"], "LAY")
+        self.assertEqual(rows[0]["pre_conflict_reason"], "pre_conflict_back_nearer")
 
     def test_pre_ladder_conflict_keeps_lay_when_lay_price_is_closer(self) -> None:
         bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
         env = dict(
             PRE_LADDER_REAL_ENV,
             DOGBOT_GRUSS_REAL_MAX_ORDERS="2",
@@ -2722,12 +2766,14 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
         back = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-back", trap=1, side="BACK"),
             price=5.7,
-            market_reference_price_at_signal=2.2,
+            best_same_side_lay_offer=7.0,
+            best_same_side_back_offer=2.2,
         )
         lay = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-lay", trap=1, side="LAY"),
             price=2.1,
-            market_reference_price_at_signal=2.2,
+            best_same_side_lay_offer=7.0,
+            best_same_side_back_offer=2.2,
         )
 
         with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
@@ -2735,7 +2781,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[back, lay],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2743,14 +2789,16 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
                 force_stake=2.0,
             )
 
-        self.assertEqual(bridge.write_calls, [])
-        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "REJECTED_REAL"])
-        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_no_bet"] * 2)
-        self.assertEqual(results[0].selected_side, "NONE")
-        self.assertEqual(results[0].rejected_side, "BOTH")
+        self.assertEqual(bridge.write_calls[0][1][-1], ("Q5", "LAY"))
+        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "GRUSS_PRE_LADDER_WRITTEN"])
+        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_lost_priority", "pre_ladder_step_written"])
+        self.assertEqual(results[0].selected_side, "LAY")
+        self.assertEqual(results[0].rejected_side, "BACK")
+        self.assertEqual(results[0].pre_conflict_reason, "pre_conflict_lay_nearer")
 
-    def test_pre_ladder_conflict_uses_edge_before_price_distance(self) -> None:
+    def test_pre_ladder_conflict_uses_price_distance_before_edge(self) -> None:
         bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
         env = dict(
             PRE_LADDER_REAL_ENV,
             DOGBOT_GRUSS_REAL_MAX_ORDERS="2",
@@ -2759,13 +2807,15 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
         back = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-back", trap=1, side="BACK"),
             price=5.7,
-            market_reference_price_at_signal=2.2,
+            best_same_side_lay_offer=5.8,
+            best_same_side_back_offer=2.2,
             strategy_edge=0.25,
         )
         lay = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-lay", trap=1, side="LAY"),
             price=2.1,
-            market_reference_price_at_signal=2.2,
+            best_same_side_lay_offer=5.8,
+            best_same_side_back_offer=2.2,
             strategy_edge=-0.05,
         )
 
@@ -2774,7 +2824,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[back, lay],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2783,14 +2833,74 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             )
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
-        self.assertEqual(bridge.write_calls, [])
-        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "REJECTED_REAL"])
-        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_no_bet"] * 2)
-        self.assertEqual(rows[0]["conflict_group_key"], "place-1|1|PRE")
+        self.assertEqual(bridge.write_calls[0][1][-1], ("Q5", "BACK"))
+        self.assertEqual([result.status for result in results], ["REJECTED_REAL", "GRUSS_PRE_LADDER_WRITTEN"])
+        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_lost_priority", "pre_ladder_step_written"])
+        self.assertEqual(rows[0]["conflict_group_key"], "parent:1|place-1|PLACE|1|PRE")
         self.assertEqual(rows[0]["conflict_candidates_count"], "2")
-        self.assertEqual(rows[0]["winning_edge"], "0.25")
-        self.assertEqual(rows[0]["losing_edge"], "-0.05")
-        self.assertEqual(rows[0]["conflict_resolution_reason"], "conflicting_back_lay_no_bet")
+        self.assertEqual(rows[0]["pre_conflict_chosen_side"], "BACK")
+        self.assertEqual(rows[0]["pre_conflict_reason"], "pre_conflict_back_nearer")
+        self.assertEqual(rows[0]["conflict_resolution_reason"], "per_runner_nearest_price")
+        self.assertEqual(rows[0]["pre_conflict_group_key"], "parent:1|place-1|PLACE|1|PRE")
+        self.assertEqual(rows[0]["pre_conflict_selection_id"], "1")
+
+    def test_pre_ladder_conflict_is_resolved_per_runner_not_per_market(self) -> None:
+        bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = "00:00:45"
+        env = dict(
+            PRE_LADDER_REAL_ENV,
+            DOGBOT_GRUSS_REAL_MAX_ORDERS="4",
+            DOGBOT_PRE_LADDER_REAL_MAX_LADDERS="100",
+        )
+        runner1_back = replace(
+            _pre_ladder_intent("1/4", ladder_id="ladder-1-back", trap=1, side="BACK"),
+            price=5.8,
+            best_same_side_lay_offer=6.0,
+            best_same_side_back_offer=2.0,
+        )
+        runner1_lay = replace(
+            _pre_ladder_intent("1/4", ladder_id="ladder-1-lay", trap=1, side="LAY"),
+            price=1.5,
+            best_same_side_lay_offer=6.0,
+            best_same_side_back_offer=2.0,
+        )
+        runner2_back = replace(
+            _pre_ladder_intent("1/4", ladder_id="ladder-2-back", trap=2, side="BACK"),
+            price=9.0,
+            best_same_side_lay_offer=6.0,
+            best_same_side_back_offer=2.2,
+        )
+        runner2_lay = replace(
+            _pre_ladder_intent("1/4", ladder_id="ladder-2-lay", trap=2, side="LAY"),
+            price=2.24,
+            best_same_side_lay_offer=6.0,
+            best_same_side_back_offer=2.2,
+        )
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
+                provider=provider,
+                intents=[runner1_back, runner1_lay, runner2_back, runner2_lay],
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
+                processed_store=FakeProcessedStore(),
+                key="parent:1",
+                win_market_id="win-1",
+                place_market_id="place-1",
+                force_stake=2.0,
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        written = [result for result in results if result.status == "GRUSS_PRE_LADDER_WRITTEN"]
+        rejected = [result for result in results if result.status == "REJECTED_REAL"]
+        self.assertEqual(len(written), 2)
+        self.assertEqual(len(rejected), 2)
+        self.assertEqual([call[1][-1] for call in bridge.write_calls[:2]], [("Q5", "BACK"), ("Q6", "LAY")])
+        self.assertEqual({result.pre_conflict_selection_id for result in written}, {"1", "2"})
+        self.assertEqual({row["pre_conflict_group_key"] for row in rows if row["pre_back_lay_conflict"] == "True"}, {
+            "parent:1|place-1|PLACE|1|PRE",
+            "parent:1|place-1|PLACE|2|PRE",
+        })
 
     def test_pre_ladder_conflict_uses_stable_tiebreak_when_price_distance_equal(self) -> None:
         bridge = FakeBetRefBridge()
@@ -2802,12 +2912,14 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
         back = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-back", trap=1, side="BACK"),
             price=6.0,
-            market_reference_price_at_signal=5.0,
+            best_same_side_lay_offer=5.0,
+            best_same_side_back_offer=5.0,
         )
         lay = replace(
             _pre_ladder_intent("1/4", ladder_id="ladder-lay", trap=1, side="LAY"),
             price=4.0,
-            market_reference_price_at_signal=5.0,
+            best_same_side_lay_offer=5.0,
+            best_same_side_back_offer=5.0,
         )
 
         with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
@@ -2815,7 +2927,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[back, lay],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2826,8 +2938,11 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
         self.assertEqual(bridge.write_calls, [])
         self.assertEqual([result.status for result in results], ["REJECTED_REAL", "REJECTED_REAL"])
-        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_no_bet"] * 2)
-        self.assertEqual(rows[0]["conflict_resolution_reason"], "conflicting_back_lay_no_bet")
+        self.assertEqual([result.reason for result in results], ["pre_conflict_equal_distance_no_bet"] * 2)
+        self.assertEqual(rows[0]["conflict_resolution_reason"], "per_runner_nearest_price")
+        self.assertEqual(rows[0]["pre_conflict_chosen_side"], "NONE")
+        self.assertEqual(rows[0]["pre_conflict_rejected_side"], "BOTH")
+        self.assertEqual(rows[0]["pre_conflict_reason"], "pre_conflict_equal_distance_no_bet")
 
     def test_pre_ladder_conflict_rejects_missing_reference(self) -> None:
         bridge = FakeBetRefBridge()
@@ -2844,7 +2959,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
                 provider=provider,
                 intents=[back, lay],
-                context=replace(_context(), countdown_seconds=20),
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
                 processed_store=FakeProcessedStore(),
                 key="parent:1",
                 win_market_id="win-1",
@@ -2853,7 +2968,8 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             )
 
         self.assertEqual([result.status for result in results], ["REJECTED_REAL", "REJECTED_REAL"])
-        self.assertEqual([result.reason for result in results], ["conflicting_back_lay_no_bet"] * 2)
+        self.assertEqual([result.reason for result in results], ["pre_conflict_missing_reference_no_bet"] * 2)
+        self.assertEqual(results[0].pre_conflict_reason, "pre_conflict_missing_reference_no_bet")
         self.assertEqual(bridge.write_calls, [])
 
     def test_post_back_lay_conflict_rejects_both_without_provider_write(self) -> None:
@@ -2906,6 +3022,69 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
         self.assertEqual(rows[0]["lay_systems"], "LAY_PLACE_502")
         self.assertEqual(rows[0]["post_provider_called"], "False")
         self.assertEqual(rows[0]["post_write_attempted"], "False")
+
+    def test_lay_alone_pre_reaches_gruss_provider(self) -> None:
+        bridge = FakeBetRefBridge()
+        bridge.cells[("PLACE", "D2")] = 45 / 86400
+        env = dict(
+            PRE_LADDER_REAL_ENV,
+            DOGBOT_GRUSS_REAL_MAX_ORDERS="2",
+            DOGBOT_PRE_LADDER_REAL_MAX_LADDERS="100",
+        )
+        intent = _pre_ladder_intent("1/4", ladder_id="ladder-lay", trap=1, side="LAY", stake=2.0)
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
+                provider=provider,
+                intents=[intent],
+                context=replace(_context(), countdown_seconds=45, milestone_seen=45),
+                processed_store=FakeProcessedStore(),
+                key="parent:1",
+                win_market_id="win-1",
+                place_market_id="place-1",
+                force_stake=2.0,
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(results[0].status, "GRUSS_PRE_LADDER_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1][2], ("Q5", "LAY"))
+        self.assertEqual(rows[0]["side"], "LAY")
+
+    def test_lay_alone_post_reaches_gruss_provider(self) -> None:
+        bridge = FakeBetRefBridge()
+        env = dict(
+            PRE_LADDER_REAL_ENV,
+            DOGBOT_GRUSS_REAL_MAX_ORDERS="2",
+            DOGBOT_PRE_LADDER_REAL_MAX_LADDERS="100",
+        )
+        intent = replace(
+            _intent(1, stake=2.0),
+            provider=ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+            dry_run=False,
+            side="LAY",
+            strategy_id="LAY_PLACE_502",
+            execution_phase="POST",
+            selection_id="1",
+        )
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            results, _ = watch_gruss_real_strategy_test.process_real_strategy_test_batch(
+                provider=provider,
+                intents=[intent],
+                context=replace(_context(), countdown_seconds=0, milestone_seen=0),
+                processed_store=FakeProcessedStore(),
+                key="parent:1",
+                win_market_id="win-1",
+                place_market_id="place-1",
+                force_stake=2.0,
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(results[0].status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1][2], ("Q5", "LAY"))
+        self.assertEqual(rows[0]["side"], "LAY")
 
     def test_pre_ladder_rejects_when_milestone_window_is_missed(self) -> None:
         bridge = FakeBetRefBridge()

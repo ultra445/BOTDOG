@@ -203,6 +203,10 @@ class AppConfig:
     edges: Dict[str, float]               # ex: {"EDGE_BACK_WIN_1": 0.02, ...}
     max_runner_stake: float               # plafond global par chien
     per_slot_runner_caps: Dict[str, float]  # ex: {"MAX_RUNNER_STAKE_BACK_WIN_1": 6.0, ...}
+    stake_odds_decay_alpha: float = 0.60
+    stake_back_odds_decay_alpha: float = 0.60
+    stake_lay_odds_decay_alpha: float = 0.70
+    max_lay_liability_per_order: float = 50.0
 
 def _get_float(name: str, default: float) -> float:
     v = os.getenv(name)
@@ -247,6 +251,17 @@ def load_config() -> AppConfig:
                     pass
 
     max_runner_stake = _get_float("MAX_RUNNER_STAKE", 999999.0)  # par défaut: pas de plafond strict
+    raw_stake_odds_decay_alpha = os.getenv("DOGBOT_STAKE_ODDS_DECAY_ALPHA")
+    stake_odds_decay_alpha = _get_float("DOGBOT_STAKE_ODDS_DECAY_ALPHA", 0.60)
+    stake_back_odds_decay_alpha = _get_float(
+        "DOGBOT_STAKE_BACK_ODDS_DECAY_ALPHA",
+        stake_odds_decay_alpha,
+    )
+    stake_lay_odds_decay_alpha = _get_float(
+        "DOGBOT_STAKE_LAY_ODDS_DECAY_ALPHA",
+        stake_odds_decay_alpha if raw_stake_odds_decay_alpha not in (None, "") else 0.70,
+    )
+    max_lay_liability_per_order = _get_float("DOGBOT_MAX_LAY_LIABILITY_PER_ORDER", 50.0)
 
     return AppConfig(
         capital=capital,
@@ -254,6 +269,10 @@ def load_config() -> AppConfig:
         edges=edges,
         max_runner_stake=max_runner_stake,
         per_slot_runner_caps=per_slot_runner_caps,
+        stake_odds_decay_alpha=stake_odds_decay_alpha,
+        stake_back_odds_decay_alpha=stake_back_odds_decay_alpha,
+        stake_lay_odds_decay_alpha=stake_lay_odds_decay_alpha,
+        max_lay_liability_per_order=max_lay_liability_per_order,
     )
 
 

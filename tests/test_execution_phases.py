@@ -887,6 +887,14 @@ class ExecutionPhaseTests(unittest.TestCase):
                 self.assertIn("execution_phase=PRE", describe_current_strategy_milestone(seconds, seconds))
         self.assertIn("execution_phase=POST", describe_current_strategy_milestone(1, 1))
 
+    def test_post_milestone_uses_env_runtime_value(self) -> None:
+        with patch.dict("os.environ", {"DOGBOT_POST_SEND_SECONDS_BEFORE_OFF": "5"}, clear=False):
+            self.assertEqual(_execution_phase_for_milestone(5), EXECUTION_PHASE_POST)
+            self.assertIsNone(_execution_phase_for_milestone(1))
+            self.assertEqual(active_strategy_milestones(), (45, 32, 20, 14, 5))
+            self.assertEqual(current_strategy_milestone(5, 5), 5)
+            self.assertIn("execution_phase=POST", describe_current_strategy_milestone(5, 5))
+
     def test_phase_filter_selects_only_pre_or_post_strategy_slots(self) -> None:
         phase_by_id = {slot.tag: slot.execution_phase for slot in build_registry()}
         pre_phase = _execution_phase_for_milestone(20)

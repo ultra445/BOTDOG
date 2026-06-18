@@ -113,6 +113,7 @@ class GrussMomentumTests(unittest.TestCase):
         fake_executor = SimpleNamespace(
             _base_win_ms=defaultdict(lambda: defaultdict(dict)),
             _ltp_place_ms=defaultdict(lambda: defaultdict(dict)),
+            _last_mom45_by_market=defaultdict(dict),
         )
 
         values = seed_gruss_momentum_into_executor(fake_executor, bundle, win_2, place_2, buffer)
@@ -120,6 +121,10 @@ class GrussMomentumTests(unittest.TestCase):
         self.assertTrue(values[1].has_mom45)
         self.assertEqual(fake_executor._base_win_ms["258835465"][1][45], 4.2)
         self.assertEqual(fake_executor._ltp_place_ms["258835466"][1][45], 2.1)
+        self.assertAlmostEqual(fake_executor._last_mom45_by_market["258835465"][1], (3.2 / 4.2) - 1.0)
+        self.assertGreaterEqual(fake_executor._gruss_mom45_diagnostics["mom45_available_count"], 1)
+        self.assertEqual(fake_executor._gruss_mom45_diagnostics["mom45_source"], "gruss_momentum_buffer")
+        self.assertTrue(fake_executor._gruss_mom45_diagnostics["mom45_injected_before_strategy_eval"])
 
 
 def _remove_runner_1(rows: list[list[object]]) -> list[list[object]]:

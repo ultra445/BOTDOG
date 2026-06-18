@@ -14,6 +14,7 @@ from dogbot.config import ORDER_PROVIDER_GRUSS_EXCEL_REAL
 from dogbot.gruss.gruss_excel_bridge import DEFAULT_WORKBOOK_PATH, GrussExcelBridge
 from dogbot.gruss.gruss_mapper import extract_trap, normalize_runner_name, parse_countdown_seconds
 from dogbot.gruss.gruss_orders import OrderIntent, validate_order_intent
+from dogbot.pre_ladder import round_final_lim_to_ladder_tick, round_to_betfair_tick
 
 
 GRUSS_REAL_ATTEMPTS_HEADER = [
@@ -128,6 +129,23 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "back_systems",
     "lay_systems",
     "conflict_resolution_reason",
+    "pre_back_lay_conflict",
+    "pre_conflict_resolution",
+    "pre_conflict_chosen_side",
+    "pre_conflict_rejected_side",
+    "pre_conflict_reason",
+    "pre_conflict_group_key",
+    "pre_conflict_course_id",
+    "pre_conflict_market_id",
+    "pre_conflict_market_type",
+    "pre_conflict_selection_id",
+    "pre_conflict_runner_name",
+    "pre_back_target_price",
+    "pre_lay_target_price",
+    "pre_current_best_lay",
+    "pre_current_best_back",
+    "pre_back_distance_ticks",
+    "pre_lay_distance_ticks",
     "intended_trigger",
     "trigger",
     "stake",
@@ -155,6 +173,10 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "selected_place_lay_odds",
     "price_used",
     "price",
+    "price_raw_before_tick",
+    "price_tick_rounded",
+    "price_tick_rounding_side",
+    "price_is_valid_betfair_tick",
     "strategy_id",
     "status",
     "reason",
@@ -298,6 +320,14 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "stale_command_cells_cleanup_attempted",
     "stale_command_cells_cleanup_addresses",
     "stale_command_cells_cleanup_reason",
+    "stale_scan_attempt_count",
+    "stale_scan_retry_count",
+    "stale_scan_recovered",
+    "stale_triggers_confirmed",
+    "stale_cleanup_retry_count",
+    "stale_cleanup_recovered",
+    "stale_cleanup_final_status",
+    "unsafe_stop_reason",
     "shutdown_command_cells_cleanup_done",
     "market_change_command_cells_cleanup_done",
     "post_write_odds_cell_address",
@@ -518,6 +548,23 @@ class GrussRealOrderResult:
     back_systems: str = ""
     lay_systems: str = ""
     conflict_resolution_reason: str = ""
+    pre_back_lay_conflict: bool = False
+    pre_conflict_resolution: str = ""
+    pre_conflict_chosen_side: str = ""
+    pre_conflict_rejected_side: str = ""
+    pre_conflict_reason: str = ""
+    pre_conflict_group_key: str = ""
+    pre_conflict_course_id: str = ""
+    pre_conflict_market_id: str = ""
+    pre_conflict_market_type: str = ""
+    pre_conflict_selection_id: str = ""
+    pre_conflict_runner_name: str = ""
+    pre_back_target_price: float | None = None
+    pre_lay_target_price: float | None = None
+    pre_current_best_lay: float | None = None
+    pre_current_best_back: float | None = None
+    pre_back_distance_ticks: float | None = None
+    pre_lay_distance_ticks: float | None = None
     trigger_cell_address: str = ""
     trigger_cell_current_value: Any = None
     trigger_cell_expected_empty: bool | None = None
@@ -670,6 +717,10 @@ class GrussRealOrderResult:
     countdown_seconds_at_post_write: int | None = None
     market_status_at_post_write: Any = None
     hold_trigger_for_visual_test: bool = False
+    price_raw_before_tick: float | None = None
+    price_tick_rounded: float | None = None
+    price_tick_rounding_side: str = ""
+    price_is_valid_betfair_tick: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -860,7 +911,6 @@ class GrussExcelOrderProvider:
         sheets: Iterable[str] = ("WIN", "PLACE"),
     ) -> dict[str, Any]:
         self._refresh_safety_flags()
-        attempted = False
         cleaned: list[str] = []
         skipped_pending: list[str] = []
         stale_triggers = {"BACK", "LAY", "BACKR", "LAYR", "BACKSP", "LAYSP", "CANCEL"}
@@ -872,95 +922,198 @@ class GrussExcelOrderProvider:
             (pending.sheet_name.upper(), pending.trigger_address.upper())
             for pending in self._pending_command_cell_clears
         }
-        try:
+        sheet_names = tuple(
+            sheet_name
+            for sheet_name in (str(raw or "").strip().upper() for raw in sheets)
+            if sheet_name in {"WIN", "PLACE"}
+        )
+
+        def scan_stale_triggers() -> tuple[list[tuple[str, str, tuple[str, ...]]], list[str]]:
             self.bridge.connect_open_workbook()
-        except Exception as exc:
-            self._append_command_cells_cleanup_attempt(
-                reason=reason,
-                attempted=True,
-                done=False,
-                addresses=(),
-                cleanup_reason=f"excel_unavailable:{exc}",
-            )
-            return {
-                "attempted": True,
-                "done": False,
-                "addresses": "",
-                "reason": f"excel_unavailable:{exc}",
-                "failed": True,
-            }
-        for sheet_name_raw in sheets:
-            sheet_name = str(sheet_name_raw or "").strip().upper()
-            if sheet_name not in {"WIN", "PLACE"}:
-                continue
-            try:
+            stale: list[tuple[str, str, tuple[str, ...]]] = []
+            skipped: list[str] = []
+            for sheet_name in sheet_names:
                 row_values = self._read_runner_row_values(sheet_name)
-            except Exception:
-                row_values = []
-            for row, _runner in row_values:
-                trigger_address = self.layout.trigger_address(row)
-                if (sheet_name, trigger_address.upper()) in pending_trigger_keys:
-                    skipped_pending.append(f"{sheet_name}!{trigger_address}")
-                    continue
-                read_result = self._excel_com_retry(
-                    f"cleanup_stale_read_trigger:{sheet_name}!{trigger_address}",
-                    lambda: self.bridge.read_cell(sheet_name, trigger_address),
-                )
-                self._last_cleanup_com_result = read_result
-                if read_result.exception is not None:
-                    continue
-                trigger_value = _clean_text(read_result.value).upper()
-                if trigger_value not in stale_triggers:
-                    continue
-                attempted = True
-                addresses = self._command_cell_addresses_for_trigger(trigger_address)
-                clear_result = self._excel_com_retry(
-                    f"cleanup_stale_clear_command_cells:{sheet_name}!{';'.join(addresses)}",
-                    lambda: self.bridge.clear_trigger_cells(
-                        sheet_name,
-                        addresses,
-                        trigger_column=self.layout.trigger_column,
-                        command_columns=self.command_cells_clear_columns,
-                        allow_clear=True,
-                    ),
-                )
-                self._last_cleanup_com_result = clear_result
-                if clear_result.exception is not None:
-                    exc = clear_result.exception
-                    self._append_command_cells_cleanup_attempt(
-                        reason=reason,
-                        attempted=True,
-                        done=bool(cleaned),
-                        addresses=tuple(cleaned),
-                        cleanup_reason=f"stale_cleanup_failed_after_retries:{sheet_name}!{trigger_address}:{exc}",
+                for row, _runner in row_values:
+                    trigger_address = self.layout.trigger_address(row)
+                    if (sheet_name, trigger_address.upper()) in pending_trigger_keys:
+                        skipped.append(f"{sheet_name}!{trigger_address}")
+                        continue
+                    trigger_value = _clean_text(self.bridge.read_cell(sheet_name, trigger_address)).upper()
+                    if trigger_value not in stale_triggers:
+                        continue
+                    stale.append(
+                        (
+                            sheet_name,
+                            trigger_address,
+                            self._command_cell_addresses_for_trigger(trigger_address),
+                        )
                     )
-                    return {
-                        "attempted": True,
-                        "done": False,
-                        "addresses": ";".join(cleaned),
-                        "reason": f"stale_cleanup_failed_after_retries:{sheet_name}!{trigger_address}:{exc}",
-                        "failed": True,
-                    }
-                cleared = tuple(clear_result.value or ())
-                cleaned.extend(f"{sheet_name}!{address}" for address in cleared)
+            return stale, skipped
+
+        scan_result = self._excel_com_retry("cleanup_stale_scan_command_cells", scan_stale_triggers)
+        self._last_cleanup_com_result = scan_result
+        stale_items: list[tuple[str, str, tuple[str, ...]]] = []
+        scan_attempt_count = scan_result.attempt
+        scan_retry_count = scan_result.retry_count
+        scan_recovered = scan_result.recovered
+        blind_clear_result: _ExcelComResult | None = None
+        if scan_result.exception is not None:
+            blind_clear_result = self._blind_clear_command_cells(sheet_names)
+            rescan_result = self._excel_com_retry(
+                "cleanup_stale_rescan_after_blind_clear",
+                scan_stale_triggers,
+            )
+            self._last_cleanup_com_result = rescan_result
+            scan_attempt_count += rescan_result.attempt
+            scan_retry_count += rescan_result.retry_count
+            scan_recovered = bool(scan_recovered or rescan_result.recovered)
+            if rescan_result.exception is not None:
+                exc = rescan_result.exception
+                cleanup_reason = f"unsafe_stale_scan_unavailable_after_retries:{exc}"
+                self._append_command_cells_cleanup_attempt(
+                    reason=reason,
+                    attempted=True,
+                    done=False,
+                    addresses=(),
+                    cleanup_reason=cleanup_reason,
+                    stale_scan_attempt_count=scan_attempt_count,
+                    stale_scan_retry_count=scan_retry_count,
+                    stale_scan_recovered=scan_recovered,
+                    stale_triggers_confirmed=False,
+                    stale_cleanup_retry_count=(
+                        blind_clear_result.retry_count if blind_clear_result is not None else 0
+                    ),
+                    stale_cleanup_recovered=(
+                        blind_clear_result.recovered if blind_clear_result is not None else False
+                    ),
+                    stale_cleanup_final_status=(
+                        blind_clear_result.final_status if blind_clear_result is not None else ""
+                    ),
+                    unsafe_stop_reason="unsafe_stale_scan_unavailable_after_retries",
+                )
+                return {
+                    "attempted": True,
+                    "done": False,
+                    "addresses": "",
+                    "reason": cleanup_reason,
+                    "failed": True,
+                    "unsafe_stop_reason": "unsafe_stale_scan_unavailable_after_retries",
+                    "stale_triggers_confirmed": False,
+                }
+            stale_items, skipped_pending = rescan_result.value
+        else:
+            stale_items, skipped_pending = scan_result.value
+
+        stale_triggers_confirmed = bool(stale_items)
+        cleanup_retry_count = blind_clear_result.retry_count if blind_clear_result is not None else 0
+        cleanup_recovered = blind_clear_result.recovered if blind_clear_result is not None else False
+        cleanup_final_status = blind_clear_result.final_status if blind_clear_result is not None else ""
+        for sheet_name, trigger_address, addresses in stale_items:
+            clear_result = self._excel_com_retry(
+                f"cleanup_stale_clear_command_cells:{sheet_name}!{';'.join(addresses)}",
+                lambda sheet_name=sheet_name, addresses=addresses: self.bridge.clear_trigger_cells(
+                    sheet_name,
+                    addresses,
+                    trigger_column=self.layout.trigger_column,
+                    command_columns=self.command_cells_clear_columns,
+                    allow_clear=True,
+                ),
+            )
+            self._last_cleanup_com_result = clear_result
+            cleanup_retry_count += clear_result.retry_count
+            cleanup_recovered = bool(cleanup_recovered or clear_result.recovered)
+            cleanup_final_status = clear_result.final_status
+            if clear_result.exception is not None:
+                exc = clear_result.exception
+                attempted_addresses = [*cleaned, *(f"{sheet_name}!{address}" for address in addresses)]
+                cleanup_reason = (
+                    "unsafe_confirmed_stale_gruss_triggers_cleanup_failed:"
+                    f"{sheet_name}!{trigger_address}:{exc}"
+                )
+                self._append_command_cells_cleanup_attempt(
+                    reason=reason,
+                    attempted=True,
+                    done=False,
+                    addresses=tuple(attempted_addresses),
+                    cleanup_reason=cleanup_reason,
+                    stale_scan_attempt_count=scan_attempt_count,
+                    stale_scan_retry_count=scan_retry_count,
+                    stale_scan_recovered=scan_recovered,
+                    stale_triggers_confirmed=True,
+                    stale_cleanup_retry_count=cleanup_retry_count,
+                    stale_cleanup_recovered=cleanup_recovered,
+                    stale_cleanup_final_status=cleanup_final_status,
+                    unsafe_stop_reason="unsafe_confirmed_stale_gruss_triggers_cleanup_failed",
+                )
+                return {
+                    "attempted": True,
+                    "done": False,
+                    "addresses": ";".join(attempted_addresses),
+                    "reason": cleanup_reason,
+                    "failed": True,
+                    "unsafe_stop_reason": "unsafe_confirmed_stale_gruss_triggers_cleanup_failed",
+                    "stale_triggers_confirmed": True,
+                }
+            cleared = _normalize_command_cell_addresses(clear_result.value)
+            if not cleared:
+                cleared = addresses
+            cleaned.extend(f"{sheet_name}!{address}" for address in cleared)
         cleanup_reason = "stale_command_cells_cleaned" if cleaned else "no_stale_command_cells"
+        if blind_clear_result is not None:
+            cleanup_reason += f";blind_clear={blind_clear_result.final_status or 'unknown'}"
         if skipped_pending:
             cleanup_reason += f";skipped_pending={','.join(skipped_pending)}"
         done = True
+        attempted = bool(stale_items or force_attempt_log or blind_clear_result is not None)
         self._append_command_cells_cleanup_attempt(
             reason=reason,
-            attempted=True if attempted or force_attempt_log else False,
+            attempted=attempted,
             done=done,
             addresses=tuple(cleaned),
             cleanup_reason=cleanup_reason,
+            stale_scan_attempt_count=scan_attempt_count,
+            stale_scan_retry_count=scan_retry_count,
+            stale_scan_recovered=scan_recovered,
+            stale_triggers_confirmed=stale_triggers_confirmed,
+            stale_cleanup_retry_count=cleanup_retry_count,
+            stale_cleanup_recovered=cleanup_recovered,
+            stale_cleanup_final_status=cleanup_final_status,
+            unsafe_stop_reason="",
         )
         return {
-            "attempted": True if attempted or force_attempt_log else False,
+            "attempted": attempted,
             "done": done,
             "addresses": ";".join(cleaned),
             "reason": cleanup_reason,
             "failed": False,
+            "unsafe_stop_reason": "",
+            "stale_triggers_confirmed": stale_triggers_confirmed,
+            "stale_scan_recovered": scan_recovered,
         }
+
+    def _blind_clear_command_cells(self, sheet_names: Iterable[str]) -> _ExcelComResult:
+        def clear_all() -> tuple[str, ...]:
+            cleared: list[str] = []
+            for sheet_name in sheet_names:
+                addresses: list[str] = []
+                for row in range(5, 85):
+                    addresses.extend(self._command_cell_addresses_for_trigger(self.layout.trigger_address(row)))
+                cleared_addresses = self.bridge.clear_trigger_cells(
+                    sheet_name,
+                    addresses,
+                    trigger_column=self.layout.trigger_column,
+                    command_columns=self.command_cells_clear_columns,
+                    allow_clear=True,
+                )
+                cleared.extend(
+                    f"{sheet_name}!{address}" for address in _normalize_command_cell_addresses(cleared_addresses)
+                )
+            return tuple(cleared)
+
+        result = self._excel_com_retry("cleanup_stale_blind_clear_command_cells", clear_all)
+        self._last_cleanup_com_result = result
+        return result
 
     def runner_mapping_summary(self, intents: Iterable[OrderIntent]) -> dict[str, Any]:
         intents_by_sheet: dict[str, list[OrderIntent]] = {}
@@ -2960,12 +3113,18 @@ class GrussExcelOrderProvider:
             raise RuntimeError(
                 f"excel_mapping_unavailable_after_retries sheet={sheet_name} range={range_address}: {exc}"
             ) from exc
-        try:
-            candidates = list(_flatten_single_column(result.value))
-        except Exception as exc:
+        flatten_result = self._excel_com_retry(
+            f"mapping_flatten_runner_rows:{sheet_name}!{range_address}",
+            lambda: list(_flatten_single_column(result.value)),
+        )
+        if flatten_result.retry_count or flatten_result.exception is not None:
+            self._last_mapping_com_result = flatten_result
+        if flatten_result.exception is not None:
+            exc = flatten_result.exception
             raise RuntimeError(
                 f"excel_mapping_unavailable_after_retries sheet={sheet_name} range={range_address}: {exc}"
             ) from exc
+        candidates = list(flatten_result.value or [])
         return [(5 + offset, value) for offset, value in enumerate(candidates) if value not in (None, "")]
 
     def _current_market_error(
@@ -3197,7 +3356,7 @@ class GrussExcelOrderProvider:
         cells: list[tuple[str, Any]] = []
         if bet_ref_override is not None:
             cells.append((self.layout.bet_ref_address(row), bet_ref_override))
-        cells.append((self.layout.odds_address(row), float(intent.price)))
+        cells.append((self.layout.odds_address(row), _price_to_write_for_gruss(intent, trigger)))
         cells.append((self.layout.stake_address(row), float(intent.stake)))
         # Trigger is deliberately written last.
         cells.append((self.layout.trigger_address(row), trigger))
@@ -3600,7 +3759,7 @@ class GrussExcelOrderProvider:
                     attempt=attempt,
                     retry_count=max(0, attempt - 1),
                     retry_backoff_ms=";".join(str(value) for value in used_backoffs),
-                    retryable_error=False,
+                    retryable_error=bool(used_backoffs),
                     final_status="ok",
                     recovered=attempt > 1,
                 )
@@ -3882,6 +4041,19 @@ class GrussExcelOrderProvider:
             if excel_row is not None
             else ""
         )
+        odds_address = self.layout.odds_address(excel_row) if excel_row is not None else ""
+        price_tick_rounded = _odds_value_from_plan(plan, odds_address) if odds_address else None
+        should_log_tick_price = _should_tick_round_limit_price(intent, intended_trigger)
+        price_raw_before_tick = None
+        price_tick_rounding_side = ""
+        price_is_valid_betfair_tick: bool | None = None
+        if should_log_tick_price:
+            price_raw_before_tick = _positive_float_or_none(intent.price)
+            if price_tick_rounded is None and price_raw_before_tick is not None:
+                price_tick_rounded = _price_to_write_for_gruss(intent, intended_trigger)
+            upper_side = str(intent.side or "").upper()
+            price_tick_rounding_side = "BACK_CEIL" if upper_side == "BACK" else "LAY_FLOOR"
+            price_is_valid_betfair_tick = _is_valid_betfair_tick(price_tick_rounded)
         mapping_found = excel_row is not None
         mapping_reason = "mapping_found" if mapping_found else "mapping_missing_for_runner"
         avg_matched_odds_cell_address = self.layout.avg_matched_odds_address(excel_row) if excel_row is not None else ""
@@ -4012,6 +4184,12 @@ class GrussExcelOrderProvider:
             bool(excel_com_retryable_error) or bool(excel_com_result.retryable_error)
         )
         mapping_attempt_count_value = mapping_attempt_count or self._last_mapping_com_result.attempt
+        excel_unavailable_recovered_value = bool(
+            excel_unavailable_recovered
+            or excel_com_result.recovered
+            or self._last_mapping_com_result.recovered
+            or self._last_cleanup_com_result.recovered
+        )
         cleanup_retry_count_value = cleanup_retry_count or self._last_cleanup_com_result.retry_count
         cleanup_final_status_value = cleanup_final_status or self._last_cleanup_com_result.final_status
         self._append_attempt(
@@ -4136,7 +4314,7 @@ class GrussExcelOrderProvider:
             excel_write_retry_count=excel_write_retry_count,
             excel_write_retry_backoff_ms=excel_write_retry_backoff_ms,
             excel_write_final_status=excel_write_final_status,
-            excel_unavailable_recovered=excel_unavailable_recovered,
+            excel_unavailable_recovered=excel_unavailable_recovered_value,
             excel_operation_name=excel_operation_name_value,
             excel_com_attempt=excel_com_attempt_value,
             excel_com_retry_count=excel_com_retry_count_value,
@@ -4156,6 +4334,10 @@ class GrussExcelOrderProvider:
             direct_lim_order_written=direct_lim_order_written_value,
             requested_price=intent.price,
             requested_stake=intent.stake,
+            price_raw_before_tick=price_raw_before_tick,
+            price_tick_rounded=price_tick_rounded,
+            price_tick_rounding_side=price_tick_rounding_side,
+            price_is_valid_betfair_tick=price_is_valid_betfair_tick,
             ladder_step_index=ladder_step_index,
             ladder_step_count=ladder_step_count,
             matched_after_step=bool(matched_after_step_stake is not None and matched_after_step_stake > 0),
@@ -4308,7 +4490,7 @@ class GrussExcelOrderProvider:
             excel_write_retry_count=excel_write_retry_count,
             excel_write_retry_backoff_ms=excel_write_retry_backoff_ms,
             excel_write_final_status=excel_write_final_status,
-            excel_unavailable_recovered=excel_unavailable_recovered,
+            excel_unavailable_recovered=excel_unavailable_recovered_value,
             excel_operation_name=excel_operation_name_value,
             excel_com_attempt=excel_com_attempt_value,
             excel_com_retry_count=excel_com_retry_count_value,
@@ -4341,6 +4523,23 @@ class GrussExcelOrderProvider:
             back_systems=getattr(intent, "back_systems", "") or "",
             lay_systems=getattr(intent, "lay_systems", "") or "",
             conflict_resolution_reason=intent.conflict_resolution_reason or "",
+            pre_back_lay_conflict=bool(getattr(intent, "pre_back_lay_conflict", False)),
+            pre_conflict_resolution=getattr(intent, "pre_conflict_resolution", "") or "",
+            pre_conflict_chosen_side=getattr(intent, "pre_conflict_chosen_side", "") or "",
+            pre_conflict_rejected_side=getattr(intent, "pre_conflict_rejected_side", "") or "",
+            pre_conflict_reason=getattr(intent, "pre_conflict_reason", "") or "",
+            pre_conflict_group_key=getattr(intent, "pre_conflict_group_key", "") or "",
+            pre_conflict_course_id=getattr(intent, "pre_conflict_course_id", "") or "",
+            pre_conflict_market_id=getattr(intent, "pre_conflict_market_id", "") or "",
+            pre_conflict_market_type=getattr(intent, "pre_conflict_market_type", "") or "",
+            pre_conflict_selection_id=getattr(intent, "pre_conflict_selection_id", "") or "",
+            pre_conflict_runner_name=getattr(intent, "pre_conflict_runner_name", "") or "",
+            pre_back_target_price=getattr(intent, "pre_back_target_price", None),
+            pre_lay_target_price=getattr(intent, "pre_lay_target_price", None),
+            pre_current_best_lay=getattr(intent, "pre_current_best_lay", None),
+            pre_current_best_back=getattr(intent, "pre_current_best_back", None),
+            pre_back_distance_ticks=getattr(intent, "pre_back_distance_ticks", None),
+            pre_lay_distance_ticks=getattr(intent, "pre_lay_distance_ticks", None),
             trigger_cell_address=trigger_cell_address,
             trigger_cell_current_value=trigger_cell_current_value,
             trigger_cell_expected_empty=trigger_cell_expected_empty,
@@ -4456,6 +4655,10 @@ class GrussExcelOrderProvider:
             ),
             post_write_verified=post_write_verification.verified if post_write_verification else None,
             hold_trigger_for_visual_test=hold_trigger_for_visual_test,
+            price_raw_before_tick=price_raw_before_tick,
+            price_tick_rounded=price_tick_rounded,
+            price_tick_rounding_side=price_tick_rounding_side,
+            price_is_valid_betfair_tick=price_is_valid_betfair_tick,
         )
 
     def _refresh_safety_flags(self) -> None:
@@ -4663,6 +4866,10 @@ class GrussExcelOrderProvider:
         direct_lim_order_written: bool,
         requested_price: float | None,
         requested_stake: float | None,
+        price_raw_before_tick: float | None,
+        price_tick_rounded: float | None,
+        price_tick_rounding_side: str,
+        price_is_valid_betfair_tick: bool | None,
         ladder_step_index: int | None,
         ladder_step_count: int | None,
         matched_after_step: bool,
@@ -4846,6 +5053,23 @@ class GrussExcelOrderProvider:
             "back_systems": getattr(intent, "back_systems", "") or "",
             "lay_systems": getattr(intent, "lay_systems", "") or "",
             "conflict_resolution_reason": intent.conflict_resolution_reason or "",
+            "pre_back_lay_conflict": str(bool(getattr(intent, "pre_back_lay_conflict", False))),
+            "pre_conflict_resolution": getattr(intent, "pre_conflict_resolution", "") or "",
+            "pre_conflict_chosen_side": getattr(intent, "pre_conflict_chosen_side", "") or "",
+            "pre_conflict_rejected_side": getattr(intent, "pre_conflict_rejected_side", "") or "",
+            "pre_conflict_reason": getattr(intent, "pre_conflict_reason", "") or "",
+            "pre_conflict_group_key": getattr(intent, "pre_conflict_group_key", "") or "",
+            "pre_conflict_course_id": getattr(intent, "pre_conflict_course_id", "") or "",
+            "pre_conflict_market_id": getattr(intent, "pre_conflict_market_id", "") or "",
+            "pre_conflict_market_type": getattr(intent, "pre_conflict_market_type", "") or "",
+            "pre_conflict_selection_id": getattr(intent, "pre_conflict_selection_id", "") or "",
+            "pre_conflict_runner_name": getattr(intent, "pre_conflict_runner_name", "") or "",
+            "pre_back_target_price": _blank_if_none(getattr(intent, "pre_back_target_price", None)),
+            "pre_lay_target_price": _blank_if_none(getattr(intent, "pre_lay_target_price", None)),
+            "pre_current_best_lay": _blank_if_none(getattr(intent, "pre_current_best_lay", None)),
+            "pre_current_best_back": _blank_if_none(getattr(intent, "pre_current_best_back", None)),
+            "pre_back_distance_ticks": _blank_if_none(getattr(intent, "pre_back_distance_ticks", None)),
+            "pre_lay_distance_ticks": _blank_if_none(getattr(intent, "pre_lay_distance_ticks", None)),
             "intended_trigger": intended_trigger,
             "trigger": intended_trigger,
             "stake": intent.stake,
@@ -4873,6 +5097,12 @@ class GrussExcelOrderProvider:
             "selected_place_lay_odds": intent.selected_place_lay_odds,
             "price_used": intent.price_used if intent.price_used is not None else intent.price,
             "price": intent.price,
+            "price_raw_before_tick": _blank_if_none(price_raw_before_tick),
+            "price_tick_rounded": _blank_if_none(price_tick_rounded),
+            "price_tick_rounding_side": price_tick_rounding_side,
+            "price_is_valid_betfair_tick": (
+                "" if price_is_valid_betfair_tick is None else str(bool(price_is_valid_betfair_tick)).lower()
+            ),
             "strategy_id": intent.strategy_id,
             "status": status,
             "reason": reason,
@@ -5085,6 +5315,14 @@ class GrussExcelOrderProvider:
         done: bool,
         addresses: Iterable[str],
         cleanup_reason: str,
+        stale_scan_attempt_count: int = 0,
+        stale_scan_retry_count: int = 0,
+        stale_scan_recovered: bool = False,
+        stale_triggers_confirmed: bool = False,
+        stale_cleanup_retry_count: int = 0,
+        stale_cleanup_recovered: bool = False,
+        stale_cleanup_final_status: str = "",
+        unsafe_stop_reason: str = "",
     ) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_attempt_log_header()
@@ -5107,6 +5345,14 @@ class GrussExcelOrderProvider:
                 "stale_command_cells_cleanup_attempted": str(bool(attempted)),
                 "stale_command_cells_cleanup_addresses": ";".join(str(address) for address in addresses),
                 "stale_command_cells_cleanup_reason": cleanup_reason,
+                "stale_scan_attempt_count": _blank_if_none(stale_scan_attempt_count),
+                "stale_scan_retry_count": _blank_if_none(stale_scan_retry_count),
+                "stale_scan_recovered": str(bool(stale_scan_recovered)),
+                "stale_triggers_confirmed": str(bool(stale_triggers_confirmed)),
+                "stale_cleanup_retry_count": _blank_if_none(stale_cleanup_retry_count),
+                "stale_cleanup_recovered": str(bool(stale_cleanup_recovered)),
+                "stale_cleanup_final_status": stale_cleanup_final_status,
+                "unsafe_stop_reason": unsafe_stop_reason,
                 "shutdown_command_cells_cleanup_done": str(bool(done and is_shutdown)),
                 "market_change_command_cells_cleanup_done": str(bool(done and is_market_change)),
                 "command_cells_clear_delay_ms": self.command_cells_clear_delay_ms,
@@ -6089,6 +6335,48 @@ def _valid_order_price(value: Any) -> bool:
     return math.isfinite(number) and number > 1.01
 
 
+def _price_to_write_for_gruss(intent: OrderIntent, trigger: str) -> float:
+    price = float(intent.price)
+    if not _should_tick_round_limit_price(intent, trigger):
+        return price
+    try:
+        return float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), price))
+    except (TypeError, ValueError):
+        return price
+
+
+def _should_tick_round_limit_price(intent: OrderIntent, trigger: str) -> bool:
+    if str(getattr(intent, "order_type", "") or "").upper() != "LIMIT":
+        return False
+    if str(trigger or "").upper() in {"BACKSP", "LAYSP"}:
+        return False
+    return str(getattr(intent, "side", "") or "").upper() in {"BACK", "LAY"}
+
+
+def _is_valid_betfair_tick(value: Any) -> bool:
+    try:
+        number = float(value)
+        rounded = float(round_to_betfair_tick(number))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and math.isclose(number, rounded, rel_tol=1e-9, abs_tol=1e-9)
+
+
+def _odds_value_from_plan(
+    plan: Iterable[tuple[str, Any]],
+    odds_address: str,
+) -> float | None:
+    for address, value in plan:
+        if str(address).upper() != str(odds_address).upper():
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+    return None
+
+
 def _values_match(expected: Any, actual: Any) -> bool:
     if isinstance(expected, (int, float)) and not isinstance(expected, bool):
         try:
@@ -6276,6 +6564,26 @@ def _command_cells_clear_columns_from_env() -> tuple[str, ...]:
     return tuple(columns or ("Q", "R", "S"))
 
 
+def _normalize_command_cell_addresses(addresses: Any) -> tuple[str, ...]:
+    if addresses in (None, ""):
+        return ()
+    if isinstance(addresses, str):
+        parts = re.split(r"[;,]", addresses)
+    else:
+        try:
+            iterator = iter(addresses)
+        except TypeError:
+            parts = [str(addresses)]
+        else:
+            parts = []
+            for address in iterator:
+                if isinstance(address, str):
+                    parts.extend(re.split(r"[;,]", address))
+                else:
+                    parts.append(str(address))
+    return tuple(part.strip().upper() for part in parts if part and part.strip())
+
+
 def _pre_ladder_trigger_clear_delay_override_ms() -> int | None:
     return None
 
@@ -6336,6 +6644,7 @@ def _is_temporary_excel_write_error(exc: Exception) -> bool:
         or "rejected by callee" in normalized
         or "rpc_e_call_rejected" in normalized
         or "appel a ete rejete" in normalized
+        or ("appel" in normalized and "rejet" in normalized)
         or "excel_unavailable" in normalized
         or "this object does not support enumeration" in normalized
         or "application is busy" in normalized

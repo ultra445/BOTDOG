@@ -8,10 +8,10 @@ from typing import Any
 
 
 _TRAP_PATTERNS = (
-    re.compile(r"^\s*(?:trap|t)\s*([1-6])\b", re.IGNORECASE),
-    re.compile(r"^\s*[\[(]?([1-6])[\]).:\-\s]+"),
+    re.compile(r"^\s*(?:trap|t)\s*([1-8])\b", re.IGNORECASE),
+    re.compile(r"^\s*[\[(]?([1-8])[\]).:\-\s]+"),
 )
-_TRAP_PREFIX = re.compile(r"^\s*[\[(]?([1-6])[\]).:\-\s]+")
+_TRAP_PREFIX = re.compile(r"^\s*[\[(]?([1-8])[\]).:\-\s]+")
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -217,7 +217,7 @@ def _parse_runners(rows: list[list[Any]]) -> list[GrussRunner]:
     for row in rows[4:]:
         selection_raw = _clean_text(_row_cell(row, 0))
         if not selection_raw:
-            break
+            continue
 
         trap = extract_trap(selection_raw)
         runner_name = _strip_trap_prefix(selection_raw)

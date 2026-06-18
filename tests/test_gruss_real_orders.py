@@ -246,10 +246,43 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertTrue(cleanup["attempted"])
         self.assertFalse(cleanup["done"])
         self.assertTrue(cleanup["failed"])
-        self.assertIn("stale_cleanup_failed_after_retries", cleanup["reason"])
+        self.assertEqual(cleanup["unsafe_stop_reason"], "unsafe_confirmed_stale_gruss_triggers_cleanup_failed")
+        self.assertIn("unsafe_confirmed_stale_gruss_triggers_cleanup_failed", cleanup["reason"])
         self.assertEqual(rows[0]["startup_command_cells_cleanup_attempted"], "True")
         self.assertEqual(rows[0]["startup_command_cells_cleanup_done"], "False")
         self.assertIn("clear failed", rows[0]["stale_command_cells_cleanup_reason"])
+        self.assertEqual(rows[0]["stale_triggers_confirmed"], "True")
+        self.assertEqual(rows[0]["unsafe_stop_reason"], "unsafe_confirmed_stale_gruss_triggers_cleanup_failed")
+
+    def test_stale_cleanup_recovers_from_temporary_scan_com_error_without_unsafe_stop(self) -> None:
+        class FlakyScanBridge(FakeBridge):
+            def __init__(self) -> None:
+                super().__init__()
+                self.read_range_calls = 0
+
+            def read_range(self, sheet_name: str, address: str):
+                self.read_range_calls += 1
+                if self.read_range_calls <= 4:
+                    raise RuntimeError("This object does not support enumeration")
+                return super().read_range(sheet_name, address)
+
+        bridge = FlakyScanBridge()
+
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_EXCEL_COM_RETRY_BACKOFF_MS": "0,0,0"},
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            cleanup = provider.cleanup_stale_command_cells(reason="periodic:tick=419")
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertFalse(cleanup["failed"])
+        self.assertTrue(cleanup["done"])
+        self.assertIn("no_stale_command_cells", cleanup["reason"])
+        self.assertNotEqual(rows[0]["stale_scan_retry_count"], "0")
+        self.assertEqual(rows[0]["stale_scan_recovered"], "True")
+        self.assertEqual(rows[0]["stale_triggers_confirmed"], "False")
+        self.assertEqual(rows[0]["unsafe_stop_reason"], "")
 
     def test_bridge_write_without_trigger_materially_rejects_trigger_address(self) -> None:
         sheet = FakeSheet()
@@ -265,6 +298,25 @@ class GrussRealOrdersTests(unittest.TestCase):
             )
 
         self.assertEqual(sheet.cells, {})
+
+    def test_bridge_clear_trigger_cells_accepts_semicolon_address_string(self) -> None:
+        sheet = FakeSheet()
+        sheet.cells.update({"Q5": "CANCEL", "R5": 3.0, "S5": 2.0})
+        bridge = GrussExcelBridge()
+        bridge.workbook = FakeWorkbook(sheet)
+
+        cleared = bridge.clear_trigger_cells(
+            "PLACE",
+            "Q5;R5;S5",
+            trigger_column="Q",
+            command_columns=("Q", "R", "S"),
+            allow_clear=True,
+        )
+
+        self.assertEqual(cleared, ["Q5", "R5", "S5"])
+        self.assertIsNone(sheet.cells["Q5"])
+        self.assertIsNone(sheet.cells["R5"])
+        self.assertIsNone(sheet.cells["S5"])
 
     def test_bridge_write_without_trigger_rechecks_trigger_before_each_write(self) -> None:
         sheet = FakeSheet()
@@ -738,6 +790,42 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertTrue(result.stake_capped)
         self.assertEqual(result.stake_cap_value, 5.0)
         self.assertEqual(rows[0]["stake_capped"], "True")
+
+    def test_real_post_back_limit_price_is_rounded_up_to_betfair_tick_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="BACK", price=3.478), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.5), ("S5", 2.0), ("Q5", "BACK")))
+        self.assertEqual(result.price_raw_before_tick, 3.478)
+        self.assertEqual(result.price_tick_rounded, 3.5)
+        self.assertEqual(result.price_tick_rounding_side, "BACK_CEIL")
+        self.assertTrue(result.price_is_valid_betfair_tick)
+        self.assertEqual(rows[0]["price_raw_before_tick"], "3.478")
+        self.assertEqual(rows[0]["price_tick_rounded"], "3.5")
+        self.assertEqual(rows[0]["price_tick_rounding_side"], "BACK_CEIL")
+        self.assertEqual(rows[0]["price_is_valid_betfair_tick"], "true")
+
+    def test_real_post_lay_limit_price_is_rounded_down_to_betfair_tick_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="LAY", price=3.478), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.45), ("S5", 2.0), ("Q5", "LAY")))
+        self.assertEqual(result.price_raw_before_tick, 3.478)
+        self.assertEqual(result.price_tick_rounded, 3.45)
+        self.assertEqual(result.price_tick_rounding_side, "LAY_FLOOR")
+        self.assertTrue(result.price_is_valid_betfair_tick)
+        self.assertEqual(rows[0]["price_raw_before_tick"], "3.478")
+        self.assertEqual(rows[0]["price_tick_rounded"], "3.45")
+        self.assertEqual(rows[0]["price_tick_rounding_side"], "LAY_FLOOR")
+        self.assertEqual(rows[0]["price_is_valid_betfair_tick"], "true")
 
     def test_real_order_below_stake_cap_keeps_original_stake(self) -> None:
         bridge = FakeBridge()

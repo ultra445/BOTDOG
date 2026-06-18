@@ -36,6 +36,7 @@ from dogbot.gruss.gruss_excel_bridge import DEFAULT_WORKBOOK_PATH
 from dogbot.gruss.gruss_feed import GrussFeed
 from dogbot.gruss.gruss_momentum import GrussMomentumBuffer
 from dogbot.gruss.gruss_real_orders import GrussExcelOrderProvider, GrussRealOrderContext
+from dogbot.pre_ladder import BETFAIR_PRICE_BANDS, round_to_betfair_tick
 from watch_gruss_real_test import countdown_wait_reason, ensure_open_visible_workbook, gruss_region_for_snapshots
 
 
@@ -121,8 +122,9 @@ def main(argv: list[str] | None = None) -> int:
             f"reason={cleanup.get('reason')}"
         )
         if cleanup.get("failed"):
+            unsafe_reason = cleanup.get("unsafe_stop_reason") or "unsafe_stale_gruss_triggers_cleanup_failed"
             print(
-                "ERREUR SECURITE: unsafe_stale_gruss_triggers_cleanup_failed "
+                f"ERREUR SECURITE: {unsafe_reason} "
                 f"reason={cleanup.get('reason')}"
             )
             return 1
@@ -143,8 +145,9 @@ def main(argv: list[str] | None = None) -> int:
             if hasattr(provider, "cleanup_stale_command_cells"):
                 cleanup = provider.cleanup_stale_command_cells(reason=f"periodic:tick={tick}")
                 if cleanup.get("failed"):
+                    unsafe_reason = cleanup.get("unsafe_stop_reason") or "unsafe_stale_gruss_triggers_cleanup_failed"
                     print(
-                        "ERREUR SECURITE: unsafe_stale_gruss_triggers_cleanup_failed "
+                        f"ERREUR SECURITE: {unsafe_reason} "
                         f"tick={tick} reason={cleanup.get('reason')}"
                     )
                     return 1
@@ -177,8 +180,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"reason={cleanup.get('reason')}"
                 )
                 if cleanup.get("failed"):
+                    unsafe_reason = cleanup.get("unsafe_stop_reason") or "unsafe_stale_gruss_triggers_cleanup_failed"
                     print(
-                        "ERREUR SECURITE: unsafe_stale_gruss_triggers_cleanup_failed "
+                        f"ERREUR SECURITE: {unsafe_reason} "
                         f"tick={tick} reason={cleanup.get('reason')}"
                     )
                     return 1
@@ -868,7 +872,7 @@ def resolve_back_lay_same_phase_conflicts(intents: list[Any]) -> tuple[list[Any]
     grouped: dict[tuple[Any, ...], list[Any]] = {}
     for intent in intents:
         key = (
-            getattr(intent, "parent_id", None) or getattr(intent, "course_id", None),
+            getattr(intent, "course_id", None) or getattr(intent, "parent_id", None),
             getattr(intent, "market_id", None),
             getattr(intent, "selection_id", None) or getattr(intent, "trap", None),
             str(getattr(intent, "market_type", "")).upper(),
@@ -912,6 +916,7 @@ def _reject_back_lay_group(backs: list[Any], lays: list[Any]) -> list[tuple[Any,
     lay_price = _positive_float(getattr(lay, "price", None))
     reference = _conflict_market_reference(back, lay)
     group_key = _conflict_group_key(back)
+    execution_phase = _execution_phase_for_intent(back)
     back_edge = _numeric_or_none(getattr(back, "strategy_edge", None))
     lay_edge = _numeric_or_none(getattr(lay, "strategy_edge", None))
     back_score = _numeric_or_none(getattr(back, "strategy_score", None))
@@ -941,6 +946,14 @@ def _reject_back_lay_group(backs: list[Any], lays: list[Any]) -> list[tuple[Any,
         "lay_systems": "|".join(_intent_strategy_id(intent) for intent in lays),
         "conflict_resolution_reason": reason,
     }
+    if execution_phase == "PRE":
+        return _resolve_pre_back_lay_group(
+            backs,
+            lays,
+            base,
+            back_price=back_price,
+            lay_price=lay_price,
+        )
     back_distance = (
         abs(back_price - reference) / reference
         if reference is not None and back_price is not None
@@ -953,6 +966,86 @@ def _reject_back_lay_group(backs: list[Any], lays: list[Any]) -> list[tuple[Any,
     )
     fields = {**base, "back_distance": back_distance, "lay_distance": lay_distance}
     return [(intent, replace(intent, **fields), reason) for intent in [*backs, *lays]]
+
+
+def _resolve_pre_back_lay_group(
+    backs: list[Any],
+    lays: list[Any],
+    base: dict[str, Any],
+    *,
+    back_price: float | None,
+    lay_price: float | None,
+) -> list[tuple[Any, Any, str | None]]:
+    back_distance = _nearest_pre_conflict_distance(backs, reference_attr="best_same_side_lay_offer")
+    lay_distance = _nearest_pre_conflict_distance(lays, reference_attr="best_same_side_back_offer")
+    if back_distance is None or lay_distance is None:
+        chosen_side = "NONE"
+        rejected_side = "BOTH"
+        pre_reason = "pre_conflict_missing_reference_no_bet"
+    elif math.isclose(back_distance, lay_distance, rel_tol=1e-9, abs_tol=1e-9):
+        chosen_side = "NONE"
+        rejected_side = "BOTH"
+        pre_reason = "pre_conflict_equal_distance_no_bet"
+    elif back_distance < lay_distance:
+        chosen_side = "BACK"
+        rejected_side = "LAY"
+        pre_reason = "pre_conflict_back_nearer"
+    else:
+        chosen_side = "LAY"
+        rejected_side = "BACK"
+        pre_reason = "pre_conflict_lay_nearer"
+    back_reference = _positive_float(getattr(backs[0], "best_same_side_lay_offer", None)) if backs else None
+    lay_reference = _positive_float(getattr(lays[0], "best_same_side_back_offer", None)) if lays else None
+
+    fields = {
+        **base,
+        "conflict_resolution_reason": "per_runner_nearest_price",
+        "back_distance": back_distance,
+        "lay_distance": lay_distance,
+        "selected_side": chosen_side,
+        "rejected_side": rejected_side,
+        "pre_back_lay_conflict": True,
+        "pre_conflict_resolution": "per_runner_nearest_price",
+        "pre_conflict_chosen_side": chosen_side,
+        "pre_conflict_rejected_side": rejected_side,
+        "pre_conflict_reason": pre_reason,
+        "pre_conflict_group_key": base.get("conflict_group_key", ""),
+        "pre_conflict_course_id": getattr(backs[0], "course_id", None) or getattr(backs[0], "parent_id", ""),
+        "pre_conflict_market_id": getattr(backs[0], "market_id", ""),
+        "pre_conflict_market_type": str(getattr(backs[0], "market_type", "")).upper(),
+        "pre_conflict_selection_id": getattr(backs[0], "selection_id", None) or getattr(backs[0], "trap", ""),
+        "pre_conflict_runner_name": getattr(backs[0], "runner_name", "") or getattr(lays[0], "runner_name", ""),
+        "pre_back_target_price": back_price,
+        "pre_lay_target_price": lay_price,
+        "pre_current_best_lay": back_reference,
+        "pre_current_best_back": lay_reference,
+        "pre_back_distance_ticks": back_distance,
+        "pre_lay_distance_ticks": lay_distance,
+    }
+    if chosen_side == "NONE":
+        return [(intent, replace(intent, **fields), pre_reason) for intent in [*backs, *lays]]
+
+    resolved: list[tuple[Any, Any, str | None]] = []
+    for intent in backs:
+        if chosen_side == "BACK":
+            resolved.append((intent, replace(intent, **fields), None))
+        else:
+            resolved.append((intent, replace(intent, **fields), "conflicting_back_lay_lost_priority"))
+    for intent in lays:
+        if chosen_side == "LAY":
+            resolved.append((intent, replace(intent, **fields), None))
+        else:
+            resolved.append((intent, replace(intent, **fields), "conflicting_back_lay_lost_priority"))
+    return resolved
+
+
+def _nearest_pre_conflict_distance(candidates: list[Any], *, reference_attr: str) -> float | None:
+    distances: list[float] = []
+    for candidate in candidates:
+        distance = _betfair_tick_distance(getattr(candidate, "price", None), getattr(candidate, reference_attr, None))
+        if distance is not None:
+            distances.append(distance)
+    return min(distances) if distances else None
 
 
 def _intent_strategy_id(intent: Any) -> str:
@@ -998,7 +1091,9 @@ def _conflict_group_key(intent: Any) -> str:
     return "|".join(
         str(part or "")
         for part in (
+            getattr(intent, "course_id", None) or getattr(intent, "parent_id", ""),
             getattr(intent, "market_id", ""),
+            str(getattr(intent, "market_type", "")).upper(),
             getattr(intent, "selection_id", None) or getattr(intent, "trap", ""),
             _execution_phase_for_intent(intent),
         )
@@ -1011,6 +1106,44 @@ def _numeric_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _relative_distance(price: Any, reference: Any) -> float | None:
+    try:
+        price_value = float(price)
+        reference_value = float(reference)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(price_value) or not math.isfinite(reference_value) or reference_value <= 0:
+        return None
+    return abs(price_value - reference_value) / reference_value
+
+
+def _betfair_tick_distance(price: Any, reference: Any) -> float | None:
+    price_value = _positive_float(price)
+    reference_value = _positive_float(reference)
+    if price_value is None or reference_value is None:
+        return None
+    ticks = _betfair_ticks_for_distance()
+    try:
+        price_tick = round_to_betfair_tick(price_value)
+        reference_tick = round_to_betfair_tick(reference_value)
+        return float(abs(ticks.index(price_tick) - ticks.index(reference_tick)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _betfair_ticks_for_distance() -> tuple[float, ...]:
+    ticks: list[float] = []
+    for start, end, step in BETFAIR_PRICE_BANDS:
+        value = start
+        while value < end - 1e-9:
+            rounded = round(value, 2)
+            if not ticks or not math.isclose(ticks[-1], rounded, rel_tol=1e-9, abs_tol=1e-9):
+                ticks.append(rounded)
+            value += step
+    ticks.append(1000.0)
+    return tuple(ticks)
 
 
 def _conflict_market_reference(back: Any, lay: Any) -> float | None:

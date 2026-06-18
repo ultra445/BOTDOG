@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     runner = GrussDryRunRunner(DATA_DIR)
     runner.processed_store = ProcessedRaceStore(DATA_DIR / "gruss_real_test_processed.csv")
     provider = GrussExcelOrderProvider(DATA_DIR, bridge=feed.bridge)
+    print(
+        "gruss_clear_command_cells_delay_ms_effective="
+        f"{provider.command_cells_clear_delay_ms}"
+    )
     momentum_buffer = GrussMomentumBuffer()
 
     tick = 0
