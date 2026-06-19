@@ -24,7 +24,7 @@ from dogbot.excel_strategy_loader import (
     export_strategy_slots_to_excel,
     load_excel_strategy_slots,
 )
-from dogbot.strategies import EXECUTION_PHASE_PRE, RunnerCtx, build_registry
+from dogbot.strategies import EXECUTION_PHASE_PRE, RunnerCtx, build_registry, try_fire_slot
 
 
 def _rows(
@@ -338,6 +338,109 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             )
             self.assertEqual(loaded.price_limit_variable, "place_theorique")
             self.assertEqual(float(loaded.price_limit_factor), 1.2)
+
+    def test_excel_lay_place_pre_with_true_condition_returns_fire_result(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dogbot_strategies.xlsx"
+            with patch.dict(os.environ, {"DOGBOT_STRATEGIES_EXCEL_ENABLED": "false"}, clear=False):
+                export_strategy_slots_to_excel(build_registry(), path, migration_report_path=Path(tmp) / "migration.csv")
+
+            slot = next(
+                slot
+                for slot in load_excel_strategy_slots(path, report_path=Path(tmp) / "load_report.csv").slots
+                if slot.tag == "LAY_PLACE_301"
+            )
+            ctx = RunnerCtx(
+                market_id="place-1",
+                market_type="PLACE",
+                selection_id=5,
+                course_id="course-1",
+                ltp=1.94,
+                trap=5,
+                region="ROW",
+                bb=1.94,
+                bl=2.18,
+                place_theo=1.8195403674848494,
+                ev_place=0.06620333061456729,
+                execution_phase=EXECUTION_PHASE_PRE,
+                milestone=45,
+                secs_to_off=45,
+            )
+
+            self.assertTrue(slot.condition(ctx))
+            self.assertLess(float(slot.sp_limit_fn(ctx)), 1.0)
+            result = try_fire_slot(None, slot, ctx)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.price, 1.94)
+            self.assertGreater(result.size, 0.0)
+
+    def test_excel_back_and_lay_pre_candidates_both_reach_conflict_resolution(self) -> None:
+        from dogbot.executor import _StrategyOrderCandidate, _resolve_back_lay_same_phase_candidates
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dogbot_strategies.xlsx"
+            with patch.dict(os.environ, {"DOGBOT_STRATEGIES_EXCEL_ENABLED": "false"}, clear=False):
+                export_strategy_slots_to_excel(build_registry(), path, migration_report_path=Path(tmp) / "migration.csv")
+            slots = load_excel_strategy_slots(path, report_path=Path(tmp) / "load_report.csv").slots
+            back_slot = next(slot for slot in slots if slot.tag == "BACK_PLACE_201")
+            lay_slot = next(slot for slot in slots if slot.tag == "LAY_PLACE_301")
+
+            ctx = RunnerCtx(
+                market_id="place-1",
+                market_type="PLACE",
+                selection_id=5,
+                course_id="course-1",
+                ltp=1.94,
+                trap=5,
+                region="ROW",
+                bb=1.94,
+                bl=2.18,
+                place_theo=1.8195403674848494,
+                ev_place=0.06620333061456729,
+                execution_phase=EXECUTION_PHASE_PRE,
+                milestone=45,
+                secs_to_off=45,
+            )
+            back_result = try_fire_slot(None, back_slot, ctx)
+            lay_result = try_fire_slot(None, lay_slot, ctx)
+
+            self.assertTrue(back_slot.condition(ctx))
+            self.assertTrue(lay_slot.condition(ctx))
+            self.assertIsNotNone(back_result)
+            self.assertIsNotNone(lay_result)
+
+            def candidate(slot, result):
+                return _StrategyOrderCandidate(
+                    slot=slot,
+                    market_id=ctx.market_id,
+                    market_type=ctx.market_type,
+                    selection_id=ctx.selection_id,
+                    course_id=ctx.course_id,
+                    side=slot.side.value,
+                    price=float(result.price),
+                    size=float(result.size),
+                    liability=round(float(result.liability or 0.0), 2),
+                    reason=result.reason,
+                    exec_mode=result.exec_mode,
+                    sp_limit=result.sp_limit,
+                    execution_phase=EXECUTION_PHASE_PRE,
+                    triggered_systems=[str(slot.tag)],
+                    triggered_prices=[float(result.price)],
+                    bet_per_market_key=(slot.family, slot.slot, ctx.market_id),
+                    best_unmatched_back_offer=ctx.bb,
+                    best_unmatched_lay_offer=ctx.bl,
+                )
+
+            raw_candidates = [candidate(back_slot, back_result), candidate(lay_slot, lay_result)]
+            selected, rejected = _resolve_back_lay_same_phase_candidates(raw_candidates)
+
+            self.assertEqual({candidate.side for candidate in raw_candidates}, {"BACK", "LAY"})
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(len(rejected), 1)
+            self.assertEqual(selected[0].side, "LAY")
+            self.assertEqual(rejected[0].reason, "conflicting_back_lay_lost_priority")
+            self.assertEqual(selected[0].pre_conflict_reason, "pre_conflict_lay_nearer")
 
     def test_export_supports_declarative_excel_conditions_when_available(self) -> None:
         from dogbot.staking import Side

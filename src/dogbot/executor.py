@@ -324,8 +324,6 @@ def _resolve_back_lay_same_phase_candidates(
                 "pre_conflict_chosen_side": selected_side,
                 "pre_conflict_rejected_side": "LAY" if selected_side == "BACK" else ("BACK" if selected_side == "LAY" else "BOTH"),
                 "pre_conflict_reason": pre_reason,
-                "back_distance": back_distance,
-                "lay_distance": lay_distance,
                 "selected_side": selected_side if selected_side in {"BACK", "LAY"} else "NONE",
                 "rejected_side": "LAY" if selected_side == "BACK" else ("BACK" if selected_side == "LAY" else "BOTH"),
                 "pre_conflict_group_key": "|".join(str(part) for part in key),

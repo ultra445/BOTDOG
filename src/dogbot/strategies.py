@@ -452,23 +452,43 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
         lp_key = str(decision.get("limit_price", "")).upper() if decision else ""
         if slot.sp_limit_fn is not None:
             if sp_limit is None or sp_limit <= 1.0:
-                if do_diag:
-                    _diag_write(slot.tag, {
-                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                        "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
-                        "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
-                        "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
-                        "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
-                        "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
-                        "cond_pass": True,
-                        "exec_mode": mode, "limit_price_choice": "THEO_LIMIT",
-                        "order_price": None, "edge": None, "max_runner_cap": None,
-                        "stake": None, "liability": None, "reason": "no_theo_limit_price", "note": ""
-                    })
-                return None
-            order_price = float(sp_limit)
-            lp_key = "THEO_LIMIT"
-            theo_limit_order = True
+                if slot.side == Side.LAY:
+                    order_price = _choose_limit_price(slot.side, limit_style, ctx)
+                    lp_key = "THEO_LIMIT_FALLBACK_MARKET"
+                    if order_price is None:
+                        if do_diag:
+                            _diag_write(slot.tag, {
+                                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                                "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                                "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                                "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                                "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                                "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                                "cond_pass": True,
+                                "exec_mode": mode, "limit_price_choice": "THEO_LIMIT_FALLBACK_MARKET",
+                                "order_price": None, "edge": None, "max_runner_cap": None,
+                                "stake": None, "liability": None, "reason": "no_order_price", "note": "lay_theo_limit_invalid"
+                            })
+                        return None
+                else:
+                    if do_diag:
+                        _diag_write(slot.tag, {
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                            "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                            "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                            "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                            "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                            "cond_pass": True,
+                            "exec_mode": mode, "limit_price_choice": "THEO_LIMIT",
+                            "order_price": None, "edge": None, "max_runner_cap": None,
+                            "stake": None, "liability": None, "reason": "no_theo_limit_price", "note": ""
+                        })
+                    return None
+            else:
+                order_price = float(sp_limit)
+                lp_key = "THEO_LIMIT"
+                theo_limit_order = True
         else:
             if lp_key == "CROSS":
                 # BACK at best LAY; LAY at best BACK
