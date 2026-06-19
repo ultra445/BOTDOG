@@ -645,6 +645,11 @@ class Slot:
     strategy_region: Optional[str] = None
     strategy_signal: Optional[str] = None
     strategy_bucket: Optional[str] = None
+    strategy_source: str = "python"
+    strategy_name: str = ""
+    order_mode: str = ""
+    price_mode: str = ""
+    stake_profile: str = ""
     requires_mom45: bool = False
     execution_phase: str = EXECUTION_PHASE_POST
 
@@ -664,6 +669,24 @@ class Slot:
 # ================= Registry (declare your systems here) =================
 
 def build_registry() -> List[Slot]:
+    excel_enabled = _env_bool("DOGBOT_STRATEGIES_EXCEL_ENABLED", False)
+    if excel_enabled:
+        excel_path = Path(os.getenv("DOGBOT_STRATEGIES_EXCEL_PATH", "config/dogbot_strategies.xlsx"))
+        if excel_path.exists():
+            from .excel_strategy_loader import describe_load_result, load_excel_strategy_slots
+
+            report_path = Path(
+                os.getenv("DOGBOT_STRATEGIES_EXCEL_REPORT_PATH", "data/strategy_excel_load_report.csv")
+            )
+            result = load_excel_strategy_slots(excel_path, report_path=report_path)
+            print(describe_load_result(result, enabled=True, path=excel_path))
+            return result.slots
+        print(
+            "STRATEGY_EXCEL enabled=true "
+            f"path={excel_path} active_strategies=0 disabled=0 conditions=0 errors=0 "
+            "fallback=python reason=file_missing"
+        )
+
     slots: List[Slot] = []
 
     # You can append more slots here…

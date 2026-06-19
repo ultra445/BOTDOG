@@ -521,7 +521,7 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
 
         self.assertEqual(applied["DOGBOT_PRE_LADDER_ENABLED"], "true")
         self.assertEqual(applied["DOGBOT_PRE_LADDER_PREVIEW"], "false")
-        self.assertEqual(applied["DOGBOT_PRE_LADDER_STEPS"], "45,32,20,14")
+        self.assertEqual(applied["DOGBOT_PRE_LADDER_STEPS"], "47,30,21,14")
         self.assertEqual(applied["DOGBOT_PRE_POST_INDEPENDENT"], "true")
         self.assertEqual(applied["DOGBOT_PRE_CANCEL_BEFORE_POST"], "false")
         self.assertEqual(applied["DOGBOT_PRE_CANCEL_ONLY_IF_POST_PENDING"], "false")
@@ -531,6 +531,32 @@ class WatchGrussRealStrategyTestTests(unittest.TestCase):
             watch_gruss_real_strategy_test.validate_real_strategy_test_environment(env),
             (1, 2.0, 2.0),
         )
+
+    def test_real_strategy_preserves_configured_pre_ladder_steps(self) -> None:
+        env = dict(
+            VALID_ENV,
+            DOGBOT_PRE_LADDER_ENABLED="false",
+            DOGBOT_PRE_LADDER_PREVIEW="true",
+            DOGBOT_PRE_LADDER_STEPS="40,30,20,14",
+        )
+
+        applied = watch_gruss_real_strategy_test.configure_real_pre_ladder_for_strategy_test(env)
+
+        self.assertEqual(applied["DOGBOT_PRE_LADDER_STEPS"], "40,30,20,14")
+        self.assertEqual(env["DOGBOT_PRE_LADDER_STEPS"], "40,30,20,14")
+
+    def test_real_strategy_applies_default_pre_ladder_steps_when_absent(self) -> None:
+        env = dict(
+            VALID_ENV,
+            DOGBOT_PRE_LADDER_ENABLED="false",
+            DOGBOT_PRE_LADDER_PREVIEW="true",
+        )
+        env.pop("DOGBOT_PRE_LADDER_STEPS", None)
+
+        applied = watch_gruss_real_strategy_test.configure_real_pre_ladder_for_strategy_test(env)
+
+        self.assertEqual(applied["DOGBOT_PRE_LADDER_STEPS"], "47,30,21,14")
+        self.assertEqual(env["DOGBOT_PRE_LADDER_STEPS"], "47,30,21,14")
 
     def test_real_strategy_preserves_configured_pre_ladder_max_ladders(self) -> None:
         env = dict(

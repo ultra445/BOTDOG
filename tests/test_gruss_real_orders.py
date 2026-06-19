@@ -791,6 +791,64 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(result.stake_cap_value, 5.0)
         self.assertEqual(rows[0]["stake_capped"], "True")
 
+    def test_real_back_order_floors_positive_stake_below_one_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="BACK", stake=0.5), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.2), ("S5", 1.0), ("Q5", "BACK")))
+        self.assertEqual(result.stake_original, 0.5)
+        self.assertEqual(result.stake_used, 1.0)
+        self.assertTrue(result.stake_min_floor_applied)
+        self.assertEqual(result.stake_before_min_floor, 0.5)
+        self.assertEqual(result.stake_after_min_floor, 1.0)
+        self.assertEqual(result.stake_final, 1.0)
+        self.assertFalse(result.stake_capped)
+        self.assertEqual(rows[0]["stake_min_floor_applied"], "True")
+        self.assertEqual(rows[0]["stake_before_min_floor"], "0.5")
+        self.assertEqual(rows[0]["stake_after_min_floor"], "1.0")
+        self.assertEqual(rows[0]["stake_final"], "1.0")
+
+    def test_real_lay_order_floors_positive_stake_below_one_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_GRUSS_REAL_MAX_STAKE": "5"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(side="LAY", stake=0.5), _context())
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("R5", 3.2), ("S5", 1.0), ("Q5", "LAY")))
+        self.assertEqual(result.stake_original, 0.5)
+        self.assertEqual(result.stake_used, 1.0)
+        self.assertTrue(result.stake_min_floor_applied)
+        self.assertEqual(rows[0]["stake_min_floor_applied"], "True")
+        self.assertEqual(rows[0]["stake_final"], "1.0")
+
+    def test_real_order_rejects_zero_negative_or_invalid_stake_without_excel_write(self) -> None:
+        for stake in (0.0, -0.5, float("nan")):
+            with self.subTest(stake=stake):
+                bridge = FakeBridge()
+                with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
+                    provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+                    result = provider.place_order(_intent(stake=stake), _context())
+                    rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+                self.assertEqual(result.status, "REJECTED_REAL")
+                self.assertEqual(result.reason, "invalid_stake")
+                self.assertEqual(bridge.write_calls, [])
+                self.assertEqual(rows[0]["reason"], "invalid_stake")
+
     def test_real_post_back_limit_price_is_rounded_up_to_betfair_tick_before_excel_write(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):

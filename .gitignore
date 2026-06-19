@@ -52,3 +52,13 @@ data/gruss_trigger_clear_attempts.csv
 
 
 
+
+*.pyo
+.pycache_tmp/
+
+# Local secrets / runtime files
+
+# Runtime logs / test outputs
+data/*.csv
+data/*.json
+data/*.log

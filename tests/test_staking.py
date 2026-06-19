@@ -59,7 +59,7 @@ class StakingEngineTests(unittest.TestCase):
         self.assertEqual(result.liability, round(result.size * 9.0, 2))
         self.assertLess(result.liability, 999)
 
-    def test_lay_liability_cap_below_min_stake_rejects(self) -> None:
+    def test_lay_liability_cap_below_min_stake_is_floored_to_one(self) -> None:
         env = dict(
             BASE_ENV,
             DOGBOT_STAKE_LAY_ODDS_DECAY_ALPHA="0.70",
@@ -68,23 +68,44 @@ class StakingEngineTests(unittest.TestCase):
         with patch.dict("os.environ", env, clear=True):
             result = StakingEngine().quote(Side.LAY, price_ltp=10.0, edge=0.20)
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.reason, "lay_liability_cap_below_min_stake")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.reason, "lay_capital_edge_over_odds_power")
         self.assertTrue(result.lay_liability_cap_hit)
-        self.assertLess(result.size, 2.0)
+        self.assertEqual(result.size, 1.0)
+        self.assertEqual(result.liability, 9.0)
 
-    def test_lay_min_stake_is_not_raised_when_it_would_break_liability_cap(self) -> None:
+    def test_lay_positive_stake_below_one_is_floored_even_if_liability_exceeds_cap(self) -> None:
         env = dict(
             BASE_ENV,
             DOGBOT_STAKE_LAY_ODDS_DECAY_ALPHA="0.70",
-            DOGBOT_MAX_LAY_LIABILITY_PER_ORDER="5",
+            DOGBOT_MAX_LAY_LIABILITY_PER_ORDER="0.5",
         )
         with patch.dict("os.environ", env, clear=True):
             result = StakingEngine().quote(Side.LAY, price_ltp=4.0, edge=0.007916)
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.reason, "lay_liability_cap_below_min_stake")
-        self.assertLess(result.size, 2.0)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.reason, "lay_capital_edge_over_odds_power")
+        self.assertEqual(result.size, 1.0)
+        self.assertEqual(result.liability, 3.0)
+
+    def test_back_positive_stake_below_one_is_floored_to_one(self) -> None:
+        env = dict(BASE_ENV, DOGBOT_STAKE_BACK_ODDS_DECAY_ALPHA="0.60")
+        with patch.dict("os.environ", env, clear=True):
+            result = StakingEngine().quote(Side.BACK, price_ltp=10.0, edge=0.001)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.size, 1.0)
+        self.assertIsNone(result.liability)
+
+    def test_zero_or_negative_edge_still_does_not_create_order(self) -> None:
+        with patch.dict("os.environ", BASE_ENV, clear=True):
+            zero = StakingEngine().quote(Side.BACK, price_ltp=10.0, edge=0.0)
+            negative = StakingEngine().quote(Side.LAY, price_ltp=10.0, edge=-0.01)
+
+        self.assertFalse(zero.ok)
+        self.assertFalse(negative.ok)
+        self.assertEqual(zero.reason, "edge_zero_or_missing")
+        self.assertEqual(negative.reason, "edge_zero_or_missing")
 
     def test_side_alpha_falls_back_to_global_alpha(self) -> None:
         env = dict(BASE_ENV, DOGBOT_STAKE_ODDS_DECAY_ALPHA="0.55")

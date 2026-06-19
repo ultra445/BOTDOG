@@ -76,6 +76,15 @@ class _StrategyOrderCandidate:
     strategy_region: Any = None
     strategy_signal: Any = None
     strategy_bucket: Any = None
+    strategy_source: str = "python"
+    strategy_name: str = ""
+    order_mode: str = ""
+    price_mode: str = ""
+    stake_profile: str = ""
+    condition_group_matched: str = ""
+    matched_conditions_count: int | str = ""
+    failed_condition: str = ""
+    failed_condition_reason: str = ""
     strategy_edge: float | None = None
     strategy_score: float | None = None
     staking_formula: str = ""
@@ -773,6 +782,9 @@ class Executor:
         "post_checked","post_signal_count","post_evaluated","post_missing_reason",
         "market_id","market_type","selection_id","course_id",
         "side","price_req","size_req","liability","strategy",
+        "strategy_source","strategy_id","strategy_name","condition_group_matched",
+        "matched_conditions_count","failed_condition","failed_condition_reason",
+        "order_mode","price_mode","stake_profile",
         "market_family","strategy_group","strategy_region","strategy_signal","strategy_bucket",
         "strategy_edge","strategy_score",
         "staking_formula","staking_alpha","staking_back_alpha","staking_lay_alpha",
@@ -814,7 +826,9 @@ class Executor:
     STRATEGY_DEBUG_HEADER = [
         "ts","market_id","market_type","selection_id","runner_name",
         "milestone","secs_to_off","tag","market_family","strategy_group","strategy_signal",
-        "execution_phase",
+        "strategy_source","strategy_id","strategy_name","condition_group_matched",
+        "matched_conditions_count","failed_condition","failed_condition_reason",
+        "order_mode","price_mode","stake_profile","execution_phase",
         "condition_result","fail_reason",
         "trap","region","winbet","place_price","ev_place","has_mom45","mom45","mom45_source",
         "mom45_injected_before_strategy_eval","place_theo","bb","bl",
@@ -1191,6 +1205,16 @@ class Executor:
             "market_family": getattr(slot, "market_family", None),
             "strategy_group": getattr(slot, "strategy_group", None),
             "strategy_signal": getattr(slot, "strategy_signal", None),
+            "strategy_source": getattr(slot, "strategy_source", "python"),
+            "strategy_id": getattr(slot, "tag", None),
+            "strategy_name": getattr(slot, "strategy_name", ""),
+            "condition_group_matched": getattr(getattr(slot, "condition", None), "condition_group_matched", ""),
+            "matched_conditions_count": getattr(getattr(slot, "condition", None), "matched_conditions_count", ""),
+            "failed_condition": getattr(getattr(slot, "condition", None), "failed_condition", ""),
+            "failed_condition_reason": getattr(getattr(slot, "condition", None), "failed_condition_reason", ""),
+            "order_mode": getattr(slot, "order_mode", ""),
+            "price_mode": getattr(slot, "price_mode", ""),
+            "stake_profile": getattr(slot, "stake_profile", ""),
             "execution_phase": getattr(slot, "execution_phase", None),
             "condition_result": condition_result,
             "fail_reason": fail_reason,
@@ -2298,6 +2322,15 @@ class Executor:
                             strategy_region=getattr(slot, "strategy_region", None),
                             strategy_signal=getattr(slot, "strategy_signal", None),
                             strategy_bucket=getattr(slot, "strategy_bucket", None),
+                            strategy_source=getattr(slot, "strategy_source", "python"),
+                            strategy_name=getattr(slot, "strategy_name", ""),
+                            order_mode=getattr(slot, "order_mode", "") or str(getattr(slot, "exec_mode", "")).replace("ExecMode.", ""),
+                            price_mode=getattr(slot, "price_mode", ""),
+                            stake_profile=getattr(slot, "stake_profile", ""),
+                            condition_group_matched=getattr(getattr(slot, "condition", None), "condition_group_matched", ""),
+                            matched_conditions_count=getattr(getattr(slot, "condition", None), "matched_conditions_count", ""),
+                            failed_condition=getattr(getattr(slot, "condition", None), "failed_condition", ""),
+                            failed_condition_reason=getattr(getattr(slot, "condition", None), "failed_condition_reason", ""),
                             strategy_edge=_finite_float_or_none(getattr(ctx, "ev_place", None)),
                             strategy_score=None,
                             staking_formula=getattr(res, "staking_formula", "") or "",
@@ -2466,6 +2499,16 @@ class Executor:
             "size_req": order.size,
             "liability": round(order.liability or 0.0, 2),
             "strategy": final_system,
+            "strategy_source": order.strategy_source,
+            "strategy_id": "|".join(order.triggered_systems),
+            "strategy_name": order.strategy_name,
+            "condition_group_matched": order.condition_group_matched,
+            "matched_conditions_count": order.matched_conditions_count,
+            "failed_condition": order.failed_condition,
+            "failed_condition_reason": order.failed_condition_reason,
+            "order_mode": order.order_mode,
+            "price_mode": order.price_mode,
+            "stake_profile": order.stake_profile,
             "market_family": getattr(order.slot, "market_family", None),
             "strategy_group": order.strategy_group,
             "strategy_region": order.strategy_region,
