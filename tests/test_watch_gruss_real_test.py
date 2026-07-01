@@ -33,6 +33,7 @@ VALID_ENV = {
     "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
     "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
     "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
+    "DOGBOT_POST_BET_REF_REQUIRED": "false",
 }
 
 
@@ -524,7 +525,7 @@ class WatchGrussRealTestTests(unittest.TestCase):
             watch_gruss_real_test.ensure_open_visible_workbook(HiddenBridge())
 
     def test_waits_only_outside_active_pre_post_milestones(self) -> None:
-        for seconds in (45, 32, 20, 14, 1):
+        for seconds in (52, 38, 26, 16, 1):
             with self.subTest(seconds=seconds):
                 self.assertIsNone(watch_gruss_real_test.countdown_wait_reason(seconds, seconds))
         self.assertEqual(

@@ -44,10 +44,11 @@ from .pre_ladder import (
 from .execution.orders import OrderExecutor
 from .risk import ExposureManager
 
-PRE_LADDER_DEFAULT_STEPS_SECONDS = (45, 32, 20, 14)
-PRE_SEND_SECONDS_BEFORE_OFF = 45
+PRE_LADDER_DEFAULT_STEPS_SECONDS = (52, 38, 26, 16)
+PRE_SEND_SECONDS_BEFORE_OFF = 52
 POST_SEND_SECONDS_BEFORE_OFF = 1
 POST_SEND_SECONDS_BEFORE_OFF_DEFAULT = 1
+BETFAIR_MIN_PRICE = 1.01
 
 
 @dataclass
@@ -87,6 +88,20 @@ class _StrategyOrderCandidate:
     failed_condition_reason: str = ""
     strategy_edge: float | None = None
     strategy_score: float | None = None
+    active_filters: str = ""
+    use_price_filter: bool = False
+    use_trap_filter: bool = False
+    use_ev_filter: bool = False
+    use_custom_filter: bool = False
+    limit_price_mode: str = ""
+    limit_base_variable: str = ""
+    limit_factor: str = ""
+    limit_function_name: str = ""
+    computed_coefficient: float | None = None
+    place_theorique: float | None = None
+    computed_limit_price: float | None = None
+    pre_ladder_eligible: bool = False
+    pre_reject_reason: str = ""
     staking_formula: str = ""
     staking_alpha: float | None = None
     staking_back_alpha: float | None = None
@@ -146,6 +161,9 @@ class _FrozenPreLadderPlan:
     start_price: float | None
     start_price_raw: float | None
     start_price_tick: float | None
+    computed_limit_price_raw: float
+    computed_limit_price_effective: float
+    min_price_floor_applied: bool
     final_lim_price_raw: float
     final_lim_price_tick: float
     ladder_prices: list[float]
@@ -222,6 +240,64 @@ def _pre_ladder_prices_are_valid_for_side(
             return False
         return all(prices[index] <= prices[index + 1] for index in range(len(prices) - 1))
     return False
+
+
+@dataclass(frozen=True)
+class _PreLadderValueClamp:
+    planned_price: float
+    sent_before_value_clamp: float
+    sent_after_value_clamp: float
+    value_clamp_applied: bool
+    value_limit_breached: bool
+    value_limit_skip_reason: str
+    tick_rounding_direction: str
+
+
+def _pre_ladder_value_target_raw(order: _StrategyOrderCandidate) -> float:
+    for value in (
+        order.computed_limit_price,
+        order.sp_limit if str(order.price_mode or "").upper() == "LIMIT_THEO" else None,
+        order.price,
+    ):
+        number = _finite_float_or_none(value)
+        if number is not None:
+            return number
+    return float(order.price)
+
+
+def _effective_betfair_limit_price(raw_price: float) -> tuple[float, bool]:
+    value = float(raw_price)
+    if value < BETFAIR_MIN_PRICE:
+        return BETFAIR_MIN_PRICE, True
+    return value, False
+
+
+def _pre_ladder_value_clamp(side: str, planned_price: float, effective_limit_price: float) -> _PreLadderValueClamp:
+    upper_side = str(side or "").upper()
+    target_tick = round_final_lim_to_ladder_tick(upper_side, max(float(effective_limit_price), BETFAIR_MIN_PRICE))
+    rounding_direction = "BACK_CEIL" if upper_side == "BACK" else "LAY_FLOOR"
+    try:
+        planned_tick = round_final_lim_to_ladder_tick(upper_side, max(float(planned_price), BETFAIR_MIN_PRICE))
+    except (TypeError, ValueError):
+        planned_tick = target_tick
+    if upper_side == "BACK":
+        breached = planned_tick < target_tick
+        after = max(planned_tick, target_tick)
+    elif upper_side == "LAY":
+        breached = planned_tick > target_tick
+        after = min(planned_tick, target_tick)
+    else:
+        breached = True
+        after = target_tick
+    return _PreLadderValueClamp(
+        planned_price=float(planned_price),
+        sent_before_value_clamp=planned_tick,
+        sent_after_value_clamp=after,
+        value_clamp_applied=not math.isclose(planned_tick, after, rel_tol=1e-9, abs_tol=1e-9),
+        value_limit_breached=breached,
+        value_limit_skip_reason="",
+        tick_rounding_direction=rounding_direction,
+    )
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -395,7 +471,7 @@ def _pre_conflict_choice(
     if back_distance is None or lay_distance is None:
         return "NONE", "pre_conflict_missing_reference_no_bet", back_distance, lay_distance
     if math.isclose(back_distance, lay_distance, rel_tol=1e-9, abs_tol=1e-9):
-        return "NONE", "pre_conflict_equal_distance_no_bet", back_distance, lay_distance
+        return "BACK", "equal_distance_tiebreak_back", back_distance, lay_distance
     if back_distance < lay_distance:
         return "BACK", "pre_conflict_back_nearer", back_distance, lay_distance
     return "LAY", "pre_conflict_lay_nearer", back_distance, lay_distance
@@ -512,6 +588,34 @@ def _candidate_debug_summary(
 def _value_by_runner(runner_name: Optional[str], value: str) -> str:
     name = str(runner_name or "").strip() or "<unknown>"
     return f"{name}={value}" if value else f"{name}="
+
+
+def _slot_active_filters_text(slot: Any) -> str:
+    active_filters = getattr(slot, "active_filters", "")
+    if isinstance(active_filters, str):
+        return active_filters
+    try:
+        return ",".join(str(item) for item in active_filters if str(item).strip())
+    except TypeError:
+        return ""
+
+
+def _slot_bool(slot: Any, name: str) -> bool:
+    return bool(getattr(slot, name, False))
+
+
+def _functional_float(functional_eval: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = functional_eval.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return None
 
 
 def _relative_distance(price: float | None, reference: float | None) -> float | None:
@@ -783,6 +887,11 @@ class Executor:
         "strategy_source","strategy_id","strategy_name","condition_group_matched",
         "matched_conditions_count","failed_condition","failed_condition_reason",
         "order_mode","price_mode","stake_profile",
+        "active_filters","use_price_filter","use_trap_filter","use_ev_filter","use_custom_filter",
+        "limit_price_mode","limit_base_variable","limit_factor","limit_function_name",
+        "computed_coefficient","place_theorique","computed_limit_price",
+        "computed_limit_price_raw","computed_limit_price_effective","min_price_floor_applied",
+        "pre_ladder_eligible","pre_reject_reason",
         "market_family","strategy_group","strategy_region","strategy_signal","strategy_bucket",
         "strategy_edge","strategy_score",
         "staking_formula","staking_alpha","staking_back_alpha","staking_lay_alpha",
@@ -796,6 +905,10 @@ class Executor:
         "ladder_enabled","ladder_preview","ladder_id","ladder_tracking_key","ladder_step",
         "ladder_seconds_before_off","final_lim_price","final_lim_price_raw","final_lim_price_tick",
         "start_price","start_price_raw","start_price_tick","tick_rounding_mode","ladder_prices",
+        "pre_value_target_price","ladder_planned_price",
+        "sent_price_before_value_clamp","sent_price_after_value_clamp",
+        "value_clamp_applied","value_limit_breached","value_limit_skip_reason",
+        "tick_rounding_direction",
         "ladder_plan_frozen","ladder_plan_created_step","ladder_prices_frozen",
         "current_ladder_price_from_frozen_plan","best_same_side_offer_at_creation",
         "best_back_displayed","best_lay_displayed","start_price_source",
@@ -827,10 +940,17 @@ class Executor:
         "strategy_source","strategy_id","strategy_name","condition_group_matched",
         "matched_conditions_count","failed_condition","failed_condition_reason",
         "order_mode","price_mode","stake_profile","execution_phase",
+        "active_filters","use_price_filter","use_trap_filter","use_ev_filter","use_custom_filter",
+        "limit_price_mode","limit_base_variable","limit_factor","limit_function_name",
+        "computed_coefficient","computed_limit_price",
+        "pre_ladder_eligible","pre_reject_reason",
         "condition_result","fail_reason",
         "trap","region","winbet","place_price","ev_place","has_mom45","mom45","mom45_source",
         "mom45_injected_before_strategy_eval","place_theo","bb","bl",
         "place_winners","k_place_used","fallback_k_place_used","requires_mom45",
+        "function_name","functional_place_odds_ref","functional_ev_threshold",
+        "functional_coeff_limit","functional_limit_price","functional_decision",
+        "functional_reject_reason",
     ]
 
     STRATEGY_EVAL_SUMMARY_HEADER = [
@@ -863,6 +983,18 @@ class Executor:
         "pre_after_ladder_planning_count","pre_after_ladder_planning_by_runner",
         "pre_trades_created_count","pre_trades_created_by_runner",
         "pre_gruss_orders_attempted_count","pre_gruss_orders_attempted_by_runner",
+        "pre_write_attempt_id","pre_bet_ref_poll_attempts","pre_bet_ref_found",
+        "pre_bet_ref_missing","pre_bet_ref_missing_retryable",
+        "pre_bet_ref_late_detected","pre_bet_ref_late_value",
+        "pre_retry_count","pre_retry_allowed","pre_retry_block_reason",
+        "active_ladder_created","pending_ladder_created",
+        "matched_evidence_found","selection_row_evidence_found",
+        "no_stacking_blocked_retry",
+        "computed_limit_price_raw","computed_limit_price_effective","min_price_floor_applied",
+        "pre_value_target_price","ladder_planned_price",
+        "sent_price_before_value_clamp","sent_price_after_value_clamp",
+        "value_clamp_applied","value_limit_breached","value_limit_skip_reason",
+        "tick_rounding_direction",
         "strategy_back_signal","strategy_lay_signal",
         "raw_back_candidate_created","raw_lay_candidate_created",
         "conflict_detected","chosen_side","rejected_side",
@@ -1067,6 +1199,21 @@ class Executor:
     def _debug_try_fire_slot_none_detail(self, slot, ctx: RunnerCtx) -> str:
         parts: list[str] = ["condition_true_but_try_fire_slot_returned_none"]
         try:
+            functional_eval = getattr(slot, "_last_functional_limit_eval", {}) or {}
+            if functional_eval:
+                parts.extend(
+                    [
+                        f"function_name={functional_eval.get('function_name', '')}",
+                        f"functional_decision={functional_eval.get('decision', '')}",
+                        f"functional_reason={functional_eval.get('reason', '')}",
+                        f"place_odds_ref={functional_eval.get('place_odds_ref', '')}",
+                        f"place_theorique={functional_eval.get('place_theorique', '')}",
+                        f"functional_ev_threshold={functional_eval.get('ev_threshold', '')}",
+                        f"computed_coefficient={functional_eval.get('computed_coefficient', functional_eval.get('coeff_limit', ''))}",
+                        f"functional_limit_price={functional_eval.get('limit_price', '')}",
+                        f"computed_limit_price={functional_eval.get('computed_limit_price', functional_eval.get('limit_price', ''))}",
+                    ]
+                )
             side = getattr(getattr(slot, "side", None), "value", getattr(slot, "side", ""))
             mode = getattr(slot, "exec_mode", None)
             limit_style = getattr(slot, "limit_style", None)
@@ -1191,6 +1338,10 @@ class Executor:
             return
         fname = self.data_dir / f"strategy_debug_{datetime.now(timezone.utc):%Y%m%d}.csv"
         self._ensure_header(fname, self.STRATEGY_DEBUG_HEADER)
+        functional_eval = getattr(slot, "_last_functional_limit_eval", {}) or {}
+        computed_coefficient = _functional_float(functional_eval, "computed_coefficient", "coeff_limit")
+        computed_limit_price = _functional_float(functional_eval, "computed_limit_price", "limit_price")
+        pre_ladder_eligible = self._slot_would_be_pre_ladder_order(slot, ctx)
         row = {
             "ts": _now_utc_iso(),
             "market_id": ctx.market_id,
@@ -1214,6 +1365,19 @@ class Executor:
             "price_mode": getattr(slot, "price_mode", ""),
             "stake_profile": getattr(slot, "stake_profile", ""),
             "execution_phase": getattr(slot, "execution_phase", None),
+            "active_filters": _slot_active_filters_text(slot),
+            "use_price_filter": str(_slot_bool(slot, "use_price_filter")),
+            "use_trap_filter": str(_slot_bool(slot, "use_trap_filter")),
+            "use_ev_filter": str(_slot_bool(slot, "use_ev_filter")),
+            "use_custom_filter": str(_slot_bool(slot, "use_custom_filter")),
+            "limit_price_mode": getattr(slot, "limit_price_mode", ""),
+            "limit_base_variable": getattr(slot, "limit_base_variable", getattr(slot, "price_limit_variable", "")),
+            "limit_factor": getattr(slot, "limit_factor", getattr(slot, "price_limit_factor", "")),
+            "limit_function_name": getattr(slot, "limit_function_name", getattr(slot, "function_name", "")),
+            "computed_coefficient": "" if computed_coefficient is None else computed_coefficient,
+            "computed_limit_price": "" if computed_limit_price is None else computed_limit_price,
+            "pre_ladder_eligible": str(pre_ladder_eligible),
+            "pre_reject_reason": "" if pre_ladder_eligible else self._pre_ladder_reject_reason_for_slot(slot, ctx),
             "condition_result": condition_result,
             "fail_reason": fail_reason,
             "trap": ctx.trap,
@@ -1235,6 +1399,13 @@ class Executor:
             "k_place_used": getattr(ctx, "k_place_used", None),
             "fallback_k_place_used": getattr(ctx, "fallback_k_place_used", None),
             "requires_mom45": getattr(slot, "requires_mom45", False),
+            "function_name": functional_eval.get("function_name", getattr(slot, "function_name", "")),
+            "functional_place_odds_ref": functional_eval.get("place_odds_ref", ""),
+            "functional_ev_threshold": functional_eval.get("ev_threshold", ""),
+            "functional_coeff_limit": functional_eval.get("coeff_limit", ""),
+            "functional_limit_price": functional_eval.get("limit_price", ""),
+            "functional_decision": functional_eval.get("decision", ""),
+            "functional_reject_reason": functional_eval.get("reason", ""),
         }
         with fname.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self.STRATEGY_DEBUG_HEADER).writerow(row)
@@ -2259,7 +2430,10 @@ class Executor:
                         res = try_fire_slot(self.staking_engine, slot, ctx)
                         if debug_enabled:
                             if debug_condition_result is True and not res:
-                                debug_fail_reason = "no_fire_result_after_condition"
+                                functional_eval = getattr(slot, "_last_functional_limit_eval", {}) or {}
+                                debug_fail_reason = str(
+                                    functional_eval.get("reason") or "no_fire_result_after_condition"
+                                )
                             self._log_strategy_debug_row(
                                 slot, ctx, runner_name, bool(debug_condition_result), debug_fail_reason
                             )
@@ -2295,6 +2469,9 @@ class Executor:
                                 )
                             continue
 
+                        functional_eval = getattr(slot, "_last_functional_limit_eval", {}) or {}
+                        computed_coefficient = _functional_float(functional_eval, "computed_coefficient", "coeff_limit")
+                        computed_limit_price = _functional_float(functional_eval, "computed_limit_price", "limit_price")
                         candidate = _StrategyOrderCandidate(
                             slot=slot,
                             market_id=market_id,
@@ -2325,6 +2502,18 @@ class Executor:
                             order_mode=getattr(slot, "order_mode", "") or str(getattr(slot, "exec_mode", "")).replace("ExecMode.", ""),
                             price_mode=getattr(slot, "price_mode", ""),
                             stake_profile=getattr(slot, "stake_profile", ""),
+                            active_filters=_slot_active_filters_text(slot),
+                            use_price_filter=_slot_bool(slot, "use_price_filter"),
+                            use_trap_filter=_slot_bool(slot, "use_trap_filter"),
+                            use_ev_filter=_slot_bool(slot, "use_ev_filter"),
+                            use_custom_filter=_slot_bool(slot, "use_custom_filter"),
+                            limit_price_mode=getattr(slot, "limit_price_mode", ""),
+                            limit_base_variable=getattr(slot, "limit_base_variable", getattr(slot, "price_limit_variable", "")),
+                            limit_factor=str(getattr(slot, "limit_factor", getattr(slot, "price_limit_factor", "")) or ""),
+                            limit_function_name=getattr(slot, "limit_function_name", getattr(slot, "function_name", "")),
+                            computed_coefficient=computed_coefficient,
+                            place_theorique=_finite_float_or_none(getattr(ctx, "place_theo", None)),
+                            computed_limit_price=computed_limit_price,
                             condition_group_matched=getattr(getattr(slot, "condition", None), "condition_group_matched", ""),
                             matched_conditions_count=getattr(getattr(slot, "condition", None), "matched_conditions_count", ""),
                             failed_condition=getattr(getattr(slot, "condition", None), "failed_condition", ""),
@@ -2342,6 +2531,8 @@ class Executor:
                             lay_liability_cap_hit=bool(getattr(res, "lay_liability_cap_hit", False)),
                             runner_name=runner_name or "",
                         )
+                        candidate.pre_ladder_eligible = self._is_pre_ladder_order(candidate)
+                        candidate.pre_reject_reason = "" if candidate.pre_ladder_eligible else self._pre_ladder_reject_reason_for_slot(slot, ctx)
                         if execution_phase == _strategies.EXECUTION_PHASE_PRE:
                             pre_orders.append(candidate)
                         else:
@@ -2428,6 +2619,26 @@ class Executor:
                                 removed_detail=merged_order.merge_key,
                             )
                     for final_order in current_merged_orders:
+                        pipeline_payload = (
+                            self._pre_ladder_step_payload(final_order)
+                            if self._is_pre_ladder_order(final_order)
+                            else None
+                        )
+                        pipeline_summary = {}
+                        if pipeline_payload is not None:
+                            pipeline_summary = {
+                                "computed_limit_price_raw": pipeline_payload["computed_limit_price_raw"],
+                                "computed_limit_price_effective": pipeline_payload["computed_limit_price_effective"],
+                                "min_price_floor_applied": pipeline_payload["min_price_floor_applied"],
+                                "pre_value_target_price": pipeline_payload["pre_value_target_price"],
+                                "ladder_planned_price": pipeline_payload["ladder_planned_price"],
+                                "sent_price_before_value_clamp": pipeline_payload["sent_price_before_value_clamp"],
+                                "sent_price_after_value_clamp": pipeline_payload["sent_price_after_value_clamp"],
+                                "value_clamp_applied": pipeline_payload["value_clamp_applied"],
+                                "value_limit_breached": pipeline_payload["value_limit_breached"],
+                                "value_limit_skip_reason": pipeline_payload["value_limit_skip_reason"],
+                                "tick_rounding_direction": pipeline_payload["tick_rounding_direction"],
+                            }
                         self._log_pre_pipeline_debug_row(
                             ctx,
                             runner_name,
@@ -2439,6 +2650,7 @@ class Executor:
                             ),
                             side=final_order.side,
                             strategy_id="|".join(final_order.triggered_systems),
+                            summary=pipeline_summary,
                         )
                     self._log_pre_pipeline_summary_row(
                         ctx,
@@ -2507,6 +2719,23 @@ class Executor:
             "order_mode": order.order_mode,
             "price_mode": order.price_mode,
             "stake_profile": order.stake_profile,
+            "active_filters": order.active_filters,
+            "use_price_filter": str(bool(order.use_price_filter)),
+            "use_trap_filter": str(bool(order.use_trap_filter)),
+            "use_ev_filter": str(bool(order.use_ev_filter)),
+            "use_custom_filter": str(bool(order.use_custom_filter)),
+            "limit_price_mode": order.limit_price_mode,
+            "limit_base_variable": order.limit_base_variable,
+            "limit_factor": order.limit_factor,
+            "limit_function_name": order.limit_function_name,
+            "computed_coefficient": "" if order.computed_coefficient is None else order.computed_coefficient,
+            "place_theorique": "" if order.place_theorique is None else order.place_theorique,
+            "computed_limit_price": "" if order.computed_limit_price is None else order.computed_limit_price,
+            "computed_limit_price_raw": "",
+            "computed_limit_price_effective": "",
+            "min_price_floor_applied": "",
+            "pre_ladder_eligible": str(self._is_pre_ladder_order(order)),
+            "pre_reject_reason": "" if self._is_pre_ladder_order(order) else order.pre_reject_reason,
             "market_family": getattr(order.slot, "market_family", None),
             "strategy_group": order.strategy_group,
             "strategy_region": order.strategy_region,
@@ -2546,6 +2775,14 @@ class Executor:
             "start_price_tick": "",
             "tick_rounding_mode": "",
             "ladder_prices": "",
+            "pre_value_target_price": "",
+            "ladder_planned_price": "",
+            "sent_price_before_value_clamp": "",
+            "sent_price_after_value_clamp": "",
+            "value_clamp_applied": "",
+            "value_limit_breached": "",
+            "value_limit_skip_reason": "",
+            "tick_rounding_direction": "",
             "ladder_plan_frozen": "",
             "ladder_plan_created_step": "",
             "ladder_prices_frozen": "",
@@ -2695,7 +2932,53 @@ class Executor:
             return False
         if order.exec_mode != ExecMode.LIMIT_LTP:
             return False
-        return any(system in PRE_LADDER_SYSTEM_IDS for system in order.triggered_systems)
+        if any(system in PRE_LADDER_SYSTEM_IDS for system in order.triggered_systems):
+            return True
+        if str(order.limit_price_mode or "").upper() == "FUNCTION_COEFF" or str(order.price_mode or "").upper() == "LIMIT_THEO_FUNC":
+            return str(order.market_type or "").upper() == "PLACE"
+        strategy_group = str(order.strategy_group or "").upper()
+        return (
+            str(order.market_type or "").upper() == "PLACE"
+            and (
+                str(order.side or "").upper() == "BACK"
+                and strategy_group.startswith("PLACE_BACK_T1")
+                or str(order.side or "").upper() == "LAY"
+                and strategy_group.startswith("PLACE_LAY_TRAP8")
+            )
+        )
+
+    def _slot_would_be_pre_ladder_order(self, slot: Any, ctx: RunnerCtx) -> bool:
+        if str(getattr(ctx, "execution_phase", "") or "").upper() != _strategies.EXECUTION_PHASE_PRE:
+            return False
+        if getattr(slot, "exec_mode", None) != ExecMode.LIMIT_LTP:
+            return False
+        tag = str(getattr(slot, "tag", "") or "")
+        if tag in PRE_LADDER_SYSTEM_IDS:
+            return True
+        price_mode = str(getattr(slot, "price_mode", "") or "").upper()
+        limit_price_mode = str(getattr(slot, "limit_price_mode", "") or "").upper()
+        if price_mode == "LIMIT_THEO_FUNC" or limit_price_mode == "FUNCTION_COEFF":
+            return str(getattr(ctx, "market_type", "") or "").upper() == "PLACE"
+        strategy_group = str(getattr(slot, "strategy_group", "") or "").upper()
+        side = str(getattr(getattr(slot, "side", None), "value", getattr(slot, "side", "")) or "").upper()
+        return (
+            str(getattr(ctx, "market_type", "") or "").upper() == "PLACE"
+            and (
+                side == "BACK"
+                and strategy_group.startswith("PLACE_BACK_T1")
+                or side == "LAY"
+                and strategy_group.startswith("PLACE_LAY_TRAP8")
+            )
+        )
+
+    def _pre_ladder_reject_reason_for_slot(self, slot: Any, ctx: RunnerCtx) -> str:
+        if str(getattr(ctx, "execution_phase", "") or "").upper() != _strategies.EXECUTION_PHASE_PRE:
+            return "not_pre_phase"
+        if getattr(slot, "exec_mode", None) != ExecMode.LIMIT_LTP:
+            return "not_limit_order"
+        if str(getattr(ctx, "market_type", "") or "").upper() != "PLACE":
+            return "not_place_market"
+        return "not_pre_ladder_strategy"
 
     def _pre_ladder_id(self, order: _StrategyOrderCandidate) -> str:
         final_system = (
@@ -2735,8 +3018,12 @@ class Executor:
     ) -> _FrozenPreLadderPlan:
         steps = tuple(self._pre_ladder_steps)
         upper_side = str(order.side or "").upper()
-        final_lim_price_raw = float(order.price)
-        final_tick_price = round_final_lim_to_ladder_tick(order.side, final_lim_price_raw)
+        computed_limit_price_raw = _pre_ladder_value_target_raw(order)
+        computed_limit_price_effective, min_price_floor_applied = _effective_betfair_limit_price(
+            computed_limit_price_raw
+        )
+        final_lim_price_raw = computed_limit_price_effective
+        final_tick_price = round_final_lim_to_ladder_tick(order.side, computed_limit_price_effective)
         best_back_displayed = order.best_unmatched_back_offer
         best_lay_displayed = order.best_unmatched_lay_offer
         start_reference = best_lay_displayed if upper_side == "BACK" else best_back_displayed
@@ -2755,7 +3042,7 @@ class Executor:
             price_plan = build_pre_ladder_from_same_side_offer(
                 order.side,
                 start_price_raw,
-                final_lim_price_raw,
+                computed_limit_price_effective,
                 steps=len(steps),
             )
             reason = price_plan.reason
@@ -2782,6 +3069,9 @@ class Executor:
             start_price=start_price,
             start_price_raw=start_price_raw,
             start_price_tick=start_price_tick,
+            computed_limit_price_raw=computed_limit_price_raw,
+            computed_limit_price_effective=computed_limit_price_effective,
+            min_price_floor_applied=min_price_floor_applied,
             final_lim_price_raw=final_lim_price_raw,
             final_lim_price_tick=final_tick_price,
             ladder_prices=ladder_prices,
@@ -2851,7 +3141,13 @@ class Executor:
             return None
         if step_index >= len(ladder_prices):
             return None
-        current_price = ladder_prices[min(step_index, len(ladder_prices) - 1)]
+        planned_price = ladder_prices[min(step_index, len(ladder_prices) - 1)]
+        clamp = _pre_ladder_value_clamp(
+            upper_side,
+            planned_price,
+            price_plan.computed_limit_price_effective,
+        )
+        current_price = clamp.sent_after_value_clamp
 
         decision = decide_pre_ladder_step(None, full_stake=float(order.size))
         trigger_plan = plan_gruss_pre_ladder_trigger(
@@ -2868,11 +3164,22 @@ class Executor:
             "final_lim_price": final_lim_price,
             "final_lim_price_raw": final_lim_price,
             "final_lim_price_tick": final_tick_price,
+            "computed_limit_price_raw": price_plan.computed_limit_price_raw,
+            "computed_limit_price_effective": price_plan.computed_limit_price_effective,
+            "min_price_floor_applied": str(bool(price_plan.min_price_floor_applied)),
             "start_price": "" if price_plan.start_price is None else price_plan.start_price,
             "start_price_raw": "" if price_plan.start_price_raw is None else price_plan.start_price_raw,
             "start_price_tick": "" if price_plan.start_price_tick is None else price_plan.start_price_tick,
             "tick_rounding_mode": tick_rounding_mode,
             "ladder_prices": "|".join(str(price) for price in ladder_prices),
+            "pre_value_target_price": price_plan.computed_limit_price_effective,
+            "ladder_planned_price": clamp.planned_price,
+            "sent_price_before_value_clamp": clamp.sent_before_value_clamp,
+            "sent_price_after_value_clamp": clamp.sent_after_value_clamp,
+            "value_clamp_applied": str(bool(clamp.value_clamp_applied)),
+            "value_limit_breached": str(bool(clamp.value_limit_breached)),
+            "value_limit_skip_reason": clamp.value_limit_skip_reason,
+            "tick_rounding_direction": clamp.tick_rounding_direction,
             "ladder_plan_frozen": str(True),
             "ladder_plan_created_step": price_plan.created_step,
             "ladder_prices_frozen": "|".join(str(price) for price in ladder_prices),
@@ -2942,6 +3249,9 @@ class Executor:
             "size_req": payload["current_step_stake"] or order.size,
             "final_price": payload["current_ladder_price"],
             "final_stake": payload["current_step_stake"] or order.size,
+            "computed_limit_price_raw": payload["computed_limit_price_raw"],
+            "computed_limit_price_effective": payload["computed_limit_price_effective"],
+            "min_price_floor_applied": payload["min_price_floor_applied"],
             "ladder_enabled": str(ladder_enabled),
             "ladder_preview": str(ladder_preview),
             "ladder_id": payload["ladder_id"],
@@ -2956,6 +3266,14 @@ class Executor:
             "start_price_tick": payload["start_price_tick"],
             "tick_rounding_mode": payload["tick_rounding_mode"],
             "ladder_prices": payload["ladder_prices"],
+            "pre_value_target_price": payload["pre_value_target_price"],
+            "ladder_planned_price": payload["ladder_planned_price"],
+            "sent_price_before_value_clamp": payload["sent_price_before_value_clamp"],
+            "sent_price_after_value_clamp": payload["sent_price_after_value_clamp"],
+            "value_clamp_applied": payload["value_clamp_applied"],
+            "value_limit_breached": payload["value_limit_breached"],
+            "value_limit_skip_reason": payload["value_limit_skip_reason"],
+            "tick_rounding_direction": payload["tick_rounding_direction"],
             "ladder_plan_frozen": payload["ladder_plan_frozen"],
             "ladder_plan_created_step": payload["ladder_plan_created_step"],
             "ladder_prices_frozen": payload["ladder_prices_frozen"],

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Dict, Any
 import os
@@ -77,6 +77,173 @@ class FireResult:
 
 
 # ================= Helpers =================
+
+def back_place_uk_t1_smooth(place_odds: float) -> Optional[float]:
+    if place_odds < 2.0:
+        return None
+    if place_odds < 4.8:
+        return 1.0 + 0.10 * (4.8 - place_odds) / (4.8 - 2.0)
+    return 1.00
+
+
+def back_place_row_t1_smooth(place_odds: float) -> Optional[float]:
+    if place_odds < 2.0:
+        return None
+    if place_odds < 3.0:
+        return 1.0 + 0.20 * (3.0 - place_odds) / (3.0 - 2.0)
+    return 1.00
+
+
+def back_place_uk_non_t1_smooth(place_odds: float) -> Optional[float]:
+    if place_odds < 1.3:
+        return None
+    if place_odds < 4.8:
+        return 1.10 + 0.10 * (4.8 - place_odds) / (4.8 - 1.3)
+    return 1.10
+
+
+def back_place_row_non_t1_smooth(place_odds: float) -> Optional[float]:
+    if place_odds < 1.3:
+        return None
+    if place_odds < 10.0:
+        return 1.10 + 0.20 * (10.0 - place_odds) / (10.0 - 1.3)
+    return 1.10
+
+
+def lay_place_row_t1_smooth(place_odds: float) -> Optional[float]:
+    if place_odds < 1.05:
+        return None
+    if place_odds < 15.0:
+        return 0.85 - 0.32 * (15.0 - place_odds) / (15.0 - 1.05)
+    return 0.85
+
+
+def back_place_post_uk_non_t1_open(place_odds: float) -> Optional[float]:
+    if place_odds < 1.3:
+        return None
+    if place_odds < 3.0:
+        return 1.15 + 0.25 * (3.0 - place_odds) / (3.0 - 1.3)
+    return 1.15
+
+
+def back_place_post_row_non_t1_open(place_odds: float) -> Optional[float]:
+    if place_odds < 1.3:
+        return None
+    if place_odds < 3.0:
+        return 1.30 + 0.15 * (3.0 - place_odds) / (3.0 - 1.3)
+    return 1.30
+
+
+def back_place_post_uk_t1_open(place_odds: float) -> Optional[float]:
+    if place_odds < 2.0:
+        return None
+    if place_odds < 4.8:
+        return 1.05 + 0.20 * (4.8 - place_odds) / (4.8 - 2.0)
+    return 1.05
+
+
+def back_place_post_row_t1_open(place_odds: float) -> Optional[float]:
+    if place_odds < 2.0:
+        return None
+    return 1.30
+
+
+FUNCTION_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "BACK_PLACE_UK_T1_SMOOTH": {"side": "BACK", "fn": back_place_uk_t1_smooth},
+    "BACK_PLACE_ROW_T1_SMOOTH": {"side": "BACK", "fn": back_place_row_t1_smooth},
+    "BACK_PLACE_UK_NON_T1_SMOOTH": {"side": "BACK", "fn": back_place_uk_non_t1_smooth},
+    "BACK_PLACE_ROW_NON_T1_SMOOTH": {"side": "BACK", "fn": back_place_row_non_t1_smooth},
+    "BACK_PLACE_POST_UK_NON_T1_OPEN": {"side": "BACK", "fn": back_place_post_uk_non_t1_open},
+    "BACK_PLACE_POST_ROW_NON_T1_OPEN": {"side": "BACK", "fn": back_place_post_row_non_t1_open},
+    "BACK_PLACE_POST_UK_T1_OPEN": {"side": "BACK", "fn": back_place_post_uk_t1_open},
+    "BACK_PLACE_POST_ROW_T1_OPEN": {"side": "BACK", "fn": back_place_post_row_t1_open},
+    "LAY_PLACE_ROW_T1_SMOOTH": {"side": "LAY", "fn": lay_place_row_t1_smooth},
+}
+
+
+@dataclass(frozen=True)
+class FunctionalLimitEvaluation:
+    strategy_id: str
+    function_name: str
+    side: str
+    region: Optional[str]
+    trap: Optional[int]
+    place_odds_ref: Optional[float]
+    place_theorique: Optional[float]
+    ev_place: Optional[float]
+    ev_threshold: Optional[float]
+    coeff_limit: Optional[float]
+    limit_price: Optional[float]
+    decision: str
+    reason: str
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _slot_uses_functional_limit(slot: "Slot") -> bool:
+    return str(getattr(slot, "price_mode", "") or "").strip().upper() == "LIMIT_THEO_FUNC"
+
+
+def _remember_functional_eval(slot: "Slot", evaluation: FunctionalLimitEvaluation | None) -> None:
+    if evaluation is None:
+        setattr(slot, "_last_functional_limit_eval", {})
+    else:
+        payload = asdict(evaluation)
+        payload["computed_coefficient"] = payload.get("coeff_limit")
+        payload["computed_limit_price"] = payload.get("limit_price")
+        payload["coefficient_source"] = "FUNCTION_REGISTRY"
+        setattr(slot, "_last_functional_limit_eval", payload)
+
+
+def _evaluate_functional_limit(
+    slot: "Slot",
+    ctx: RunnerCtx,
+    place_odds_ref: Optional[float],
+) -> FunctionalLimitEvaluation:
+    strategy_id = str(getattr(slot, "tag", "") or "")
+    function_name = str(getattr(slot, "function_name", "") or "").strip().upper()
+    side = str(getattr(getattr(slot, "side", None), "value", getattr(slot, "side", "")) or "").upper()
+    place_ref = _finite_float(place_odds_ref)
+    place_theo = _finite_float(ctx.place_theo)
+    ev_place = _finite_float(ctx.ev_place)
+    base = {
+        "strategy_id": strategy_id,
+        "function_name": function_name,
+        "side": side,
+        "region": ctx.region,
+        "trap": ctx.trap,
+        "place_odds_ref": place_ref,
+        "place_theorique": place_theo,
+        "ev_place": ev_place,
+    }
+    if not function_name or function_name not in FUNCTION_REGISTRY:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=None, limit_price=None, decision="rejected", reason="function_not_found")
+    entry = FUNCTION_REGISTRY[function_name]
+    expected_side = str(entry.get("side", "") or "").upper()
+    if expected_side and expected_side != side:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=None, limit_price=None, decision="rejected", reason="function_side_mismatch")
+    if place_ref is None or place_ref <= 1.0:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=None, limit_price=None, decision="rejected", reason="invalid_place_odds_ref")
+    if place_theo is None or place_theo <= 1.0:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=None, limit_price=None, decision="rejected", reason="invalid_place_theorique")
+    try:
+        coeff_limit = _finite_float(entry["fn"](place_ref))
+    except Exception:
+        coeff_limit = None
+    if coeff_limit is None:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=None, limit_price=None, decision="rejected", reason="coefficient_none")
+    if coeff_limit <= 0.0:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=coeff_limit, limit_price=None, decision="rejected", reason="invalid_coefficient")
+    limit_price = place_theo * coeff_limit
+    if not math.isfinite(limit_price) or limit_price <= 1.0:
+        return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=coeff_limit, limit_price=limit_price, decision="rejected", reason="invalid_limit_price")
+    return FunctionalLimitEvaluation(**base, ev_threshold=None, coeff_limit=coeff_limit, limit_price=limit_price, decision="accepted", reason="functional_limit_accepted")
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -331,6 +498,7 @@ def _diag_write(slot_tag: str, row: Dict[str, Any]) -> None:
 # ================= Public API =================
 
 def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireResult]:
+    _remember_functional_eval(slot, None)
     # Filter by family/market
     family = slot.family.upper()
     if "WIN" in family and ctx.market_type.upper() != "WIN":
@@ -414,7 +582,7 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
     if slot.sp_limit_fn is not None:
         try:
             computed_sp_limit = slot.sp_limit_fn(ctx)
-            if computed_sp_limit is not None and float(computed_sp_limit) > 1.0:
+            if computed_sp_limit is not None and math.isfinite(float(computed_sp_limit)):
                 sp_limit = float(computed_sp_limit)
         except Exception:
             pass
@@ -428,6 +596,27 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
 
     # Price to place (for LIMIT) and price for stake bounds
     bounds_price = _pick_bounds_price(ctx, slot.price_for_bounds)
+    functional_eval: FunctionalLimitEvaluation | None = None
+    functional_limit_price: Optional[float] = None
+    if _slot_uses_functional_limit(slot):
+        functional_eval = _evaluate_functional_limit(slot, ctx, bounds_price)
+        _remember_functional_eval(slot, functional_eval)
+        if functional_eval.decision != "accepted":
+            if do_diag:
+                _diag_write(slot.tag, {
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                    "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                    "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                    "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                    "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                    "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                    "cond_pass": True,
+                    "exec_mode": mode, "limit_price_choice": "LIMIT_THEO_FUNC",
+                    "order_price": None, "edge": None, "max_runner_cap": None,
+                    "stake": None, "liability": None, "reason": functional_eval.reason, "note": functional_eval.function_name
+                })
+            return None
+        functional_limit_price = functional_eval.limit_price
     if bounds_price is None:
         if do_diag:
             _diag_write(slot.tag, {
@@ -450,43 +639,28 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
         # Priority: explicit limit price from hybrid policy ("CROSS"|"MID"|"OWN")
         order_price: Optional[float] = None
         lp_key = str(decision.get("limit_price", "")).upper() if decision else ""
-        if slot.sp_limit_fn is not None:
-            if sp_limit is None or sp_limit <= 1.0:
-                if slot.side == Side.LAY:
-                    order_price = _choose_limit_price(slot.side, limit_style, ctx)
-                    lp_key = "THEO_LIMIT_FALLBACK_MARKET"
-                    if order_price is None:
-                        if do_diag:
-                            _diag_write(slot.tag, {
-                                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                                "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
-                                "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
-                                "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
-                                "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
-                                "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
-                                "cond_pass": True,
-                                "exec_mode": mode, "limit_price_choice": "THEO_LIMIT_FALLBACK_MARKET",
-                                "order_price": None, "edge": None, "max_runner_cap": None,
-                                "stake": None, "liability": None, "reason": "no_order_price", "note": "lay_theo_limit_invalid"
-                            })
-                        return None
-                else:
-                    if do_diag:
-                        _diag_write(slot.tag, {
-                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-                            "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
-                            "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
-                            "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
-                            "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
-                            "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
-                            "cond_pass": True,
-                            "exec_mode": mode, "limit_price_choice": "THEO_LIMIT",
-                            "order_price": None, "edge": None, "max_runner_cap": None,
-                            "stake": None, "liability": None, "reason": "no_theo_limit_price", "note": ""
-                        })
-                    return None
+        if functional_limit_price is not None:
+            order_price = float(functional_limit_price)
+            lp_key = "LIMIT_THEO_FUNC"
+            theo_limit_order = True
+        elif slot.sp_limit_fn is not None:
+            if sp_limit is None:
+                if do_diag:
+                    _diag_write(slot.tag, {
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+                        "tag": slot.tag, "market_id": ctx.market_id, "selection_id": ctx.selection_id,
+                        "market_type": ctx.market_type, "milestone": ctx.milestone, "secs_to_off": ctx.secs_to_off,
+                        "trap": ctx.trap, "fav_rank_ltp": ctx.fav_rank_ltp, "gor": ctx.gor,
+                        "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
+                        "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
+                        "cond_pass": True,
+                        "exec_mode": mode, "limit_price_choice": "THEO_LIMIT",
+                        "order_price": None, "edge": None, "max_runner_cap": None,
+                        "stake": None, "liability": None, "reason": "no_theo_limit_price", "note": ""
+                    })
+                return None
             else:
-                order_price = float(sp_limit)
+                order_price = max(float(sp_limit), 1.01)
                 lp_key = "THEO_LIMIT"
                 theo_limit_order = True
         else:
@@ -626,13 +800,19 @@ def try_fire_slot(staking_engine, slot: Slot, ctx: RunnerCtx) -> Optional[FireRe
             "base_price": bounds_price, "bb": ctx.bb, "bl": ctx.bl,
             "mom45": ctx.mom45, "d5": ctx.d5, "d30": ctx.d30, "vol60": ctx.vol60,
             "cond_pass": True,
-            "exec_mode": mode, "limit_price_choice": ("THEO_LIMIT" if theo_limit_order else decision.get("limit_price")),
+            "exec_mode": mode, "limit_price_choice": ("LIMIT_THEO_FUNC" if functional_eval else ("THEO_LIMIT" if theo_limit_order else decision.get("limit_price"))),
             "order_price": fire_price, "edge": edge, "max_runner_cap": max_runner_cap,
             "stake": getattr(sr, "size", None), "liability": getattr(sr, "liability", None),
             "reason": getattr(sr, "reason", "ok"), "note": "ok"
         })
 
     reason = f"cond_ok edge={edge} bounds_price={round(bounds_price,2)}"
+    if functional_eval is not None:
+        reason = (
+            f"functional_limit_accepted function={functional_eval.function_name} "
+            f"computed_coefficient={round(float(functional_eval.coeff_limit), 6)} "
+            f"computed_limit_price={round(float(functional_eval.limit_price), 6)}"
+        )
     return FireResult(price=fire_price,
                       size=float(getattr(sr, "size", 0.0)),
                       liability=getattr(sr, "liability", None),
@@ -669,6 +849,7 @@ class Slot:
     strategy_name: str = ""
     order_mode: str = ""
     price_mode: str = ""
+    function_name: str = ""
     stake_profile: str = ""
     requires_mom45: bool = False
     execution_phase: str = EXECUTION_PHASE_POST
@@ -693,11 +874,24 @@ def build_registry() -> List[Slot]:
     if excel_enabled:
         excel_path = Path(os.getenv("DOGBOT_STRATEGIES_EXCEL_PATH", "config/dogbot_strategies.xlsx"))
         if excel_path.exists():
-            from .excel_strategy_loader import describe_load_result, load_excel_strategy_slots
+            from .excel_strategy_loader import (
+                describe_load_result,
+                is_active_strategy_config_path,
+                load_excel_strategy_slots,
+                validate_strategy_workbook,
+            )
 
             report_path = Path(
                 os.getenv("DOGBOT_STRATEGIES_EXCEL_REPORT_PATH", "data/strategy_excel_load_report.csv")
             )
+            if _env_bool("DOGBOT_GRUSS_ENABLE_REAL_ORDERS", False) and is_active_strategy_config_path(excel_path):
+                validation = validate_strategy_workbook(excel_path, min_strategies=20)
+                if not validation.ok:
+                    raise RuntimeError(
+                        "Active strategy workbook looks like a template or incomplete export. "
+                        "Refusing to run real orders. "
+                        + "; ".join(validation.issues)
+                    )
             result = load_excel_strategy_slots(excel_path, report_path=report_path)
             print(describe_load_result(result, enabled=True, path=excel_path))
             return result.slots

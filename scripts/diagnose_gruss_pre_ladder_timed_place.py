@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runner-row", type=int, default=5)
     parser.add_argument("--side", default="BACK")
     parser.add_argument("--stake", type=float, default=2.0)
-    parser.add_argument("--steps", default=os.getenv("DOGBOT_PRE_LADDER_STEPS", "45,32,20,14"))
+    parser.add_argument("--steps", default=os.getenv("DOGBOT_PRE_LADDER_STEPS", "52,38,26,16"))
     parser.add_argument("--prices", default=os.getenv("DOGBOT_GRUSS_TIMED_PRE_LADDER_PRICES", "50,48,46,44"))
     parser.add_argument("--cancel-before-post-seconds", type=int, default=1)
     parser.add_argument("--replace-min-countdown-seconds", type=int, default=10)

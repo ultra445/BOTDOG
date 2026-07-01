@@ -9,6 +9,7 @@ from dogbot.executor import (
     Executor,
     POST_SEND_SECONDS_BEFORE_OFF,
     PRE_SEND_SECONDS_BEFORE_OFF,
+    _FrozenPreLadderPlan,
     _StrategyOrderCandidate,
     _execution_phase_for_milestone,
     _merge_order_candidates,
@@ -19,7 +20,7 @@ from dogbot.gruss.gruss_dryrun_engine import (
     current_strategy_milestone,
     describe_current_strategy_milestone,
 )
-from dogbot.pre_ladder import round_final_lim_to_ladder_tick
+from dogbot.pre_ladder import PRE_LADDER_SYSTEM_IDS, round_final_lim_to_ladder_tick
 from dogbot.strategies import EXECUTION_PHASE_POST, EXECUTION_PHASE_PRE, ExecMode, Slot, build_registry
 from dogbot.staking import Side
 
@@ -34,6 +35,11 @@ def _candidate(
     phase_seconds: int | None = None,
     best_unmatched_back_offer: float | None = None,
     best_unmatched_lay_offer: float | None = None,
+    strategy_group: str | None = None,
+    price_mode: str = "",
+    limit_price_mode: str = "",
+    computed_limit_price: float | None = None,
+    sp_limit: float | None = None,
 ) -> _StrategyOrderCandidate:
     slot = SimpleNamespace(
         tag=system,
@@ -53,7 +59,7 @@ def _candidate(
         liability=round(size * max(0.01, price - 1.0), 2),
         reason="cond_ok",
         exec_mode=ExecMode.LIMIT_LTP,
-        sp_limit=None,
+        sp_limit=sp_limit,
         execution_phase=phase,
         triggered_systems=[system],
         triggered_prices=[price],
@@ -61,6 +67,10 @@ def _candidate(
         phase_send_seconds_before_off=phase_seconds,
         best_unmatched_back_offer=best_unmatched_back_offer,
         best_unmatched_lay_offer=best_unmatched_lay_offer,
+        strategy_group=strategy_group,
+        price_mode=price_mode,
+        limit_price_mode=limit_price_mode,
+        computed_limit_price=computed_limit_price,
     )
 
 
@@ -91,12 +101,13 @@ class ExecutionPhaseTests(unittest.TestCase):
 
     def test_phase_timing_constants_map_to_expected_phases(self) -> None:
         self.assertEqual(_execution_phase_for_milestone(PRE_SEND_SECONDS_BEFORE_OFF), EXECUTION_PHASE_PRE)
-        self.assertEqual(_execution_phase_for_milestone(45), EXECUTION_PHASE_PRE)
-        self.assertEqual(_execution_phase_for_milestone(32), EXECUTION_PHASE_PRE)
-        self.assertEqual(_execution_phase_for_milestone(20), EXECUTION_PHASE_PRE)
-        self.assertEqual(_execution_phase_for_milestone(14), EXECUTION_PHASE_PRE)
+        self.assertEqual(_execution_phase_for_milestone(52), EXECUTION_PHASE_PRE)
+        self.assertEqual(_execution_phase_for_milestone(38), EXECUTION_PHASE_PRE)
+        self.assertEqual(_execution_phase_for_milestone(26), EXECUTION_PHASE_PRE)
+        self.assertEqual(_execution_phase_for_milestone(16), EXECUTION_PHASE_PRE)
         self.assertEqual(_execution_phase_for_milestone(POST_SEND_SECONDS_BEFORE_OFF), EXECUTION_PHASE_POST)
         self.assertIsNone(_execution_phase_for_milestone(15))
+        self.assertIsNone(_execution_phase_for_milestone(45))
         self.assertIsNone(_execution_phase_for_milestone(12))
         self.assertIsNone(_execution_phase_for_milestone(10))
         self.assertIsNone(_execution_phase_for_milestone(5))
@@ -419,6 +430,137 @@ class ExecutionPhaseTests(unittest.TestCase):
         self.assertEqual(row["gruss_bet_ref_required"], "False")
         self.assertEqual(row["gruss_no_stack"], "False")
 
+    def test_pre_ladder_back_value_clamp_blocks_price_below_computed_limit(self) -> None:
+        executor = object.__new__(Executor)
+        executor._pre_ladder_steps = (20, 15, 10, 5)
+        executor._phase_stakes_by_runner_side = defaultdict(
+            lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+        )
+        order = _candidate(
+            "BACK_PLACE_902",
+            phase=EXECUTION_PHASE_PRE,
+            side="BACK",
+            price=2.92,
+            phase_seconds=15,
+            computed_limit_price=3.088524,
+            price_mode="LIMIT_THEO_FUNC",
+            limit_price_mode="FUNCTION_COEFF",
+        )
+        ladder_id = executor._pre_ladder_id(order)
+        executor._pre_ladder_price_plans = {
+            ladder_id: _FrozenPreLadderPlan(
+                ladder_id=ladder_id,
+                side="BACK",
+                start_price=2.92,
+                start_price_raw=2.92,
+                start_price_tick=2.92,
+                computed_limit_price_raw=3.088524,
+                computed_limit_price_effective=3.088524,
+                min_price_floor_applied=False,
+                final_lim_price_raw=3.088524,
+                final_lim_price_tick=3.1,
+                ladder_prices=[2.92, 2.92, 3.0, 3.1],
+                reason="",
+                created_step=1,
+                created_at_countdown=20,
+                best_same_side_offer_at_creation=2.92,
+                ladder_direction="BACK_DESCENDING",
+            )
+        }
+
+        payload = executor._pre_ladder_step_payload(order)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["ladder_planned_price"], 2.92)
+        self.assertEqual(payload["sent_price_before_value_clamp"], 2.92)
+        self.assertEqual(payload["sent_price_after_value_clamp"], 3.1)
+        self.assertEqual(payload["current_ladder_price"], 3.1)
+        self.assertGreaterEqual(payload["current_ladder_price"], 3.088524)
+        self.assertEqual(payload["value_clamp_applied"], "True")
+        self.assertEqual(payload["value_limit_breached"], "True")
+        self.assertEqual(payload["tick_rounding_direction"], "BACK_CEIL")
+
+    def test_pre_ladder_lay_value_clamp_blocks_price_above_computed_limit(self) -> None:
+        executor = object.__new__(Executor)
+        executor._pre_ladder_steps = (20, 15, 10, 5)
+        executor._phase_stakes_by_runner_side = defaultdict(
+            lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+        )
+        order = _candidate(
+            "LAY_PLACE_303",
+            phase=EXECUTION_PHASE_PRE,
+            side="LAY",
+            price=7.4,
+            phase_seconds=15,
+            computed_limit_price=6.780870,
+        )
+        ladder_id = executor._pre_ladder_id(order)
+        executor._pre_ladder_price_plans = {
+            ladder_id: _FrozenPreLadderPlan(
+                ladder_id=ladder_id,
+                side="LAY",
+                start_price=7.4,
+                start_price_raw=7.4,
+                start_price_tick=7.4,
+                computed_limit_price_raw=6.780870,
+                computed_limit_price_effective=6.780870,
+                min_price_floor_applied=False,
+                final_lim_price_raw=6.780870,
+                final_lim_price_tick=6.6,
+                ladder_prices=[6.2, 7.4, 7.4, 6.6],
+                reason="",
+                created_step=1,
+                created_at_countdown=20,
+                best_same_side_offer_at_creation=7.4,
+                ladder_direction="LAY_ASCENDING",
+            )
+        }
+
+        payload = executor._pre_ladder_step_payload(order)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["ladder_planned_price"], 7.4)
+        self.assertEqual(payload["sent_price_before_value_clamp"], 7.4)
+        self.assertEqual(payload["sent_price_after_value_clamp"], 6.6)
+        self.assertEqual(payload["current_ladder_price"], 6.6)
+        self.assertLessEqual(payload["current_ladder_price"], 6.780870)
+        self.assertEqual(payload["value_clamp_applied"], "True")
+        self.assertEqual(payload["value_limit_breached"], "True")
+        self.assertEqual(payload["tick_rounding_direction"], "LAY_FLOOR")
+
+    def test_pre_ladder_theo_factor_below_minimum_floors_to_101(self) -> None:
+        executor = object.__new__(Executor)
+        executor._pre_ladder_steps = (20, 15, 10, 5)
+        executor._phase_stakes_by_runner_side = defaultdict(
+            lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+        )
+        order = _candidate(
+            "LAY_PLACE_301",
+            phase=EXECUTION_PHASE_PRE,
+            side="LAY",
+            price=1.48,
+            phase_seconds=20,
+            best_unmatched_back_offer=1.48,
+            best_unmatched_lay_offer=1.6,
+            price_mode="LIMIT_THEO",
+            limit_price_mode="THEO_FACTOR",
+            sp_limit=0.6625,
+        )
+
+        payload = executor._pre_ladder_step_payload(order)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["computed_limit_price_raw"], 0.6625)
+        self.assertEqual(payload["computed_limit_price_effective"], 1.01)
+        self.assertEqual(payload["pre_value_target_price"], 1.01)
+        self.assertEqual(payload["min_price_floor_applied"], "True")
+        self.assertEqual(payload["current_ladder_price"], 1.01)
+        self.assertEqual(payload["sent_price_after_value_clamp"], 1.01)
+        self.assertNotEqual(payload["current_ladder_price"], 1.48)
+
     def test_pre_ladder_preview_after_first_step_requires_bet_ref_and_does_not_stack(self) -> None:
         executor = object.__new__(Executor)
         executor._pre_ladder_steps = (20, 15, 10, 5)
@@ -492,6 +634,190 @@ class ExecutionPhaseTests(unittest.TestCase):
         self.assertEqual(row["ladder_step"], "1/4")
         self.assertEqual(row["gruss_planned_trigger"], "BACK")
         self.assertEqual(row["current_ladder_price"], 6.8)
+
+    def test_trap1_back_place_pre_systems_are_pre_ladder_eligible(self) -> None:
+        expected = {
+            "BACK_PLACE_111",
+            "BACK_PLACE_112",
+            "BACK_PLACE_113",
+            "BACK_PLACE_211",
+            "BACK_PLACE_212",
+            "BACK_PLACE_213",
+            "BACK_PLACE_214",
+        }
+
+        self.assertTrue(expected.issubset(PRE_LADDER_SYSTEM_IDS))
+
+    def test_trap8_place_lay_pre_systems_are_registered_as_pre_ladder(self) -> None:
+        self.assertTrue({"LAY_PLACE_523", "LAY_PLACE_524"}.issubset(PRE_LADDER_SYSTEM_IDS))
+
+    def test_functional_limit_pre_systems_are_registered_as_pre_ladder(self) -> None:
+        expected = {
+            "BACK_PLACE_901",
+            "BACK_PLACE_902",
+            "BACK_PLACE_903",
+            "BACK_PLACE_904",
+            "BACK_PLACE_911",
+            "BACK_PLACE_912",
+            "BACK_PLACE_913",
+            "BACK_PLACE_914",
+            "LAY_PLACE_921",
+        }
+
+        self.assertTrue(expected.issubset(PRE_LADDER_SYSTEM_IDS))
+
+    def test_functional_limit_pre_place_candidate_is_pre_ladder_eligible(self) -> None:
+        executor = object.__new__(Executor)
+        order = _candidate(
+            "BACK_PLACE_901",
+            phase=EXECUTION_PHASE_PRE,
+            side="BACK",
+            price=2.8,
+            price_mode="LIMIT_THEO_FUNC",
+            limit_price_mode="FUNCTION_COEFF",
+        )
+
+        self.assertTrue(executor._is_pre_ladder_order(order))
+
+    def test_trap1_back_place_pre_systems_log_real_ready_at_first_milestone(self) -> None:
+        for strategy_id in (
+            "BACK_PLACE_111",
+            "BACK_PLACE_112",
+            "BACK_PLACE_113",
+            "BACK_PLACE_211",
+            "BACK_PLACE_212",
+            "BACK_PLACE_213",
+            "BACK_PLACE_214",
+        ):
+            with self.subTest(strategy_id=strategy_id):
+                executor = object.__new__(Executor)
+                executor._pre_ladder_steps = (52, 38, 26, 16)
+                executor._phase_stakes_by_runner_side = defaultdict(
+                    lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+                )
+                rows = []
+                executor._log_trade_row = rows.append
+                order = _candidate(
+                    strategy_id,
+                    phase=EXECUTION_PHASE_PRE,
+                    side="BACK",
+                    price=3.0,
+                    size=2.0,
+                    phase_seconds=52,
+                    best_unmatched_back_offer=2.2,
+                    best_unmatched_lay_offer=2.24,
+                )
+
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "DOGBOT_PRE_LADDER_ENABLED": "true",
+                        "DOGBOT_PRE_LADDER_PREVIEW": "false",
+                    },
+                ):
+                    handled = executor._handle_pre_ladder_order(order)
+
+                self.assertTrue(handled)
+                self.assertEqual(len(rows), 1)
+                row = rows[0]
+                self.assertEqual(row["status"], "PRE_LADDER_REAL_READY")
+                self.assertEqual(row["ladder_step"], "1/4")
+                self.assertEqual(row["gruss_planned_trigger"], "BACK")
+                self.assertNotEqual(row["reason"], "countdown_above_3_seconds")
+
+    def test_pre_place_back_t1_group_is_pre_ladder_eligible_without_manual_id(self) -> None:
+        executor = object.__new__(Executor)
+        executor._pre_ladder_steps = (52, 38, 26, 16)
+        executor._phase_stakes_by_runner_side = defaultdict(
+            lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+        )
+        rows = []
+        executor._log_trade_row = rows.append
+        order = _candidate(
+            "BACK_PLACE_999",
+            phase=EXECUTION_PHASE_PRE,
+            side="BACK",
+            phase_seconds=52,
+            strategy_group="PLACE_BACK_T1_ROW",
+            best_unmatched_back_offer=2.2,
+            best_unmatched_lay_offer=2.24,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_PRE_LADDER_ENABLED": "true",
+                "DOGBOT_PRE_LADDER_PREVIEW": "false",
+            },
+        ):
+            handled = executor._handle_pre_ladder_order(order)
+
+        self.assertTrue(handled)
+        self.assertEqual(rows[0]["status"], "PRE_LADDER_REAL_READY")
+        self.assertEqual(rows[0]["ladder_step"], "1/4")
+
+    def test_trap8_place_lay_pre_group_is_pre_ladder_eligible(self) -> None:
+        for strategy_id in ("LAY_PLACE_523", "LAY_PLACE_524"):
+            with self.subTest(strategy_id=strategy_id):
+                executor = object.__new__(Executor)
+                executor._pre_ladder_steps = (52, 38, 26, 16)
+                executor._phase_stakes_by_runner_side = defaultdict(
+                    lambda: {EXECUTION_PHASE_PRE: 0.0, EXECUTION_PHASE_POST: 0.0}
+                )
+                rows = []
+                executor._log_trade_row = rows.append
+                order = _candidate(
+                    strategy_id,
+                    phase=EXECUTION_PHASE_PRE,
+                    side="LAY",
+                    price=12.0,
+                    phase_seconds=52,
+                    strategy_group="PLACE_LAY_TRAP8_ROW",
+                    best_unmatched_back_offer=10.0,
+                    best_unmatched_lay_offer=14.0,
+                )
+
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "DOGBOT_PRE_LADDER_ENABLED": "true",
+                        "DOGBOT_PRE_LADDER_PREVIEW": "false",
+                    },
+                ):
+                    handled = executor._handle_pre_ladder_order(order)
+
+                self.assertTrue(handled)
+                self.assertEqual(rows[0]["status"], "PRE_LADDER_REAL_READY")
+                self.assertEqual(rows[0]["ladder_step"], "1/4")
+                self.assertEqual(rows[0]["gruss_planned_trigger"], "LAY")
+
+    def test_post_trap8_place_lay_group_is_not_pre_ladder_eligible(self) -> None:
+        executor = object.__new__(Executor)
+        order = _candidate(
+            "LAY_PLACE_524",
+            phase=EXECUTION_PHASE_POST,
+            side="LAY",
+            phase_seconds=1,
+            strategy_group="PLACE_LAY_TRAP8_ROW",
+            best_unmatched_back_offer=10.0,
+            best_unmatched_lay_offer=14.0,
+        )
+
+        self.assertFalse(executor._handle_pre_ladder_order(order))
+
+    def test_post_place_back_t1_group_is_not_pre_ladder_eligible(self) -> None:
+        executor = object.__new__(Executor)
+        order = _candidate(
+            "BACK_PLACE_114",
+            phase=EXECUTION_PHASE_POST,
+            side="BACK",
+            phase_seconds=1,
+            strategy_group="PLACE_BACK_T1_ROW",
+            best_unmatched_back_offer=2.2,
+            best_unmatched_lay_offer=2.24,
+        )
+
+        self.assertFalse(executor._handle_pre_ladder_order(order))
 
     def test_post_trade_row_is_real_ready_when_gruss_real_mode_is_armed(self) -> None:
         executor = object.__new__(Executor)
@@ -880,8 +1206,8 @@ class ExecutionPhaseTests(unittest.TestCase):
         self.assertEqual(_execution_phase_for_milestone(1), EXECUTION_PHASE_POST)
 
     def test_gruss_active_milestones_include_pre_ladder_steps_and_post(self) -> None:
-        self.assertEqual(active_strategy_milestones(), (45, 32, 20, 14, 1))
-        for seconds in (45, 32, 20, 14):
+        self.assertEqual(active_strategy_milestones(), (52, 38, 26, 16, 1))
+        for seconds in (52, 38, 26, 16):
             with self.subTest(seconds=seconds):
                 self.assertEqual(current_strategy_milestone(seconds, seconds), seconds)
                 self.assertIn("execution_phase=PRE", describe_current_strategy_milestone(seconds, seconds))
@@ -891,13 +1217,13 @@ class ExecutionPhaseTests(unittest.TestCase):
         with patch.dict("os.environ", {"DOGBOT_POST_SEND_SECONDS_BEFORE_OFF": "5"}, clear=False):
             self.assertEqual(_execution_phase_for_milestone(5), EXECUTION_PHASE_POST)
             self.assertIsNone(_execution_phase_for_milestone(1))
-            self.assertEqual(active_strategy_milestones(), (45, 32, 20, 14, 5))
+            self.assertEqual(active_strategy_milestones(), (52, 38, 26, 16, 5))
             self.assertEqual(current_strategy_milestone(5, 5), 5)
             self.assertIn("execution_phase=POST", describe_current_strategy_milestone(5, 5))
 
     def test_phase_filter_selects_only_pre_or_post_strategy_slots(self) -> None:
         phase_by_id = {slot.tag: slot.execution_phase for slot in build_registry()}
-        pre_phase = _execution_phase_for_milestone(20)
+        pre_phase = _execution_phase_for_milestone(52)
         post_phase = _execution_phase_for_milestone(1)
 
         self.assertEqual(

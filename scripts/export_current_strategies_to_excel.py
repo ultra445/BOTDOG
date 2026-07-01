@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
 
 from dogbot.excel_strategy_loader import (
     DEFAULT_STRATEGY_EXCEL_MIGRATION_REPORT_PATH,
-    DEFAULT_STRATEGY_EXCEL_PATH,
+    default_strategy_excel_export_path,
     export_strategy_slots_to_excel,
     load_excel_strategy_slots,
 )
@@ -24,14 +24,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export current Python strategy registry to Excel.")
     parser.add_argument(
         "--output",
-        default=str(ROOT / DEFAULT_STRATEGY_EXCEL_PATH),
-        help="Excel workbook path to write.",
+        default=None,
+        help="Excel workbook path to write. Defaults to config/exports/dogbot_strategies_export_YYYYMMDD_HHMMSS.xlsx.",
     )
     parser.add_argument(
         "--report",
         default=str(ROOT / DEFAULT_STRATEGY_EXCEL_MIGRATION_REPORT_PATH),
         help="Migration report CSV path to write.",
     )
+    parser.add_argument("--overwrite-config", action="store_true", help="Allow writing config/dogbot_strategies.xlsx after creating a timestamped backup.")
+    parser.add_argument("--allow-template", action="store_true", help="Allow writing a template-sized workbook when combined with a low --min-strategies value.")
+    parser.add_argument("--min-strategies", type=int, default=20, help="Minimum strategy rows required before writing the active config.")
     return parser.parse_args(argv)
 
 
@@ -47,13 +50,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             os.environ["DOGBOT_STRATEGIES_EXCEL_ENABLED"] = previous_excel_enabled
 
+    output = Path(args.output) if args.output else ROOT / default_strategy_excel_export_path()
     summary = export_strategy_slots_to_excel(
         slots,
-        Path(args.output),
+        output,
         migration_report_path=Path(args.report),
+        overwrite_config=args.overwrite_config,
+        allow_template=args.allow_template,
+        min_strategies=args.min_strategies,
     )
-    load_result = load_excel_strategy_slots(Path(args.output), write_report=False)
-    print(f"strategy Excel exported: {Path(args.output)}")
+    load_result = load_excel_strategy_slots(output, write_report=False)
+    print(f"strategy Excel exported: {output}")
     print(f"migration report: {Path(args.report)}")
     print(
         "summary: "

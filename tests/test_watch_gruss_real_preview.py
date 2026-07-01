@@ -34,7 +34,7 @@ class WatchGrussRealPreviewTests(unittest.TestCase):
             watch_gruss_real_preview.validate_real_preview_environment(env)
 
     def test_waits_only_outside_active_pre_post_milestones(self) -> None:
-        for seconds in (45, 32, 20, 14, 1):
+        for seconds in (52, 38, 26, 16, 1):
             with self.subTest(seconds=seconds):
                 self.assertIsNone(watch_gruss_real_preview.countdown_wait_reason(seconds, seconds))
         self.assertEqual(

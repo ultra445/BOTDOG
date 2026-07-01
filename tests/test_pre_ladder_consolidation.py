@@ -30,6 +30,17 @@ class PreLadderConsolidationTests(unittest.TestCase):
         "start_price_tick",
         "current_ladder_price",
         "tick_rounding_mode",
+        "computed_limit_price_raw",
+        "computed_limit_price_effective",
+        "min_price_floor_applied",
+        "pre_value_target_price",
+        "ladder_planned_price",
+        "sent_price_before_value_clamp",
+        "sent_price_after_value_clamp",
+        "value_clamp_applied",
+        "value_limit_breached",
+        "value_limit_skip_reason",
+        "tick_rounding_direction",
         "best_same_side_back_offer",
         "best_same_side_lay_offer",
         "best_back_displayed",
@@ -66,7 +77,7 @@ class PreLadderConsolidationTests(unittest.TestCase):
 
         self.assertEqual(values.get("DOGBOT_PRE_LADDER_ENABLED"), "false")
         self.assertEqual(values.get("DOGBOT_PRE_LADDER_PREVIEW"), "true")
-        self.assertEqual(values.get("DOGBOT_PRE_LADDER_STEPS"), "45,32,20,14")
+        self.assertEqual(values.get("DOGBOT_PRE_LADDER_STEPS"), "52,38,26,16")
         self.assertEqual(values.get("DOGBOT_PRE_INITIAL_BATCH_WRITE_GRACE_SECONDS"), "10")
         self.assertEqual(values.get("DOGBOT_PRE_CANCEL_BEFORE_POST"), "true")
         self.assertEqual(values.get("DOGBOT_PRE_CANCEL_SECONDS_BEFORE_OFF"), "1")

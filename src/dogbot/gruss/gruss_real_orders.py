@@ -58,6 +58,17 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "ladder_plan_created_step",
     "ladder_prices_frozen",
     "current_ladder_price_from_frozen_plan",
+    "computed_limit_price_raw",
+    "computed_limit_price_effective",
+    "min_price_floor_applied",
+    "pre_value_target_price",
+    "ladder_planned_price",
+    "sent_price_before_value_clamp",
+    "sent_price_after_value_clamp",
+    "value_clamp_applied",
+    "value_limit_breached",
+    "value_limit_skip_reason",
+    "tick_rounding_direction",
     "best_same_side_offer_at_creation",
     "best_back_displayed",
     "best_lay_displayed",
@@ -221,10 +232,26 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "trigger_mapping_name",
     "trigger_written",
     "trigger_value_written",
+    "action",
     "bet_ref_before",
     "bet_ref_after",
     "bet_ref_poll_attempts",
     "bet_ref_poll_duration_ms",
+    "pre_write_attempt_id",
+    "pre_bet_ref_required",
+    "pre_bet_ref_confirmed",
+    "pre_bet_ref_found",
+    "pre_bet_ref_missing",
+    "pre_bet_ref_poll_attempts",
+    "pre_bet_ref_poll_duration_ms",
+    "pre_bet_ref_missing_retryable",
+    "pre_bet_ref_late_detected",
+    "pre_bet_ref_late_value",
+    "pre_retry_count",
+    "pre_retry_allowed",
+    "pre_retry_reason",
+    "pre_retry_block_reason",
+    "pre_unconfirmed_reason",
     "bet_ref_lookup_sources",
     "bet_ref_lookup_source_used",
     "bet_ref_lookup_source",
@@ -252,6 +279,11 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "workbook_sheet_names",
     "diagnostic_keep_triggers",
     "active_ladder_bet_ref_stored",
+    "active_ladder_created",
+    "pending_ladder_created",
+    "matched_evidence_found",
+    "selection_row_evidence_found",
+    "no_stacking_blocked_retry",
     "replace_allowed",
     "replace_trigger",
     "bet_ref_suffix_n_handled",
@@ -342,12 +374,73 @@ GRUSS_REAL_ATTEMPTS_HEADER = [
     "post_write_trigger_value",
     "post_write_verified",
     "post_provider_called",
+    "post_batch_id",
+    "post_batch_market_id",
+    "post_batch_market_name",
+    "post_batch_candidate_count",
+    "post_batch_written_count",
+    "post_batch_write_duration_ms",
+    "post_batch_confirmation_started",
+    "post_batch_confirmation_duration_ms",
+    "post_batch_runner_index",
+    "post_batch_total_runners",
     "post_send_seconds_before_off",
     "post_allow_after_scheduled_off_seconds",
     "post_trigger_window_hit",
     "post_write_attempted",
     "post_write_status",
     "post_write_reason",
+    "post_bet_ref_required",
+    "post_bet_ref_wait_attempted",
+    "post_bet_ref_wait_ms",
+    "post_bet_ref_poll_ms",
+    "post_existing_bet_ref_before",
+    "post_existing_pre_bet_ref",
+    "post_existing_matched_before",
+    "post_existing_pre_matched_stake",
+    "post_existing_avg_odds_before",
+    "post_existing_pre_avg_odds",
+    "post_independent_mode_enabled",
+    "post_row_prepared_for_new_order",
+    "post_pre_bet_ref_cleared_for_write",
+    "post_pre_bet_ref_preserved_in_state",
+    "post_new_bet_ref_expected",
+    "post_new_bet_ref_found",
+    "post_new_bet_ref",
+    "post_added_stake_confirmed",
+    "post_added_stake_amount",
+    "post_total_matched_before",
+    "post_total_matched_after",
+    "post_total_matched_delta",
+    "post_expected_market_id",
+    "post_expected_market_type",
+    "post_expected_runner",
+    "post_expected_selection_id",
+    "post_expected_side",
+    "post_expected_stake",
+    "post_expected_price",
+    "post_write_timestamp",
+    "post_order_write_timestamp",
+    "post_bet_ref_after",
+    "post_bet_ref_changed",
+    "post_bet_ref_confirmed_new",
+    "post_bet_ref_poll_attempts",
+    "post_bet_ref_poll_duration_ms",
+    "post_order_confirmed",
+    "post_order_confirmation_source",
+    "post_confirmation_source",
+    "post_selections_lookup_attempted",
+    "post_selections_match_found",
+    "post_selections_match_reason",
+    "post_selections_reject_reason",
+    "post_clear_after_bet_ref",
+    "post_cells_clear_delay_ms",
+    "post_cells_cleared_after_confirmation",
+    "post_cells_cleared_after_unconfirmed",
+    "post_clear_reason",
+    "post_write_unconfirmed_reason",
+    "post_unconfirmed_reason",
+    "post_reject_reason",
     "countdown_seconds_at_post_write",
     "market_status_at_post_write",
     "hold_trigger_for_visual_test",
@@ -470,6 +563,14 @@ class GrussRealOrderResult:
     stake_capped: bool = False
     stake_cap_value: float | None = None
     execution_phase: str = "POST"
+    market_type: str = ""
+    market_id: str = ""
+    runner_name: str = ""
+    trap: int | None = None
+    selection_id: str | int | None = None
+    side: str = ""
+    order_type: str = ""
+    strategy_id: str = ""
     processed_key: str = ""
     post_processed_key: str = ""
     post_processed_key_scope: str = ""
@@ -495,6 +596,17 @@ class GrussRealOrderResult:
     ladder_plan_created_step: str | int | None = None
     ladder_prices_frozen: str = ""
     current_ladder_price_from_frozen_plan: bool = False
+    computed_limit_price_raw: float | None = None
+    computed_limit_price_effective: float | None = None
+    min_price_floor_applied: bool = False
+    pre_value_target_price: float | None = None
+    ladder_planned_price: float | None = None
+    sent_price_before_value_clamp: float | None = None
+    sent_price_after_value_clamp: float | None = None
+    value_clamp_applied: bool = False
+    value_limit_breached: bool = False
+    value_limit_skip_reason: str = ""
+    tick_rounding_direction: str = ""
     best_same_side_offer_at_creation: float | None = None
     best_back_displayed: float | None = None
     best_lay_displayed: float | None = None
@@ -578,10 +690,26 @@ class GrussRealOrderResult:
     trigger_cell_expected_empty: bool | None = None
     trigger_mapping_name: str = ""
     trigger_value_written: str = ""
+    action: str = ""
     bet_ref_before: str = ""
     bet_ref_after: str = ""
     bet_ref_poll_attempts: int = 0
     bet_ref_poll_duration_ms: int = 0
+    pre_write_attempt_id: str = ""
+    pre_bet_ref_required: bool = False
+    pre_bet_ref_confirmed: bool = False
+    pre_bet_ref_found: bool = False
+    pre_bet_ref_missing: bool = False
+    pre_bet_ref_poll_attempts: int = 0
+    pre_bet_ref_poll_duration_ms: int = 0
+    pre_bet_ref_missing_retryable: bool = False
+    pre_bet_ref_late_detected: bool = False
+    pre_bet_ref_late_value: str = ""
+    pre_retry_count: int = 0
+    pre_retry_allowed: bool = False
+    pre_retry_reason: str = ""
+    pre_retry_block_reason: str = ""
+    pre_unconfirmed_reason: str = ""
     bet_ref_lookup_sources: str = ""
     bet_ref_lookup_source_used: str = ""
     bet_ref_lookup_source: str = ""
@@ -609,6 +737,11 @@ class GrussRealOrderResult:
     workbook_sheet_names: str = ""
     diagnostic_keep_triggers: bool = False
     active_ladder_bet_ref_stored: bool = False
+    active_ladder_created: bool = False
+    pending_ladder_created: bool = False
+    matched_evidence_found: bool = False
+    selection_row_evidence_found: bool = False
+    no_stacking_blocked_retry: bool = False
     replace_allowed: bool = False
     replace_trigger: str = ""
     bet_ref_suffix_n_handled: bool = False
@@ -716,12 +849,73 @@ class GrussRealOrderResult:
     post_write_trigger_value: Any = None
     post_write_verified: bool | None = None
     post_provider_called: bool | None = None
+    post_batch_id: str = ""
+    post_batch_market_id: str = ""
+    post_batch_market_name: str = ""
+    post_batch_candidate_count: int | None = None
+    post_batch_written_count: int | None = None
+    post_batch_write_duration_ms: int | None = None
+    post_batch_confirmation_started: bool = False
+    post_batch_confirmation_duration_ms: int | None = None
+    post_batch_runner_index: int | None = None
+    post_batch_total_runners: int | None = None
     post_send_seconds_before_off: int | None = None
     post_allow_after_scheduled_off_seconds: int | None = None
     post_trigger_window_hit: bool | None = None
     post_write_attempted: bool | None = None
     post_write_status: str = ""
     post_write_reason: str = ""
+    post_bet_ref_required: bool = False
+    post_bet_ref_wait_attempted: bool = False
+    post_bet_ref_wait_ms: int = 0
+    post_bet_ref_poll_ms: int = 0
+    post_existing_bet_ref_before: str = ""
+    post_existing_pre_bet_ref: str = ""
+    post_existing_matched_before: float | None = None
+    post_existing_pre_matched_stake: float | None = None
+    post_existing_avg_odds_before: float | None = None
+    post_existing_pre_avg_odds: float | None = None
+    post_independent_mode_enabled: bool = False
+    post_row_prepared_for_new_order: bool = False
+    post_pre_bet_ref_cleared_for_write: bool = False
+    post_pre_bet_ref_preserved_in_state: bool = False
+    post_new_bet_ref_expected: bool = False
+    post_new_bet_ref_found: bool = False
+    post_new_bet_ref: str = ""
+    post_added_stake_confirmed: bool = False
+    post_added_stake_amount: float | None = None
+    post_total_matched_before: float | None = None
+    post_total_matched_after: float | None = None
+    post_total_matched_delta: float | None = None
+    post_expected_market_id: str = ""
+    post_expected_market_type: str = ""
+    post_expected_runner: str = ""
+    post_expected_selection_id: str = ""
+    post_expected_side: str = ""
+    post_expected_stake: float | None = None
+    post_expected_price: float | None = None
+    post_write_timestamp: str = ""
+    post_order_write_timestamp: str = ""
+    post_bet_ref_after: str = ""
+    post_bet_ref_changed: bool = False
+    post_bet_ref_confirmed_new: bool = False
+    post_bet_ref_poll_attempts: int = 0
+    post_bet_ref_poll_duration_ms: int = 0
+    post_order_confirmed: bool = False
+    post_order_confirmation_source: str = ""
+    post_confirmation_source: str = ""
+    post_selections_lookup_attempted: bool = False
+    post_selections_match_found: bool = False
+    post_selections_match_reason: str = ""
+    post_selections_reject_reason: str = ""
+    post_clear_after_bet_ref: bool = False
+    post_cells_clear_delay_ms: int = 0
+    post_cells_cleared_after_confirmation: bool = False
+    post_cells_cleared_after_unconfirmed: bool = False
+    post_clear_reason: str = ""
+    post_write_unconfirmed_reason: str = ""
+    post_unconfirmed_reason: str = ""
+    post_reject_reason: str = ""
     countdown_seconds_at_post_write: int | None = None
     market_status_at_post_write: Any = None
     hold_trigger_for_visual_test: bool = False
@@ -769,6 +963,16 @@ class _BetRefPollResult:
 
 
 @dataclass(frozen=True)
+class _PostSelectionsLookupResult:
+    match: _SelectionsBetRefCandidate | None = None
+    attempted: bool = False
+    rows_scanned: int = 0
+    match_reason: str = ""
+    reject_reason: str = ""
+    lookup_source: str = ""
+
+
+@dataclass(frozen=True)
 class _ExcelWriteResult:
     written: tuple[str, ...] = ()
     attempt: int = 0
@@ -809,12 +1013,15 @@ class _SelectionsBetRefCandidate:
     row_number: int
     runner: str
     trap: int | None
+    selection_id: str
     side: str
     stake: float | None
     req_odds: float | None
     average_odds: float | None
     result: str
     market_name: str
+    market_id: str
+    market_type: str
     matched_odds: float | None
     matched_stake: float | None
     bet_ref: str
@@ -843,6 +1050,7 @@ class _ActivePreLadderState:
     side: str
     row: int
     bet_ref: str = ""
+    pending_confirmation: bool = False
 
 
 class GrussExcelOrderProvider:
@@ -878,6 +1086,7 @@ class GrussExcelOrderProvider:
         self.active_pre_ladder_id: str | None = None
         self.active_pre_ladder_course: str | None = None
         self.active_pre_ladders: dict[str, _ActivePreLadderState] = {}
+        self.pre_bet_ref_missing_retry_counts: dict[str, int] = {}
         self._pending_active_ladder_release_id: str | None = None
         self._pending_active_ladder_release_reason: str = ""
         self._batch_log_context: dict[str, Any] = {}
@@ -1593,13 +1802,241 @@ class GrussExcelOrderProvider:
             common_fields=common_fields,
         )
 
+    def confirm_post_order_batch(
+        self,
+        results: Iterable[GrussRealOrderResult],
+        context: GrussRealOrderContext,
+    ) -> None:
+        pending = [
+            result
+            for result in results
+            if str(getattr(result, "status", "") or "") == "POST_WRITE_PENDING_CONFIRMATION"
+            and bool(getattr(result, "trigger_written", False))
+            and bool(getattr(result, "post_write_verified", False))
+        ]
+        if not pending:
+            return
+        wait_ms = _post_bet_ref_wait_ms()
+        poll_ms = _post_bet_ref_poll_ms()
+        started = time.perf_counter()
+        deadline = started + (wait_ms / 1000)
+        unresolved = {result.processed_key: result for result in pending if result.processed_key}
+        attempts = {result.processed_key: 0 for result in pending if result.processed_key}
+        last_bet_refs = {result.processed_key: "" for result in pending if result.processed_key}
+        confirmation_source = {result.processed_key: "" for result in pending if result.processed_key}
+        confirmed: set[str] = set()
+
+        while unresolved:
+            for key, result in list(unresolved.items()):
+                attempts[key] = attempts.get(key, 0) + 1
+                bet_ref_address = self.layout.bet_ref_address(int(result.excel_row or 0))
+                try:
+                    bet_ref = normalise_gruss_bet_ref(
+                        self._read_cell_with_retry(
+                            result.excel_sheet,
+                            bet_ref_address,
+                            f"post_batch_read_bet_ref:{result.excel_sheet}!{bet_ref_address}",
+                        )
+                    )
+                except Exception:
+                    bet_ref = ""
+                last_bet_refs[key] = bet_ref
+                existing = normalise_gruss_bet_ref(result.post_existing_bet_ref_before)
+                if is_valid_bet_ref(bet_ref) and (
+                    not is_valid_bet_ref(existing)
+                    or strip_gruss_ref_suffix(bet_ref) != strip_gruss_ref_suffix(existing)
+                ):
+                    confirmed.add(key)
+                    confirmation_source[key] = f"post_batch_excel_row_poll:{bet_ref_address}"
+                    unresolved.pop(key, None)
+            if not unresolved or wait_ms <= 0 or time.perf_counter() >= deadline:
+                break
+            remaining_ms = max(0.0, (deadline - time.perf_counter()) * 1000)
+            time.sleep(min(float(poll_ms), remaining_ms) / 1000)
+
+        for key, result in list(unresolved.items()):
+            lookup = self._lookup_post_selection_confirmation(
+                result.excel_sheet,
+                _intent_from_result(result),
+                context,
+                post_write_timestamp=result.post_write_timestamp or result.post_order_write_timestamp,
+                existing_bet_ref_before=result.post_existing_bet_ref_before,
+                expected_market_id=result.post_expected_market_id,
+                expected_market_type=result.post_expected_market_type,
+                expected_runner=result.post_expected_runner,
+                expected_selection_id=result.post_expected_selection_id,
+                expected_side=result.post_expected_side,
+                expected_stake=result.post_expected_stake,
+                expected_price=result.post_expected_price,
+            )
+            _set_result_attr(result, "post_selections_lookup_attempted", lookup.attempted)
+            _set_result_attr(result, "post_selections_match_found", lookup.match is not None)
+            _set_result_attr(result, "post_selections_match_reason", lookup.match_reason)
+            _set_result_attr(result, "post_selections_reject_reason", lookup.reject_reason)
+            if lookup.match is not None:
+                confirmed.add(key)
+                last_bet_refs[key] = lookup.match.bet_ref
+                confirmation_source[key] = lookup.lookup_source
+                unresolved.pop(key, None)
+
+        confirmation_duration_ms = int(round((time.perf_counter() - started) * 1000))
+        per_key: dict[str, dict[str, Any]] = {}
+        confirmed_count = 0
+        for result in pending:
+            key = result.processed_key
+            bet_ref = last_bet_refs.get(key, "")
+            is_confirmed = key in confirmed
+            existing = normalise_gruss_bet_ref(result.post_existing_bet_ref_before)
+            bet_ref_changed = bool(
+                is_valid_bet_ref(bet_ref)
+                and (
+                    not is_valid_bet_ref(existing)
+                    or strip_gruss_ref_suffix(bet_ref) != strip_gruss_ref_suffix(existing)
+                )
+            )
+            matched_before = (
+                result.post_total_matched_before
+                if result.post_total_matched_before is not None
+                else result.post_existing_matched_before
+            )
+            matched_after = _matched_stake_value(
+                _read_cell_quiet(
+                    self.bridge,
+                    result.excel_sheet,
+                    self.layout.matched_stake_address(int(result.excel_row or 0)),
+                )
+            )
+            matched_delta = _matched_stake_delta(matched_before, matched_after)
+            added_stake_confirmed = bool(matched_delta is not None and matched_delta > 0)
+            unconfirmed_reason = ""
+            order_source = confirmation_source.get(key, "")
+            if added_stake_confirmed:
+                if not is_confirmed:
+                    is_confirmed = True
+                    order_source = "post_matched_stake_delta"
+                _set_result_attr(result, "post_added_stake_confirmed", True)
+                _set_result_attr(result, "post_added_stake_amount", matched_delta)
+            confirmed_count += 1 if is_confirmed else 0
+            if not is_confirmed:
+                if is_valid_bet_ref(bet_ref) and is_valid_bet_ref(existing):
+                    unconfirmed_reason = "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA"
+                    order_source = "post_existing_bet_ref_unchanged"
+                else:
+                    unconfirmed_reason = "POST_WRITE_ATTEMPTED_BUT_NO_NEW_ORDER_EVIDENCE"
+            status = "GRUSS_REAL_WRITTEN" if is_confirmed else (
+                "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF"
+                if unconfirmed_reason == "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA"
+                else "POST_WRITE_UNCONFIRMED"
+            )
+            reason = "excel_trigger_written" if is_confirmed else unconfirmed_reason
+            clear_outcome = _TriggerClearOutcome()
+            cells_cleared_after_confirmation = False
+            cells_cleared_after_unconfirmed = False
+            post_clear_reason = ""
+            if _post_clear_after_bet_ref() and result.trigger_cell_address:
+                clear_outcome = self._clear_written_trigger(
+                    result.excel_sheet,
+                    result.trigger_cell_address,
+                    result.trigger_mapping_name,
+                    hold_for_visual_test=self.hold_trigger_for_visual_test,
+                    processed_key=key,
+                    expected_command_cell_values=result.write_plan,
+                    delay_override_ms=_post_command_cells_clear_delay_ms(),
+                )
+                cleared = bool(clear_outcome.attempted and (clear_outcome.cleared or clear_outcome.scheduled))
+                if is_confirmed:
+                    cells_cleared_after_confirmation = cleared
+                    post_clear_reason = "confirmed_post_cleanup" if cleared else clear_outcome.command_reason or clear_outcome.reason
+                else:
+                    cells_cleared_after_unconfirmed = cleared
+                    post_clear_reason = "unconfirmed_post_cleanup" if cleared else clear_outcome.command_reason or clear_outcome.reason
+
+            _set_result_attr(result, "status", status)
+            _set_result_attr(result, "reason", reason)
+            _set_result_attr(result, "post_write_status", status)
+            _set_result_attr(result, "post_write_reason", reason)
+            _set_result_attr(result, "post_bet_ref_wait_attempted", True)
+            _set_result_attr(result, "post_bet_ref_after", bet_ref)
+            _set_result_attr(result, "post_bet_ref_changed", bet_ref_changed)
+            _set_result_attr(result, "post_bet_ref_confirmed_new", bool(is_confirmed and bet_ref_changed))
+            _set_result_attr(result, "post_new_bet_ref_found", bool(bet_ref_changed and is_valid_bet_ref(bet_ref)))
+            _set_result_attr(
+                result,
+                "post_new_bet_ref",
+                bet_ref if bet_ref_changed and is_valid_bet_ref(bet_ref) else "",
+            )
+            _set_result_attr(result, "post_total_matched_before", matched_before)
+            _set_result_attr(result, "post_total_matched_after", matched_after)
+            _set_result_attr(result, "post_total_matched_delta", matched_delta)
+            if not added_stake_confirmed:
+                _set_result_attr(result, "post_added_stake_confirmed", False)
+                _set_result_attr(result, "post_added_stake_amount", None)
+            _set_result_attr(result, "post_bet_ref_poll_attempts", attempts.get(key, 0))
+            _set_result_attr(result, "post_bet_ref_poll_duration_ms", confirmation_duration_ms)
+            _set_result_attr(result, "post_order_confirmed", is_confirmed)
+            _set_result_attr(result, "post_order_confirmation_source", order_source)
+            _set_result_attr(result, "post_confirmation_source", order_source)
+            _set_result_attr(result, "post_write_unconfirmed_reason", unconfirmed_reason)
+            _set_result_attr(result, "post_unconfirmed_reason", unconfirmed_reason)
+            _set_result_attr(result, "post_reject_reason", "" if is_confirmed else unconfirmed_reason)
+            _set_result_attr(result, "post_cells_cleared_after_confirmation", cells_cleared_after_confirmation)
+            _set_result_attr(result, "post_cells_cleared_after_unconfirmed", cells_cleared_after_unconfirmed)
+            _set_result_attr(result, "post_clear_reason", post_clear_reason)
+            _set_result_attr(result, "post_batch_confirmation_started", True)
+            _set_result_attr(result, "post_batch_confirmation_duration_ms", confirmation_duration_ms)
+            if is_confirmed:
+                self.real_order_counts[key] = self.real_order_counts.get(key, 0) + 1
+
+            per_key[key] = {
+                "status": status,
+                "reason": reason,
+                "post_write_status": status,
+                "post_write_reason": reason,
+                "post_bet_ref_wait_attempted": True,
+                "post_bet_ref_after": bet_ref,
+                "post_bet_ref_changed": bet_ref_changed,
+                "post_bet_ref_confirmed_new": bool(is_confirmed and bet_ref_changed),
+                "post_new_bet_ref_found": bool(bet_ref_changed and is_valid_bet_ref(bet_ref)),
+                "post_new_bet_ref": bet_ref if bet_ref_changed and is_valid_bet_ref(bet_ref) else "",
+                "post_added_stake_confirmed": added_stake_confirmed,
+                "post_added_stake_amount": matched_delta if added_stake_confirmed else "",
+                "post_total_matched_before": matched_before,
+                "post_total_matched_after": matched_after,
+                "post_total_matched_delta": matched_delta,
+                "post_bet_ref_poll_attempts": attempts.get(key, 0),
+                "post_bet_ref_poll_duration_ms": confirmation_duration_ms,
+                "post_order_confirmed": is_confirmed,
+                "post_order_confirmation_source": order_source,
+                "post_confirmation_source": order_source,
+                "post_selections_lookup_attempted": result.post_selections_lookup_attempted,
+                "post_selections_match_found": result.post_selections_match_found,
+                "post_selections_match_reason": result.post_selections_match_reason,
+                "post_selections_reject_reason": result.post_selections_reject_reason,
+                "post_write_unconfirmed_reason": unconfirmed_reason,
+                "post_unconfirmed_reason": unconfirmed_reason,
+                "post_reject_reason": "" if is_confirmed else unconfirmed_reason,
+                "post_cells_cleared_after_confirmation": cells_cleared_after_confirmation,
+                "post_cells_cleared_after_unconfirmed": cells_cleared_after_unconfirmed,
+                "post_clear_reason": post_clear_reason,
+                "post_batch_written_count": len(pending),
+                "post_batch_confirmation_started": True,
+                "post_batch_confirmation_duration_ms": confirmation_duration_ms,
+            }
+        self._update_attempt_log_rows(
+            per_key.keys(),
+            per_key_fields=per_key,
+        )
+
     def collect_pre_ladder_bet_refs(self, results: Iterable[GrussRealOrderResult]) -> None:
         candidates: list[tuple[GrussRealOrderResult, _ActivePreLadderState]] = []
         for result in results:
             if (
                 result.status != "GRUSS_PRE_LADDER_WRITTEN"
                 or not result.trigger_written
-                or _ladder_step_index(result.ladder_step) != 0
+                or (
+                    _ladder_step_index(result.ladder_step) != 0
+                    and not bool(getattr(result, "pre_retry_allowed", False))
+                )
             ):
                 continue
             state = self.active_pre_ladders.get(result.ladder_id)
@@ -1634,6 +2071,8 @@ class GrussExcelOrderProvider:
         selections_rows_scanned_by_key = {result.processed_key: 0 for result, _state in candidates}
         selections_match_found_by_key = {result.processed_key: False for result, _state in candidates}
         selections_match_reason_by_key = {result.processed_key: "" for result, _state in candidates}
+        selection_evidence_found_by_key = {result.processed_key: False for result, _state in candidates}
+        selection_evidence_reason_by_key = {result.processed_key: "" for result, _state in candidates}
         selections_runner_by_key = {result.processed_key: "" for result, _state in candidates}
         selections_side_by_key = {result.processed_key: "" for result, _state in candidates}
         selections_stake_by_key: dict[str, float | None] = {
@@ -1673,6 +2112,9 @@ class GrussExcelOrderProvider:
                     used_bet_refs.add(bet_ref)
                     state.bet_ref = bet_ref
                     _set_result_attr(result, "bet_ref_after", bet_ref)
+                    _set_result_attr(result, "pre_bet_ref_required", True)
+                    _set_result_attr(result, "pre_bet_ref_confirmed", True)
+                    _set_result_attr(result, "pre_bet_ref_missing", False)
                     _set_result_attr(result, "bet_ref_lookup_source", f"excel_row_batch_poll:{address}")
                     _set_result_attr(result, "bet_ref_lookup_source_used", "ROW_T")
                     _set_result_attr(result, "bet_ref_lookup_matched_runner", "True")
@@ -1702,6 +2144,14 @@ class GrussExcelOrderProvider:
                             selection_candidates,
                             used_bet_refs=used_bet_refs,
                         )
+                        evidence_match, evidence_reason = _match_selection_activity_evidence_candidate(
+                            state,
+                            result,
+                            selection_candidates,
+                        )
+                        if evidence_match is not None:
+                            selection_evidence_found_by_key[result.processed_key] = True
+                            selection_evidence_reason_by_key[result.processed_key] = evidence_reason
                         selections_match_reason_by_key[result.processed_key] = reason
                         selections_debug_rows_by_key[result.processed_key] = _format_recent_selection_rows(
                             selection_candidates
@@ -1719,10 +2169,14 @@ class GrussExcelOrderProvider:
                             source_by_key[result.processed_key] = (
                                 f"selections_sheet_poll_timeout:{sheet_name}"
                             )
+                            if evidence_reason:
+                                selections_match_reason_by_key[result.processed_key] = evidence_reason
                             continue
                         used_bet_refs.add(match.bet_ref)
                         state.bet_ref = match.bet_ref
                         selections_match_found_by_key[result.processed_key] = True
+                        selection_evidence_found_by_key[result.processed_key] = True
+                        selection_evidence_reason_by_key[result.processed_key] = reason
                         selections_runner_by_key[result.processed_key] = match.runner
                         selections_side_by_key[result.processed_key] = match.side
                         selections_stake_by_key[result.processed_key] = match.stake
@@ -1730,6 +2184,9 @@ class GrussExcelOrderProvider:
                         selections_req_odds_by_key[result.processed_key] = match.req_odds
                         selections_market_name_by_key[result.processed_key] = match.market_name
                         _set_result_attr(result, "bet_ref_after", match.bet_ref)
+                        _set_result_attr(result, "pre_bet_ref_required", True)
+                        _set_result_attr(result, "pre_bet_ref_confirmed", True)
+                        _set_result_attr(result, "pre_bet_ref_missing", False)
                         _set_result_attr(
                             result,
                             "bet_ref_lookup_source",
@@ -1761,8 +2218,53 @@ class GrussExcelOrderProvider:
         per_key: dict[str, dict[str, Any]] = {}
         for result, state in candidates:
             stored = bool(state.bet_ref)
+            matched_evidence_found = _result_matched_evidence_found(result)
+            selection_row_evidence_found = bool(selection_evidence_found_by_key.get(result.processed_key, False))
+            evidence_found = matched_evidence_found or selection_row_evidence_found
+            retry_key = _pre_retry_key_for_result(result)
+            retry_count = int(self.pre_bet_ref_missing_retry_counts.get(retry_key, 0))
+            retry_allowed = False
+            retry_reason = str(getattr(result, "pre_retry_reason", "") or "")
+            retry_block_reason = ""
+            missing_retryable = False
+            action = str(getattr(result, "action", "") or result.status)
+            active_ladder_created = bool(stored)
+            pending_ladder_created = False
+            no_stacking_blocked_retry = False
+            if stored:
+                self.pre_bet_ref_missing_retry_counts.pop(retry_key, None)
+                state.pending_confirmation = False
+                retry_count = 0
+            elif evidence_found:
+                state.pending_confirmation = True
+                pending_ladder_created = True
+                no_stacking_blocked_retry = True
+                retry_block_reason = (
+                    "matched_evidence_found" if matched_evidence_found else "selection_row_evidence_found"
+                )
+                action = "PRE_LADDER_BET_REF_MISSING"
+            else:
+                max_retries = _pre_bet_ref_missing_max_retries()
+                if retry_count < max_retries:
+                    retry_allowed = True
+                    missing_retryable = True
+                    retry_reason = "bet_ref_missing_retry_next_pre_step"
+                else:
+                    retry_block_reason = "pre_bet_ref_missing_retry_limit_reached"
+                action = "PRE_LADDER_BET_REF_MISSING"
             _set_result_attr(result, "bet_ref_poll_attempts", attempts_by_key.get(result.processed_key, 0))
             _set_result_attr(result, "bet_ref_poll_duration_ms", duration_ms)
+            _set_result_attr(result, "pre_bet_ref_required", True)
+            _set_result_attr(result, "pre_bet_ref_confirmed", stored)
+            _set_result_attr(result, "pre_bet_ref_found", stored)
+            _set_result_attr(result, "pre_bet_ref_missing", not stored)
+            _set_result_attr(result, "pre_bet_ref_poll_attempts", attempts_by_key.get(result.processed_key, 0))
+            _set_result_attr(result, "pre_bet_ref_poll_duration_ms", duration_ms)
+            _set_result_attr(result, "pre_bet_ref_missing_retryable", missing_retryable)
+            _set_result_attr(result, "pre_retry_count", retry_count)
+            _set_result_attr(result, "pre_retry_allowed", retry_allowed)
+            _set_result_attr(result, "pre_retry_reason", retry_reason)
+            _set_result_attr(result, "pre_retry_block_reason", retry_block_reason)
             _set_result_attr(result, "bet_ref_lookup_sources", lookup_sources_text)
             _set_result_attr(result, "bet_ref_lookup_source_used", source_used_by_key.get(result.processed_key, ""))
             _set_result_attr(result, "bet_ref_collection_phase_start", collection_start)
@@ -1786,6 +2288,7 @@ class GrussExcelOrderProvider:
                 "selections_match_reason",
                 selections_match_reason_by_key.get(result.processed_key, ""),
             )
+            _set_result_attr(result, "selection_row_evidence_found", selection_row_evidence_found)
             _set_result_attr(result, "selections_runner", selections_runner_by_key.get(result.processed_key, ""))
             _set_result_attr(result, "selections_side", selections_side_by_key.get(result.processed_key, ""))
             _set_result_attr(result, "selections_stake", selections_stake_by_key.get(result.processed_key))
@@ -1832,7 +2335,25 @@ class GrussExcelOrderProvider:
             )
             _set_result_attr(result, "workbook_sheet_names", workbook_sheet_names)
             _set_result_attr(result, "diagnostic_keep_triggers", diagnostic_keep_triggers)
-            if not stored:
+            _set_result_attr(result, "active_ladder_bet_ref_stored", bool(stored))
+            _set_result_attr(result, "active_ladder_created", active_ladder_created)
+            _set_result_attr(result, "pending_ladder_created", pending_ladder_created)
+            _set_result_attr(result, "matched_evidence_found", matched_evidence_found)
+            _set_result_attr(result, "no_stacking_blocked_retry", no_stacking_blocked_retry)
+            _set_result_attr(result, "action", action)
+            if not stored and not evidence_found:
+                self.active_pre_ladders.pop(result.ladder_id, None)
+                if self.active_pre_ladder_id == result.ladder_id:
+                    self._refresh_legacy_active_ladder_snapshot()
+                status = "PRE_LADDER_BET_REF_MISSING_RETRYABLE" if retry_allowed else "PRE_LADDER_BET_REF_MISSING"
+                reason = (
+                    "pre_ladder_bet_ref_missing_retryable_after_poll"
+                    if retry_allowed
+                    else retry_block_reason or "pre_ladder_bet_ref_missing_after_poll"
+                )
+                _set_result_attr(result, "status", status)
+                _set_result_attr(result, "reason", reason)
+                _set_result_attr(result, "pre_unconfirmed_reason", "bet_ref_missing_after_poll")
                 _set_result_attr(
                     result,
                     "bet_ref_lookup_source",
@@ -1840,8 +2361,19 @@ class GrussExcelOrderProvider:
                 )
                 _set_result_attr(result, "bet_ref_lookup_matched_runner", "False")
                 _set_result_attr(result, "active_ladder_bet_ref_stored", False)
+            elif not stored and evidence_found:
+                _set_result_attr(result, "status", "PRE_LADDER_BET_REF_LATE_OR_MATCH_EVIDENCE")
+                _set_result_attr(result, "reason", retry_block_reason)
+                _set_result_attr(result, "pre_unconfirmed_reason", "bet_ref_missing_with_order_evidence")
+                _set_result_attr(
+                    result,
+                    "bet_ref_lookup_source",
+                    source_by_key.get(result.processed_key, ""),
+                )
+                _set_result_attr(result, "bet_ref_lookup_matched_runner", "False")
             per_key[result.processed_key] = {
                 "bet_ref_after": state.bet_ref,
+                "action": action,
                 "bet_ref_poll_attempts": attempts_by_key.get(result.processed_key, 0),
                 "bet_ref_poll_duration_ms": duration_ms,
                 "bet_ref_lookup_sources": lookup_sources_text,
@@ -1855,6 +2387,7 @@ class GrussExcelOrderProvider:
                     bool(selections_match_found_by_key.get(result.processed_key, False))
                 ),
                 "selections_match_reason": selections_match_reason_by_key.get(result.processed_key, ""),
+                "selection_row_evidence_found": str(bool(selection_row_evidence_found)),
                 "selections_runner": selections_runner_by_key.get(result.processed_key, ""),
                 "selections_side": selections_side_by_key.get(result.processed_key, ""),
                 "selections_stake": ""
@@ -1878,7 +2411,40 @@ class GrussExcelOrderProvider:
                 "workbook_sheet_names": workbook_sheet_names,
                 "diagnostic_keep_triggers": str(bool(diagnostic_keep_triggers)),
                 "active_ladder_bet_ref_stored": str(bool(stored)),
+                "active_ladder_created": str(bool(active_ladder_created)),
+                "pending_ladder_created": str(bool(pending_ladder_created)),
+                "matched_evidence_found": str(bool(matched_evidence_found)),
+                "no_stacking_blocked_retry": str(bool(no_stacking_blocked_retry)),
+                "pre_bet_ref_required": "True",
+                "pre_bet_ref_confirmed": str(bool(stored)),
+                "pre_bet_ref_found": str(bool(stored)),
+                "pre_bet_ref_missing": str(not bool(stored)),
+                "pre_bet_ref_poll_attempts": attempts_by_key.get(result.processed_key, 0),
+                "pre_bet_ref_poll_duration_ms": duration_ms,
+                "pre_bet_ref_missing_retryable": str(bool(missing_retryable)),
+                "pre_retry_count": retry_count,
+                "pre_retry_allowed": str(bool(retry_allowed)),
+                "pre_retry_reason": retry_reason,
+                "pre_retry_block_reason": retry_block_reason,
+                "pre_unconfirmed_reason": "" if stored else getattr(result, "pre_unconfirmed_reason", "") or "bet_ref_missing_after_poll",
             }
+            if not stored:
+                status = (
+                    "PRE_LADDER_BET_REF_LATE_OR_MATCH_EVIDENCE"
+                    if evidence_found
+                    else ("PRE_LADDER_BET_REF_MISSING_RETRYABLE" if retry_allowed else "PRE_LADDER_BET_REF_MISSING")
+                )
+                reason = (
+                    retry_block_reason
+                    if evidence_found or not retry_allowed
+                    else "pre_ladder_bet_ref_missing_retryable_after_poll"
+                )
+                per_key[result.processed_key].update(
+                    {
+                        "status": status,
+                        "reason": reason,
+                    }
+                )
 
         self._update_attempt_log_rows(
             per_key.keys(),
@@ -1932,14 +2498,17 @@ class GrussExcelOrderProvider:
                     row_number=row_number,
                     runner=runner,
                     trap=extract_trap(runner),
+                    selection_id=_normalise_identifier(_value_at(row, columns.get("selection_id"))),
                     side=side,
                     stake=stake,
                     req_odds=req_odds,
                     average_odds=_positive_float_or_none(_value_at(row, columns.get("average_odds"))),
                     result=_clean_text(_value_at(row, columns.get("result"))),
                     market_name=_clean_text(_value_at(row, columns.get("market_name"))),
+                    market_id=_normalise_identifier(_value_at(row, columns.get("market_id"))),
+                    market_type=_clean_text(_value_at(row, columns.get("market_type"))).upper(),
                     matched_odds=_positive_float_or_none(_value_at(row, columns.get("matched_odds"))),
-                    matched_stake=_positive_float_or_none(_value_at(row, columns.get("matched_stake"))),
+                    matched_stake=_matched_stake_value(_value_at(row, columns.get("matched_stake"))),
                     bet_ref=bet_ref,
                     timestamp=_clean_text(_value_at(row, columns.get("timestamp"))),
                 )
@@ -2243,6 +2812,81 @@ class GrussExcelOrderProvider:
                 stake_cap_value=stake_cap_value,
             )
 
+        is_post = _execution_phase(intent) == "POST"
+        post_batch_defer_confirmation = bool(
+            is_post and self._batch_log_context.get("post_batch_defer_confirmation")
+        )
+        bet_ref_address = self.layout.bet_ref_address(runner_row)
+        post_existing_bet_ref_before = ""
+        post_existing_matched_before = None
+        post_existing_avg_odds_before = None
+        post_expected_market_id = ""
+        post_expected_market_type = ""
+        post_expected_runner = ""
+        post_expected_selection_id = ""
+        post_expected_side = ""
+        post_expected_stake = None
+        post_expected_price = None
+        post_write_timestamp = ""
+        post_independent_mode_enabled = bool(
+            is_post and _post_independent_mode_enabled(self._batch_log_context)
+        )
+        post_row_prepared_for_new_order = False
+        post_pre_bet_ref_cleared_for_write = False
+        post_pre_bet_ref_preserved_in_state = False
+        post_new_bet_ref_expected = False
+        post_new_bet_ref_found = False
+        post_new_bet_ref = ""
+        post_added_stake_confirmed = False
+        post_added_stake_amount = None
+        post_total_matched_before = None
+        post_total_matched_after = None
+        post_total_matched_delta = None
+        if is_post:
+            try:
+                post_existing_bet_ref_before = normalise_gruss_bet_ref(
+                    self._read_cell_with_retry(
+                        sheet_name,
+                        bet_ref_address,
+                        f"post_read_existing_bet_ref_before_write:{sheet_name}!{bet_ref_address}",
+                    )
+                )
+            except Exception:
+                post_existing_bet_ref_before = ""
+            post_existing_matched_before = _matched_stake_value(
+                _read_cell_quiet(
+                    self.bridge,
+                    sheet_name,
+                    self.layout.matched_stake_address(runner_row),
+                )
+            )
+            post_existing_avg_odds_before = _positive_float_or_none(
+                _read_cell_quiet(
+                    self.bridge,
+                    sheet_name,
+                    self.layout.avg_matched_odds_address(runner_row),
+                )
+            )
+            post_total_matched_before = post_existing_matched_before
+            post_expected_market_id = _normalise_identifier(intent.market_id)
+            post_expected_market_type = str(intent.market_type or sheet_name or "").upper()
+            post_expected_runner = str(intent.runner_name or "")
+            post_expected_selection_id = _normalise_identifier(
+                intent.selection_id if intent.selection_id is not None else intent.trap
+            )
+            post_expected_side = str(intent.side or "").upper()
+            post_expected_stake = _positive_float_or_none(intent.stake)
+            post_expected_price = _price_to_write_for_gruss(intent, trigger_mapping_name)
+            post_write_timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            post_pre_bet_ref_preserved_in_state = is_valid_bet_ref(post_existing_bet_ref_before)
+            post_pre_bet_ref_cleared_for_write = bool(
+                post_independent_mode_enabled and is_valid_bet_ref(post_existing_bet_ref_before)
+            )
+            post_row_prepared_for_new_order = bool(post_independent_mode_enabled)
+            post_new_bet_ref_expected = bool(_post_bet_ref_required())
+            if post_pre_bet_ref_cleared_for_write:
+                plan = self._build_write_plan(intent, runner_row, bet_ref_override="")
+
         write_result = self._write_cells_with_retry(sheet_name, plan)
         if write_result.exception is not None:
             return self._finish(
@@ -2269,8 +2913,40 @@ class GrussExcelOrderProvider:
 
         verification = self._verify_real_write(sheet_name, runner_row, plan)
         trigger_written = _values_match(trigger_mapping_name, verification.trigger_value)
+        post_bet_ref_required = bool(is_post and _post_bet_ref_required())
+        post_clear_after_bet_ref = bool(is_post and _post_clear_after_bet_ref())
+        post_bet_ref_wait_attempted = False
+        post_bet_ref_wait_ms = _post_bet_ref_wait_ms() if post_bet_ref_required else 0
+        post_bet_ref_poll_ms = _post_bet_ref_poll_ms() if post_bet_ref_required else 0
+        post_bet_ref_after = ""
+        post_bet_ref_changed = False
+        post_bet_ref_confirmed_new = False
+        post_bet_ref_poll_attempts = 0
+        post_bet_ref_poll_duration_ms = 0
+        post_order_confirmed = bool(is_post and not post_bet_ref_required and trigger_written)
+        post_order_confirmation_source = ""
+        post_selections_lookup_attempted = False
+        post_selections_match_found = False
+        post_selections_match_reason = ""
+        post_selections_reject_reason = ""
+        post_cells_clear_delay_ms = (
+            _post_command_cells_clear_delay_ms()
+            if is_post and post_clear_after_bet_ref
+            else self.command_cells_clear_delay_ms
+        )
+        post_cells_cleared_after_confirmation = False
+        post_cells_cleared_after_unconfirmed = False
+        post_clear_reason = ""
+        post_write_unconfirmed_reason = ""
         clear_outcome = _TriggerClearOutcome()
-        if trigger_written:
+        should_defer_post_clear = bool(
+            trigger_written
+            and is_post
+            and post_clear_after_bet_ref
+            and post_bet_ref_required
+            and not post_batch_defer_confirmation
+        )
+        if trigger_written and not should_defer_post_clear and not post_batch_defer_confirmation:
             clear_outcome = self._clear_written_trigger(
                 sheet_name,
                 trigger_address,
@@ -2278,7 +2954,120 @@ class GrussExcelOrderProvider:
                 hold_for_visual_test=self.hold_trigger_for_visual_test,
                 processed_key=_processed_key(intent, context),
                 expected_command_cell_values=plan,
+                delay_override_ms=post_cells_clear_delay_ms if is_post and post_clear_after_bet_ref else None,
             )
+        if (
+            trigger_written
+            and verification.verified
+            and post_bet_ref_required
+            and not post_batch_defer_confirmation
+        ):
+            post_bet_ref_wait_attempted = True
+            poll_result = self._poll_post_bet_ref(
+                sheet_name,
+                bet_ref_address,
+                existing_bet_ref_before=post_existing_bet_ref_before,
+            )
+            post_bet_ref_after = poll_result.bet_ref
+            post_bet_ref_poll_attempts = poll_result.attempts
+            post_bet_ref_poll_duration_ms = poll_result.duration_ms
+            post_bet_ref_changed = bool(
+                is_valid_bet_ref(poll_result.bet_ref)
+                and (
+                    not is_valid_bet_ref(post_existing_bet_ref_before)
+                    or strip_gruss_ref_suffix(poll_result.bet_ref)
+                    != strip_gruss_ref_suffix(post_existing_bet_ref_before)
+                )
+            )
+            post_bet_ref_confirmed_new = bool(is_valid_bet_ref(poll_result.bet_ref) and post_bet_ref_changed)
+            post_order_confirmed = post_bet_ref_confirmed_new
+            if post_order_confirmed:
+                post_order_confirmation_source = poll_result.lookup_source
+            elif is_valid_bet_ref(poll_result.bet_ref) and is_valid_bet_ref(post_existing_bet_ref_before):
+                post_write_unconfirmed_reason = "POST_BET_REF_NOT_NEW"
+                post_order_confirmation_source = "post_existing_bet_ref_unchanged"
+            else:
+                post_write_unconfirmed_reason = "POST_BET_REF_NOT_READY"
+            if not post_order_confirmed:
+                selections_lookup = self._lookup_post_selection_confirmation(
+                    sheet_name,
+                    intent,
+                    context,
+                    post_write_timestamp=post_write_timestamp,
+                    existing_bet_ref_before=post_existing_bet_ref_before,
+                    expected_market_id=post_expected_market_id,
+                    expected_market_type=post_expected_market_type,
+                    expected_runner=post_expected_runner,
+                    expected_selection_id=post_expected_selection_id,
+                    expected_side=post_expected_side,
+                    expected_stake=post_expected_stake,
+                    expected_price=post_expected_price,
+                )
+                post_selections_lookup_attempted = selections_lookup.attempted
+                post_selections_match_found = selections_lookup.match is not None
+                post_selections_match_reason = selections_lookup.match_reason
+                post_selections_reject_reason = selections_lookup.reject_reason
+                if selections_lookup.match is not None:
+                    post_bet_ref_after = selections_lookup.match.bet_ref
+                    post_bet_ref_changed = True
+                    post_bet_ref_confirmed_new = True
+                    post_order_confirmed = True
+                    post_order_confirmation_source = selections_lookup.lookup_source
+                    post_write_unconfirmed_reason = ""
+            post_total_matched_after = _matched_stake_value(
+                _read_cell_quiet(
+                    self.bridge,
+                    sheet_name,
+                    self.layout.matched_stake_address(runner_row),
+                )
+            )
+            post_total_matched_delta = _matched_stake_delta(
+                post_total_matched_before,
+                post_total_matched_after,
+            )
+            post_added_stake_confirmed = bool(
+                post_total_matched_delta is not None and post_total_matched_delta > 0
+            )
+            if post_added_stake_confirmed:
+                post_added_stake_amount = post_total_matched_delta
+                if not post_order_confirmed:
+                    post_order_confirmed = True
+                    post_order_confirmation_source = "post_matched_stake_delta"
+                    post_write_unconfirmed_reason = ""
+            post_new_bet_ref_found = bool(post_bet_ref_confirmed_new)
+            post_new_bet_ref = post_bet_ref_after if post_new_bet_ref_found else ""
+            if not post_order_confirmed:
+                if post_write_unconfirmed_reason == "POST_BET_REF_NOT_NEW":
+                    post_write_unconfirmed_reason = "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA"
+                else:
+                    post_write_unconfirmed_reason = "POST_WRITE_ATTEMPTED_BUT_NO_NEW_ORDER_EVIDENCE"
+        if trigger_written and should_defer_post_clear:
+            clear_outcome = self._clear_written_trigger(
+                sheet_name,
+                trigger_address,
+                trigger_mapping_name,
+                hold_for_visual_test=self.hold_trigger_for_visual_test,
+                processed_key=_processed_key(intent, context),
+                expected_command_cell_values=plan,
+                delay_override_ms=post_cells_clear_delay_ms,
+            )
+            post_cleared_after_poll = bool(
+                clear_outcome.attempted and (clear_outcome.cleared or clear_outcome.scheduled)
+            )
+            if post_order_confirmed:
+                post_cells_cleared_after_confirmation = post_cleared_after_poll
+                post_clear_reason = (
+                    "confirmed_post_cleanup"
+                    if post_cleared_after_poll
+                    else clear_outcome.command_reason or clear_outcome.reason
+                )
+            else:
+                post_cells_cleared_after_unconfirmed = post_cleared_after_poll
+                post_clear_reason = (
+                    "unconfirmed_post_cleanup"
+                    if post_cleared_after_poll
+                    else clear_outcome.command_reason or clear_outcome.reason
+                )
         finish_kwargs = {
             "excel_sheet": sheet_name,
             "excel_row": runner_row,
@@ -2309,6 +3098,72 @@ class GrussExcelOrderProvider:
             "hold_trigger_for_visual_test": self.hold_trigger_for_visual_test,
             "stake_capped": stake_capped,
             "stake_cap_value": stake_cap_value,
+            "bet_ref_after": post_bet_ref_after,
+            "bet_ref_poll_attempts": post_bet_ref_poll_attempts,
+            "bet_ref_poll_duration_ms": post_bet_ref_poll_duration_ms,
+            "bet_ref_lookup_source": post_order_confirmation_source,
+            "post_bet_ref_required": post_bet_ref_required,
+            "post_batch_id": str(self._batch_log_context.get("post_batch_id") or ""),
+            "post_batch_market_id": str(self._batch_log_context.get("post_batch_market_id") or ""),
+            "post_batch_market_name": str(self._batch_log_context.get("post_batch_market_name") or ""),
+            "post_batch_candidate_count": _int_from_context(self._batch_log_context.get("post_batch_candidate_count")),
+            "post_batch_written_count": _int_from_context(self._batch_log_context.get("post_batch_written_count")),
+            "post_batch_write_duration_ms": _int_from_context(self._batch_log_context.get("post_batch_write_duration_ms")),
+            "post_batch_confirmation_started": bool(self._batch_log_context.get("post_batch_confirmation_started")),
+            "post_batch_confirmation_duration_ms": _int_from_context(
+                self._batch_log_context.get("post_batch_confirmation_duration_ms")
+            ),
+            "post_batch_runner_index": _int_from_context(self._batch_log_context.get("post_batch_runner_index")),
+            "post_batch_total_runners": _int_from_context(self._batch_log_context.get("post_batch_total_runners")),
+            "post_bet_ref_wait_attempted": post_bet_ref_wait_attempted,
+            "post_bet_ref_wait_ms": post_bet_ref_wait_ms,
+            "post_bet_ref_poll_ms": post_bet_ref_poll_ms,
+            "post_existing_bet_ref_before": post_existing_bet_ref_before,
+            "post_existing_pre_bet_ref": post_existing_bet_ref_before,
+            "post_existing_matched_before": post_existing_matched_before,
+            "post_existing_pre_matched_stake": post_existing_matched_before,
+            "post_existing_avg_odds_before": post_existing_avg_odds_before,
+            "post_existing_pre_avg_odds": post_existing_avg_odds_before,
+            "post_independent_mode_enabled": post_independent_mode_enabled,
+            "post_row_prepared_for_new_order": post_row_prepared_for_new_order,
+            "post_pre_bet_ref_cleared_for_write": post_pre_bet_ref_cleared_for_write,
+            "post_pre_bet_ref_preserved_in_state": post_pre_bet_ref_preserved_in_state,
+            "post_new_bet_ref_expected": post_new_bet_ref_expected,
+            "post_new_bet_ref_found": post_new_bet_ref_found,
+            "post_new_bet_ref": post_new_bet_ref,
+            "post_added_stake_confirmed": post_added_stake_confirmed,
+            "post_added_stake_amount": post_added_stake_amount,
+            "post_total_matched_before": post_total_matched_before,
+            "post_total_matched_after": post_total_matched_after,
+            "post_total_matched_delta": post_total_matched_delta,
+            "post_expected_market_id": post_expected_market_id,
+            "post_expected_market_type": post_expected_market_type,
+            "post_expected_runner": post_expected_runner,
+            "post_expected_selection_id": post_expected_selection_id,
+            "post_expected_side": post_expected_side,
+            "post_expected_stake": post_expected_stake,
+            "post_expected_price": post_expected_price,
+            "post_write_timestamp": post_write_timestamp,
+            "post_bet_ref_after": post_bet_ref_after,
+            "post_bet_ref_changed": post_bet_ref_changed,
+            "post_bet_ref_confirmed_new": post_bet_ref_confirmed_new,
+            "post_bet_ref_poll_attempts": post_bet_ref_poll_attempts,
+            "post_bet_ref_poll_duration_ms": post_bet_ref_poll_duration_ms,
+            "post_order_confirmed": post_order_confirmed,
+            "post_order_confirmation_source": post_order_confirmation_source,
+            "post_confirmation_source": post_order_confirmation_source,
+            "post_selections_lookup_attempted": post_selections_lookup_attempted,
+            "post_selections_match_found": post_selections_match_found,
+            "post_selections_match_reason": post_selections_match_reason,
+            "post_selections_reject_reason": post_selections_reject_reason,
+            "post_clear_after_bet_ref": post_clear_after_bet_ref,
+            "post_cells_clear_delay_ms": post_cells_clear_delay_ms,
+            "post_cells_cleared_after_confirmation": post_cells_cleared_after_confirmation,
+            "post_cells_cleared_after_unconfirmed": post_cells_cleared_after_unconfirmed,
+            "post_clear_reason": post_clear_reason,
+            "post_write_unconfirmed_reason": post_write_unconfirmed_reason,
+            "post_unconfirmed_reason": post_write_unconfirmed_reason,
+            "post_reject_reason": "" if post_order_confirmed else post_write_unconfirmed_reason,
             "excel_write_attempt": write_result.attempt,
             "excel_write_retry_count": write_result.retry_count,
             "excel_write_retry_backoff_ms": write_result.retry_backoff_ms,
@@ -2321,6 +3176,29 @@ class GrussExcelOrderProvider:
                 context,
                 "GRUSS_WRITE_FAILED",
                 "post_write_verification_failed",
+                **finish_kwargs,
+            )
+
+        if post_batch_defer_confirmation and post_bet_ref_required and trigger_written:
+            return self._finish(
+                intent,
+                context,
+                "POST_WRITE_PENDING_CONFIRMATION",
+                "post_batch_written_pending_confirmation",
+                **finish_kwargs,
+            )
+
+        if post_bet_ref_required and not post_order_confirmed:
+            unconfirmed_status = (
+                "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF"
+                if post_write_unconfirmed_reason == "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA"
+                else "POST_WRITE_UNCONFIRMED"
+            )
+            return self._finish(
+                intent,
+                context,
+                unconfirmed_status,
+                post_write_unconfirmed_reason or "POST_BET_REF_NOT_READY",
                 **finish_kwargs,
             )
 
@@ -2368,6 +3246,17 @@ class GrussExcelOrderProvider:
         bet_ref_after_wait = ""
         active_ladder_bet_ref_updated = False
         replace_skipped_bet_ref_still_pending = False
+        pre_retry_allowed = False
+        pre_retry_reason = ""
+        pre_retry_count = _pre_retry_count_for_intent(self, intent)
+        pre_retry_block_reason = ""
+        pre_bet_ref_late_detected = False
+        pre_bet_ref_late_value = ""
+        active_ladder_created = False
+        pending_ladder_created = False
+        matched_evidence_found = False
+        selection_row_evidence_found = False
+        no_stacking_blocked_retry = False
 
         if not self.layout_confirmed:
             return self._finish(
@@ -2426,34 +3315,252 @@ class GrussExcelOrderProvider:
         lookup_matched_runner = ""
         stored_state = self.active_pre_ladders.get(ladder_id)
         if step_index > 0 and stored_state is None:
-            return self._finish(
-                intent,
-                context,
-                "GRUSS_PRE_LADDER_REPLACE_SKIPPED",
-                "pre_ladder_initial_order_not_written_no_replace",
-                excel_sheet=sheet_name,
-                excel_row=runner_row,
-                write_plan=(),
-                trigger_cell_address=trigger_address,
-                trigger_mapping_name=self.layout.replace_trigger_name(intent.side),
-                stake_capped=stake_capped,
-                stake_cap_value=stake_cap_value,
-                bet_ref_before="",
-                bet_ref_after="",
-                update_allowed=False,
-                update_skipped_reason="pre_ladder_initial_order_not_written_no_replace",
-                bet_ref_lookup_source="active_ladder_state_missing",
-                bet_ref_lookup_matched_runner="False",
-                no_stacking_check_passed=True,
-                pre_ladder_initial_order_failed=True,
-                pre_ladder_disabled_after_initial_failure=True,
-                no_replace_steps_for_failed_initial=True,
-            )
-        if step_index > 0 and stored_state is not None:
+            try:
+                row_bet_ref = normalise_gruss_bet_ref(
+                    self._read_cell_with_retry(
+                        sheet_name,
+                        bet_ref_address,
+                        f"read_bet_ref_for_initial_retry:{sheet_name}!{bet_ref_address}",
+                    )
+                )
+            except Exception as exc:
+                return self._finish(
+                    intent,
+                    context,
+                    "GRUSS_PRE_LADDER_REPLACE_SKIPPED",
+                    f"bet_ref_read_failed: {exc}",
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=(),
+                    trigger_cell_address=trigger_address,
+                    trigger_mapping_name=self.layout.replace_trigger_name(intent.side),
+                    stake_capped=stake_capped,
+                    stake_cap_value=stake_cap_value,
+                    bet_ref_before="",
+                    bet_ref_after="",
+                    update_allowed=False,
+                    update_skipped_reason="bet_ref_read_failed",
+                    bet_ref_lookup_source="active_ladder_state_missing_bet_ref_read_failed",
+                    bet_ref_lookup_matched_runner="False",
+                    no_stacking_check_passed=True,
+                )
+            state_probe = _active_pre_ladder_state_from_intent(intent, course_key, runner_row)
+            if is_valid_bet_ref(row_bet_ref):
+                stored_state = _active_pre_ladder_state_from_intent(
+                    intent,
+                    course_key,
+                    runner_row,
+                    bet_ref=row_bet_ref,
+                    pending_confirmation=False,
+                )
+                self.active_pre_ladders[ladder_id] = stored_state
+                self.active_pre_ladder_id = ladder_id
+                self.active_pre_ladder_course = course_key
+                self.pre_bet_ref_missing_retry_counts.pop(_pre_retry_key_for_intent(intent), None)
+                pre_retry_count = 0
+                bet_ref_before = row_bet_ref
+                lookup_source = "active_ladder_state_missing_row_t_late_attached"
+                lookup_matched_runner = "True"
+                pre_bet_ref_late_detected = True
+                pre_bet_ref_late_value = row_bet_ref
+                active_ladder_created = True
+            elif row_bet_ref:
+                if is_pending_bet_ref_status(row_bet_ref):
+                    skip_reason = "bet_ref_not_ready"
+                elif is_terminal_bet_status(row_bet_ref):
+                    skip_reason = "row_status_not_replaceable"
+                else:
+                    skip_reason = "invalid_bet_ref_for_replace"
+                pre_retry_block_reason = skip_reason
+                no_stacking_blocked_retry = True
+                return self._finish(
+                    intent,
+                    context,
+                    "GRUSS_PRE_LADDER_REPLACE_SKIPPED",
+                    skip_reason,
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=(),
+                    trigger_cell_address=trigger_address,
+                    trigger_mapping_name=self.layout.replace_trigger_name(intent.side),
+                    stake_capped=stake_capped,
+                    stake_cap_value=stake_cap_value,
+                    bet_ref_before=row_bet_ref,
+                    bet_ref_after="",
+                    update_allowed=False,
+                    update_skipped_reason=skip_reason,
+                    bet_ref_lookup_source="active_ladder_state_missing_row_t_present",
+                    bet_ref_lookup_matched_runner="False",
+                    no_stacking_check_passed=True,
+                    pre_retry_count=pre_retry_count,
+                    pre_retry_block_reason=pre_retry_block_reason,
+                    no_stacking_blocked_retry=no_stacking_blocked_retry,
+                )
+            else:
+                matched_stake_cell_value = _read_cell_quiet(self.bridge, sheet_name, matched_stake_address)
+                avg_matched_odds_cell_value = _read_cell_quiet(
+                    self.bridge,
+                    sheet_name,
+                    self.layout.avg_matched_odds_address(runner_row),
+                )
+                matched_stake_value = _matched_stake_value(matched_stake_cell_value)
+                avg_matched_odds_value = _positive_float_or_none(avg_matched_odds_cell_value)
+                matched_evidence_found = bool(
+                    (matched_stake_value is not None and matched_stake_value > 0)
+                    or avg_matched_odds_value is not None
+                )
+                if not matched_evidence_found and "SELECTIONS_SHEET" in _bet_ref_lookup_sources_from_env():
+                    selections_sheet = f"{(state_probe.market_type or sheet_name or 'PLACE').upper()}_Selections"
+                    selection_candidates, _rows_scanned, _selection_headers = self._read_selection_bet_ref_candidates(
+                        selections_sheet
+                    )
+                    used_bet_refs = {
+                        state.bet_ref
+                        for state in self.active_pre_ladders.values()
+                        if is_valid_bet_ref(state.bet_ref)
+                    }
+                    match, match_reason, _top_candidates = _match_selection_bet_ref_candidate(
+                        state_probe,
+                        GrussRealOrderResult(
+                            status="",
+                            reason="",
+                            output_path=self.output_path,
+                            write_plan=tuple(plan),
+                            stake_original=intent.stake_original if intent.stake_original is not None else intent.stake,
+                            stake_used=intent.stake,
+                        ),
+                        selection_candidates,
+                        used_bet_refs=used_bet_refs,
+                    )
+                    if match is not None:
+                        row_bet_ref = match.bet_ref
+                        stored_state = _active_pre_ladder_state_from_intent(
+                            intent,
+                            course_key,
+                            runner_row,
+                            bet_ref=row_bet_ref,
+                            pending_confirmation=False,
+                        )
+                        self.active_pre_ladders[ladder_id] = stored_state
+                        self.active_pre_ladder_id = ladder_id
+                        self.active_pre_ladder_course = course_key
+                        self.pre_bet_ref_missing_retry_counts.pop(_pre_retry_key_for_intent(intent), None)
+                        pre_retry_count = 0
+                        bet_ref_before = row_bet_ref
+                        lookup_source = f"active_ladder_state_missing_selections_late_attached:{selections_sheet}!row{match.row_number}"
+                        lookup_matched_runner = "True"
+                        pre_bet_ref_late_detected = True
+                        pre_bet_ref_late_value = row_bet_ref
+                        active_ladder_created = True
+                        selection_row_evidence_found = True
+                    else:
+                        evidence_match, evidence_reason = _match_selection_activity_evidence_candidate(
+                            state_probe,
+                            GrussRealOrderResult(
+                                status="",
+                                reason="",
+                                output_path=self.output_path,
+                                write_plan=tuple(plan),
+                                stake_original=(
+                                    intent.stake_original if intent.stake_original is not None else intent.stake
+                                ),
+                                stake_used=intent.stake,
+                            ),
+                            selection_candidates,
+                        )
+                        if evidence_match is not None:
+                            selection_row_evidence_found = True
+                            pre_retry_block_reason = "selection_row_evidence_found"
+                            lookup_source = f"active_ladder_state_missing_selections_evidence:{selections_sheet}:{evidence_reason or match_reason}"
+                if not bet_ref_before and (matched_evidence_found or selection_row_evidence_found):
+                    if matched_evidence_found:
+                        pre_retry_block_reason = pre_retry_block_reason or "matched_evidence_found"
+                    pending_state = _active_pre_ladder_state_from_intent(
+                        intent,
+                        course_key,
+                        runner_row,
+                        pending_confirmation=True,
+                    )
+                    self.active_pre_ladders[ladder_id] = pending_state
+                    self.active_pre_ladder_id = ladder_id
+                    self.active_pre_ladder_course = course_key
+                    pending_ladder_created = True
+                    no_stacking_blocked_retry = True
+                    return self._finish(
+                        intent,
+                        context,
+                        "PRE_LADDER_BET_REF_LATE_OR_MATCH_EVIDENCE",
+                        pre_retry_block_reason,
+                        excel_sheet=sheet_name,
+                        excel_row=runner_row,
+                        write_plan=(),
+                        trigger_cell_address=trigger_address,
+                        trigger_mapping_name=self.layout.replace_trigger_name(intent.side),
+                        stake_capped=stake_capped,
+                        stake_cap_value=stake_cap_value,
+                        bet_ref_before="",
+                        bet_ref_after="",
+                        update_allowed=False,
+                        update_skipped_reason=pre_retry_block_reason,
+                        action="PRE_LADDER_BET_REF_MISSING",
+                        pre_bet_ref_required=True,
+                        pre_bet_ref_confirmed=False,
+                        pre_bet_ref_missing=True,
+                        pre_retry_count=pre_retry_count,
+                        pre_retry_allowed=False,
+                        pre_retry_block_reason=pre_retry_block_reason,
+                        pre_unconfirmed_reason="bet_ref_missing_with_order_evidence",
+                        bet_ref_lookup_source=lookup_source or "active_ladder_state_missing_order_evidence",
+                        bet_ref_lookup_matched_runner="False",
+                        active_ladder_bet_ref_stored=False,
+                        pending_ladder_created=pending_ladder_created,
+                        matched_evidence_found=matched_evidence_found,
+                        selection_row_evidence_found=selection_row_evidence_found,
+                        no_stacking_blocked_retry=no_stacking_blocked_retry,
+                        matched_stake_cell_address=matched_stake_address,
+                        matched_stake_cell_value=matched_stake_cell_value,
+                        no_stacking_check_passed=True,
+                    )
+                if not bet_ref_before:
+                    max_retries = _pre_bet_ref_missing_max_retries()
+                    if pre_retry_count >= max_retries:
+                        pre_retry_block_reason = "pre_bet_ref_missing_retry_limit_reached"
+                        return self._finish(
+                            intent,
+                            context,
+                            "GRUSS_PRE_LADDER_REPLACE_SKIPPED",
+                            pre_retry_block_reason,
+                            excel_sheet=sheet_name,
+                            excel_row=runner_row,
+                            write_plan=(),
+                            trigger_cell_address=trigger_address,
+                            trigger_mapping_name=self.layout.trigger_mapping_name(intent.side, intent.order_type),
+                            stake_capped=stake_capped,
+                            stake_cap_value=stake_cap_value,
+                            bet_ref_before="",
+                            bet_ref_after="",
+                            update_allowed=False,
+                            update_skipped_reason=pre_retry_block_reason,
+                            pre_retry_count=pre_retry_count,
+                            pre_retry_allowed=False,
+                            pre_retry_block_reason=pre_retry_block_reason,
+                            bet_ref_lookup_source="active_ladder_state_missing_retry_limit_reached",
+                            bet_ref_lookup_matched_runner="False",
+                            no_stacking_check_passed=True,
+                        )
+                    pre_retry_count += 1
+                    self.pre_bet_ref_missing_retry_counts[_pre_retry_key_for_intent(intent)] = pre_retry_count
+                    pre_retry_allowed = True
+                    pre_retry_reason = "missing_bet_ref_retry_initial_at_next_pre_step"
+                    lookup_source = "active_ladder_state_missing_row_t_empty_retry_initial"
+                    lookup_matched_runner = "False"
+        effective_step_index = 0 if pre_retry_allowed else step_index
+        if effective_step_index > 0 and stored_state is not None:
             if _active_ladder_state_matches(stored_state, intent, runner_row):
                 bet_ref_before = normalise_gruss_bet_ref(stored_state.bet_ref)
-                lookup_source = "active_ladder_state" if bet_ref_before else "active_ladder_state_empty"
-                lookup_matched_runner = str(is_valid_bet_ref(bet_ref_before))
+                if not pre_bet_ref_late_detected:
+                    lookup_source = "active_ladder_state" if bet_ref_before else "active_ladder_state_empty"
+                    lookup_matched_runner = str(is_valid_bet_ref(bet_ref_before))
                 if is_pending_bet_ref_status(bet_ref_before):
                     wait_result = self._wait_for_replace_bet_ref(sheet_name, bet_ref_address)
                     replace_bet_ref_wait_attempted = True
@@ -2519,7 +3626,68 @@ class GrussExcelOrderProvider:
                     bet_ref_lookup_matched_runner=lookup_matched_runner,
                 )
 
-        if step_index > 0:
+        if pre_retry_allowed and bet_ref_before:
+            if is_valid_bet_ref(bet_ref_before):
+                stored_state = _active_pre_ladder_state_from_intent(
+                    intent,
+                    course_key,
+                    runner_row,
+                    bet_ref=bet_ref_before,
+                    pending_confirmation=False,
+                )
+                self.active_pre_ladders[ladder_id] = stored_state
+                self.active_pre_ladder_id = ladder_id
+                self.active_pre_ladder_course = course_key
+                self.pre_bet_ref_missing_retry_counts.pop(_pre_retry_key_for_intent(intent), None)
+                pre_retry_allowed = False
+                pre_retry_reason = ""
+                pre_retry_count = 0
+                pre_retry_block_reason = "late_bet_ref_attached_before_retry"
+                pre_bet_ref_late_detected = True
+                pre_bet_ref_late_value = bet_ref_before
+                active_ladder_created = True
+                lookup_source = "pre_retry_row_t_late_attached_before_write"
+                lookup_matched_runner = "True"
+                effective_step_index = step_index
+            elif is_pending_bet_ref_status(bet_ref_before):
+                retry_skip_reason = "bet_ref_not_ready"
+                retry_lookup_matched_runner = "False"
+            elif is_terminal_bet_status(bet_ref_before):
+                retry_skip_reason = "row_status_not_replaceable"
+                retry_lookup_matched_runner = "False"
+            else:
+                retry_skip_reason = "invalid_bet_ref_for_replace"
+                retry_lookup_matched_runner = "False"
+            if not is_valid_bet_ref(bet_ref_before):
+                pre_retry_block_reason = retry_skip_reason
+                no_stacking_blocked_retry = True
+                return self._finish(
+                    intent,
+                    context,
+                    "GRUSS_PRE_LADDER_REPLACE_SKIPPED",
+                    retry_skip_reason,
+                    excel_sheet=sheet_name,
+                    excel_row=runner_row,
+                    write_plan=(),
+                    trigger_cell_address=trigger_address,
+                    trigger_mapping_name=self.layout.trigger_mapping_name(intent.side, intent.order_type),
+                    stake_capped=stake_capped,
+                    stake_cap_value=stake_cap_value,
+                    bet_ref_before=bet_ref_before,
+                    bet_ref_after="",
+                    update_allowed=False,
+                    update_skipped_reason=retry_skip_reason,
+                    bet_ref_lookup_source="pre_retry_row_t_changed_before_write",
+                    bet_ref_lookup_matched_runner=retry_lookup_matched_runner,
+                    no_stacking_check_passed=True,
+                    pre_retry_count=pre_retry_count,
+                    pre_retry_allowed=False,
+                    pre_retry_reason="retry_blocked_bet_ref_present",
+                    pre_retry_block_reason=pre_retry_block_reason,
+                    no_stacking_blocked_retry=no_stacking_blocked_retry,
+                )
+
+        if effective_step_index > 0:
             replace_trigger = self.layout.replace_trigger_name(intent.side)
             try:
                 market_status_for_replace = _clean_text(
@@ -2703,7 +3871,7 @@ class GrussExcelOrderProvider:
 
         trigger_mapping_name = (
             self.layout.replace_trigger_name(intent.side)
-            if step_index > 0
+            if effective_step_index > 0
             else self.layout.trigger_mapping_name(intent.side, intent.order_type)
         )
         plan = self._build_write_plan(
@@ -2806,7 +3974,7 @@ class GrussExcelOrderProvider:
                 )
         poll_attempts = 0
         poll_duration_ms = 0
-        if step_index == 0:
+        if effective_step_index == 0:
             lookup_source = "pending_batch_bet_ref_collection"
             lookup_matched_runner = "False"
         else:
@@ -2819,7 +3987,7 @@ class GrussExcelOrderProvider:
             bet_ref_after_wait = wait_result.after_wait
             bet_ref_after = wait_result.bet_ref or wait_result.after_wait
             if is_valid_bet_ref(bet_ref_after):
-                if lookup_source not in {"active_ladder_state", "excel_row"}:
+                if not pre_bet_ref_late_detected and lookup_source not in {"active_ladder_state", "excel_row"}:
                     lookup_source = "excel_row_after_replace_wait"
                 lookup_matched_runner = "True"
                 active_ladder_bet_ref_updated = True
@@ -2888,6 +4056,17 @@ class GrussExcelOrderProvider:
             "excel_write_retry_backoff_ms": write_result.retry_backoff_ms,
             "excel_write_final_status": write_result.final_status,
             "excel_unavailable_recovered": write_result.recovered,
+            "pre_bet_ref_late_detected": pre_bet_ref_late_detected,
+            "pre_bet_ref_late_value": pre_bet_ref_late_value,
+            "pre_retry_count": pre_retry_count,
+            "pre_retry_allowed": pre_retry_allowed,
+            "pre_retry_reason": pre_retry_reason,
+            "pre_retry_block_reason": pre_retry_block_reason,
+            "active_ladder_created": active_ladder_created,
+            "pending_ladder_created": pending_ladder_created,
+            "matched_evidence_found": matched_evidence_found,
+            "selection_row_evidence_found": selection_row_evidence_found,
+            "no_stacking_blocked_retry": no_stacking_blocked_retry,
         }
         if not verification.verified:
             return self._finish(
@@ -2902,26 +4081,28 @@ class GrussExcelOrderProvider:
         self.real_order_counts[real_key] = self.real_order_counts.get(real_key, 0) + 1
         self.real_order_counts[max_key] = self.real_order_counts.get(max_key, 0) + 1
         if trigger_written and ladder_id not in self.active_pre_ladders:
-            self.active_pre_ladders[ladder_id] = _ActivePreLadderState(
-                course_key=course_key,
-                market_type=str(intent.market_type or "").upper(),
-                market_id=str(intent.market_id or ""),
-                selection_id=str(intent.selection_id if intent.selection_id is not None else intent.trap),
-                runner_name=normalize_runner_name(intent.runner_name),
-                trap=intent.trap,
-                side=str(intent.side or "").upper(),
-                row=runner_row,
+            confirmed_bet_ref_after = is_valid_bet_ref(bet_ref_after)
+            self.active_pre_ladders[ladder_id] = _active_pre_ladder_state_from_intent(
+                intent,
+                course_key,
+                runner_row,
                 bet_ref=bet_ref_after,
+                pending_confirmation=not confirmed_bet_ref_after,
             )
             self.active_pre_ladder_id = ladder_id
             self.active_pre_ladder_course = course_key
+            active_ladder_created = confirmed_bet_ref_after
+            pending_ladder_created = not confirmed_bet_ref_after
         elif trigger_written and ladder_id in self.active_pre_ladders:
             self.active_pre_ladders[ladder_id].bet_ref = bet_ref_after
+            self.active_pre_ladders[ladder_id].pending_confirmation = not is_valid_bet_ref(bet_ref_after)
         finish_kwargs["active_ladder_bet_ref_stored"] = bool(
             ladder_id in self.active_pre_ladders
             and is_valid_bet_ref(self.active_pre_ladders[ladder_id].bet_ref)
         )
-        active_ladder_completed = trigger_written and _is_final_ladder_step(intent)
+        finish_kwargs["active_ladder_created"] = active_ladder_created
+        finish_kwargs["pending_ladder_created"] = pending_ladder_created
+        active_ladder_completed = trigger_written and _is_final_ladder_step(intent) and not pre_retry_allowed
         active_ladder_release_reason = ""
         if active_ladder_completed:
             active_ladder_release_reason = "final_ladder_step_completed"
@@ -2932,7 +4113,11 @@ class GrussExcelOrderProvider:
             intent,
             context,
             "GRUSS_PRE_LADDER_WRITTEN",
-            "pre_ladder_replace_written" if step_index > 0 else "pre_ladder_step_written",
+            (
+                "pre_ladder_retry_initial_written"
+                if pre_retry_allowed
+                else ("pre_ladder_replace_written" if step_index > 0 else "pre_ladder_step_written")
+            ),
             active_pre_ladder_id_snapshot=active_snapshot,
             active_ladder_completed=active_ladder_completed,
             active_ladder_release_reason=active_ladder_release_reason,
@@ -3052,8 +4237,9 @@ class GrussExcelOrderProvider:
             errors.append("pre_ladder_real_no_stacking_required")
         variable_stakes = _env_bool("DOGBOT_GRUSS_REAL_VARIABLE_STAKES", False)
         if variable_stakes:
-            if self.real_max_stake is None or self.real_max_stake <= 0 or self.real_max_stake > 5.0:
-                errors.append("pre_ladder_real_variable_requires_max_stake_lte_5")
+            variable_cap_error = _variable_stake_cap_config_error(self.real_max_stake)
+            if variable_cap_error:
+                errors.append(variable_cap_error)
         else:
             if self.real_max_stake is None or self.real_max_stake != 2.0:
                 errors.append("pre_ladder_real_requires_max_stake_eq_2")
@@ -3239,6 +4425,126 @@ class GrussExcelOrderProvider:
             attempts=last_attempt,
             duration_ms=duration_ms,
             lookup_source=f"excel_row_poll_timeout:{bet_ref_address}",
+        )
+
+    def _poll_post_bet_ref(
+        self,
+        sheet_name: str,
+        bet_ref_address: str,
+        *,
+        existing_bet_ref_before: str = "",
+    ) -> _BetRefPollResult:
+        wait_ms = _post_bet_ref_wait_ms()
+        poll_ms = _post_bet_ref_poll_ms()
+        existing_normalised = normalise_gruss_bet_ref(existing_bet_ref_before)
+        started = time.perf_counter()
+        deadline = started + (wait_ms / 1000)
+        attempts = 0
+        last_bet_ref = ""
+        last_lookup_source = f"post_excel_row_poll_timeout:{bet_ref_address}"
+        while True:
+            attempts += 1
+            try:
+                bet_ref = normalise_gruss_bet_ref(
+                    self._read_cell_with_retry(
+                        sheet_name,
+                        bet_ref_address,
+                        f"post_read_bet_ref:{sheet_name}!{bet_ref_address}",
+                    )
+                )
+            except Exception:
+                bet_ref = ""
+            last_bet_ref = bet_ref
+            duration_ms = int(round((time.perf_counter() - started) * 1000))
+            if is_valid_bet_ref(bet_ref) and (
+                not is_valid_bet_ref(existing_normalised)
+                or strip_gruss_ref_suffix(bet_ref) != strip_gruss_ref_suffix(existing_normalised)
+            ):
+                return _BetRefPollResult(
+                    bet_ref=bet_ref,
+                    attempts=attempts,
+                    duration_ms=duration_ms,
+                    lookup_source=f"post_excel_row_poll:{bet_ref_address}",
+                )
+            if is_valid_bet_ref(bet_ref) and is_valid_bet_ref(existing_normalised):
+                last_lookup_source = f"post_excel_row_poll_unchanged:{bet_ref_address}"
+            if wait_ms <= 0 or time.perf_counter() >= deadline:
+                return _BetRefPollResult(
+                    bet_ref=last_bet_ref,
+                    attempts=attempts,
+                    duration_ms=duration_ms,
+                    lookup_source=last_lookup_source,
+                )
+            remaining_ms = max(0.0, (deadline - time.perf_counter()) * 1000)
+            time.sleep(min(float(poll_ms), remaining_ms) / 1000)
+
+    def _lookup_post_selection_confirmation(
+        self,
+        sheet_name: str,
+        intent: OrderIntent,
+        context: GrussRealOrderContext,
+        *,
+        post_write_timestamp: str,
+        existing_bet_ref_before: str,
+        expected_market_id: str,
+        expected_market_type: str,
+        expected_runner: str,
+        expected_selection_id: str,
+        expected_side: str,
+        expected_stake: float | None,
+        expected_price: float | None,
+    ) -> _PostSelectionsLookupResult:
+        market_type = str(intent.market_type or sheet_name or "PLACE").upper()
+        selections_sheet = f"{market_type}_Selections"
+        candidates, rows_scanned, _headers = self._read_selection_bet_ref_candidates(selections_sheet)
+        if not candidates:
+            return _PostSelectionsLookupResult(
+                attempted=True,
+                rows_scanned=rows_scanned,
+                reject_reason=f"no_selection_candidates:{selections_sheet}",
+            )
+
+        matches: list[tuple[_SelectionsBetRefCandidate, str]] = []
+        reject_reasons: list[str] = []
+        for candidate in candidates:
+            reject_reason = _post_selection_reject_reason(
+                candidate,
+                context,
+                post_write_timestamp=post_write_timestamp,
+                existing_bet_ref_before=existing_bet_ref_before,
+                expected_market_id=expected_market_id,
+                expected_market_type=expected_market_type,
+                expected_runner=expected_runner,
+                expected_trap=intent.trap,
+                expected_selection_id=expected_selection_id,
+                expected_side=expected_side,
+                expected_stake=expected_stake,
+                expected_price=expected_price,
+            )
+            if reject_reason:
+                reject_reasons.append(reject_reason)
+                continue
+            matches.append((candidate, "post_selections_strict_match"))
+
+        if not matches:
+            return _PostSelectionsLookupResult(
+                attempted=True,
+                rows_scanned=rows_scanned,
+                reject_reason=_summarise_post_selection_rejections(reject_reasons),
+            )
+        if len(matches) > 1:
+            return _PostSelectionsLookupResult(
+                attempted=True,
+                rows_scanned=rows_scanned,
+                reject_reason=f"ambiguous_post_selection_rows:{len(matches)}",
+            )
+        match, reason = matches[0]
+        return _PostSelectionsLookupResult(
+            match=match,
+            attempted=True,
+            rows_scanned=rows_scanned,
+            match_reason=reason,
+            lookup_source=f"post_selections_sheet:{selections_sheet}!row{match.row_number}",
         )
 
     def _wait_for_replace_bet_ref(
@@ -3932,6 +5238,7 @@ class GrussExcelOrderProvider:
         trigger_cell_expected_empty: bool | None = None,
         trigger_mapping_name: str = "",
         trigger_value_written: str = "",
+        action: str = "",
         trigger_clear_attempted: bool = False,
         trigger_cleared: bool = False,
         trigger_clear_reason: str = "",
@@ -3955,9 +5262,27 @@ class GrussExcelOrderProvider:
         bet_ref_after: str = "",
         bet_ref_poll_attempts: int = 0,
         bet_ref_poll_duration_ms: int = 0,
+        pre_bet_ref_required: bool | None = None,
+        pre_bet_ref_confirmed: bool | None = None,
+        pre_bet_ref_missing: bool | None = None,
+        pre_bet_ref_poll_attempts: int | None = None,
+        pre_bet_ref_poll_duration_ms: int | None = None,
+        pre_bet_ref_missing_retryable: bool = False,
+        pre_bet_ref_late_detected: bool = False,
+        pre_bet_ref_late_value: str = "",
+        pre_retry_count: int | None = None,
+        pre_retry_allowed: bool = False,
+        pre_retry_reason: str = "",
+        pre_retry_block_reason: str = "",
+        pre_unconfirmed_reason: str = "",
         bet_ref_lookup_source: str = "",
         bet_ref_lookup_matched_runner: str = "",
         active_ladder_bet_ref_stored: bool = False,
+        active_ladder_created: bool = False,
+        pending_ladder_created: bool = False,
+        matched_evidence_found: bool = False,
+        selection_row_evidence_found: bool = False,
+        no_stacking_blocked_retry: bool = False,
         update_allowed: bool = False,
         update_skipped_reason: str = "",
         intended_trigger_override: str | None = None,
@@ -3993,6 +5318,67 @@ class GrussExcelOrderProvider:
         pre_cancel_only_if_post_pending: bool | None = None,
         post_pending_for_runner: bool | None = None,
         post_after_pre_cancel_attempted: bool | None = None,
+        post_bet_ref_required: bool | None = None,
+        post_batch_id: str = "",
+        post_batch_market_id: str = "",
+        post_batch_market_name: str = "",
+        post_batch_candidate_count: int | None = None,
+        post_batch_written_count: int | None = None,
+        post_batch_write_duration_ms: int | None = None,
+        post_batch_confirmation_started: bool = False,
+        post_batch_confirmation_duration_ms: int | None = None,
+        post_batch_runner_index: int | None = None,
+        post_batch_total_runners: int | None = None,
+        post_bet_ref_wait_attempted: bool = False,
+        post_bet_ref_wait_ms: int = 0,
+        post_bet_ref_poll_ms: int = 0,
+        post_existing_bet_ref_before: str = "",
+        post_existing_pre_bet_ref: str = "",
+        post_existing_matched_before: float | None = None,
+        post_existing_pre_matched_stake: float | None = None,
+        post_existing_avg_odds_before: float | None = None,
+        post_existing_pre_avg_odds: float | None = None,
+        post_independent_mode_enabled: bool = False,
+        post_row_prepared_for_new_order: bool = False,
+        post_pre_bet_ref_cleared_for_write: bool = False,
+        post_pre_bet_ref_preserved_in_state: bool = False,
+        post_new_bet_ref_expected: bool = False,
+        post_new_bet_ref_found: bool = False,
+        post_new_bet_ref: str = "",
+        post_added_stake_confirmed: bool = False,
+        post_added_stake_amount: float | None = None,
+        post_total_matched_before: float | None = None,
+        post_total_matched_after: float | None = None,
+        post_total_matched_delta: float | None = None,
+        post_expected_market_id: str = "",
+        post_expected_market_type: str = "",
+        post_expected_runner: str = "",
+        post_expected_selection_id: str = "",
+        post_expected_side: str = "",
+        post_expected_stake: float | None = None,
+        post_expected_price: float | None = None,
+        post_write_timestamp: str = "",
+        post_order_write_timestamp: str = "",
+        post_bet_ref_after: str = "",
+        post_bet_ref_changed: bool = False,
+        post_bet_ref_confirmed_new: bool = False,
+        post_bet_ref_poll_attempts: int = 0,
+        post_bet_ref_poll_duration_ms: int = 0,
+        post_order_confirmed: bool | None = None,
+        post_order_confirmation_source: str = "",
+        post_confirmation_source: str = "",
+        post_selections_lookup_attempted: bool = False,
+        post_selections_match_found: bool = False,
+        post_selections_match_reason: str = "",
+        post_selections_reject_reason: str = "",
+        post_clear_after_bet_ref: bool | None = None,
+        post_cells_clear_delay_ms: int = 0,
+        post_cells_cleared_after_confirmation: bool | None = None,
+        post_cells_cleared_after_unconfirmed: bool = False,
+        post_clear_reason: str = "",
+        post_write_unconfirmed_reason: str = "",
+        post_unconfirmed_reason: str = "",
+        post_reject_reason: str = "",
         excel_write_attempt: int = 0,
         excel_write_retry_count: int = 0,
         excel_write_retry_backoff_ms: str = "",
@@ -4220,6 +5606,27 @@ class GrussExcelOrderProvider:
             if is_post and self._batch_log_context.get("post_provider_called") not in (None, "")
             else (True if is_post else None)
         )
+        post_bet_ref_required_value = (
+            _post_bet_ref_required()
+            if post_bet_ref_required is None and is_post
+            else bool(post_bet_ref_required)
+        )
+        post_clear_after_bet_ref_value = (
+            _post_clear_after_bet_ref()
+            if post_clear_after_bet_ref is None and is_post
+            else bool(post_clear_after_bet_ref)
+        )
+        post_order_confirmed_value = (
+            bool(post_order_confirmed)
+            if post_order_confirmed is not None
+            else bool(is_post and post_bet_ref_required_value and is_valid_bet_ref(post_bet_ref_after or bet_ref_after))
+        )
+        post_cells_clear_delay_ms_value = int(post_cells_clear_delay_ms or 0)
+        post_cells_cleared_after_confirmation_value = (
+            bool(post_cells_cleared_after_confirmation)
+            if post_cells_cleared_after_confirmation is not None
+            else False
+        )
         excel_com_result = self._last_excel_com_result
         excel_operation_name_value = excel_operation_name or excel_com_result.operation_name
         excel_com_attempt_value = excel_com_attempt or excel_com_result.attempt
@@ -4252,6 +5659,7 @@ class GrussExcelOrderProvider:
             trigger_cell_expected_empty=trigger_cell_expected_empty,
             trigger_mapping_name=trigger_mapping_name or intended_trigger,
             trigger_value_written=trigger_value_written,
+            action=action or status,
             trigger_clear_attempted=trigger_clear_attempted,
             trigger_cleared=trigger_cleared,
             trigger_clear_reason=trigger_clear_reason,
@@ -4280,6 +5688,35 @@ class GrussExcelOrderProvider:
             bet_ref_after=bet_ref_after,
             bet_ref_poll_attempts=bet_ref_poll_attempts,
             bet_ref_poll_duration_ms=bet_ref_poll_duration_ms,
+            pre_write_attempt_id=_pre_write_attempt_id(intent, context, excel_write_attempt or 0),
+            pre_bet_ref_required=(
+                _is_pre_ladder_intent(intent)
+                and (_ladder_step_index(intent.ladder_step) == 0 or bool(pre_retry_allowed))
+                if pre_bet_ref_required is None
+                else bool(pre_bet_ref_required)
+            ),
+            pre_bet_ref_confirmed=bool(pre_bet_ref_confirmed),
+            pre_bet_ref_missing=bool(pre_bet_ref_missing),
+            pre_bet_ref_poll_attempts=(
+                bet_ref_poll_attempts if pre_bet_ref_poll_attempts is None else pre_bet_ref_poll_attempts
+            ),
+            pre_bet_ref_poll_duration_ms=(
+                bet_ref_poll_duration_ms
+                if pre_bet_ref_poll_duration_ms is None
+                else pre_bet_ref_poll_duration_ms
+            ),
+            pre_bet_ref_missing_retryable=pre_bet_ref_missing_retryable,
+            pre_bet_ref_late_detected=pre_bet_ref_late_detected,
+            pre_bet_ref_late_value=pre_bet_ref_late_value,
+            pre_retry_count=(
+                _pre_retry_count_for_intent(self, intent)
+                if pre_retry_count is None
+                else int(pre_retry_count)
+            ),
+            pre_retry_allowed=pre_retry_allowed,
+            pre_retry_reason=pre_retry_reason,
+            pre_retry_block_reason=pre_retry_block_reason,
+            pre_unconfirmed_reason=pre_unconfirmed_reason,
             bet_ref_lookup_sources=str(self._batch_log_context.get("bet_ref_lookup_sources") or ""),
             bet_ref_lookup_source_used="",
             bet_ref_lookup_source=bet_ref_lookup_source,
@@ -4299,14 +5736,19 @@ class GrussExcelOrderProvider:
             bet_ref_row_t_dump="",
             bet_ref_diagnostic_hold_after_batch=False,
             selections_market_query="",
-        selections_current_market_rows="",
-        selections_current_runner_rows="",
-        runner_qz_dump="",
-        selections_sheet_headers="",
-        selections_full_recent_rows="",
-        workbook_sheet_names="",
-        diagnostic_keep_triggers=False,
-        active_ladder_bet_ref_stored=active_ladder_bet_ref_stored,
+            selections_current_market_rows="",
+            selections_current_runner_rows="",
+            runner_qz_dump="",
+            selections_sheet_headers="",
+            selections_full_recent_rows="",
+            workbook_sheet_names="",
+            diagnostic_keep_triggers=False,
+            active_ladder_bet_ref_stored=active_ladder_bet_ref_stored,
+            active_ladder_created=active_ladder_created,
+            pending_ladder_created=pending_ladder_created,
+            matched_evidence_found=matched_evidence_found,
+            selection_row_evidence_found=selection_row_evidence_found,
+            no_stacking_blocked_retry=no_stacking_blocked_retry,
             replace_allowed=replace_allowed,
             replace_trigger=replace_trigger,
             bet_ref_suffix_n_handled=bet_ref_suffix_n_handled,
@@ -4343,6 +5785,16 @@ class GrussExcelOrderProvider:
             matched_stake_at_cancel=matched_stake_at_cancel,
             countdown_seconds_at_cancel=countdown_seconds_at_cancel,
             post_provider_called=post_provider_called_value,
+            post_batch_id=post_batch_id if is_post else "",
+            post_batch_market_id=post_batch_market_id if is_post else "",
+            post_batch_market_name=post_batch_market_name if is_post else "",
+            post_batch_candidate_count=post_batch_candidate_count if is_post else None,
+            post_batch_written_count=post_batch_written_count if is_post else None,
+            post_batch_write_duration_ms=post_batch_write_duration_ms if is_post else None,
+            post_batch_confirmation_started=post_batch_confirmation_started if is_post else False,
+            post_batch_confirmation_duration_ms=post_batch_confirmation_duration_ms if is_post else None,
+            post_batch_runner_index=post_batch_runner_index if is_post else None,
+            post_batch_total_runners=post_batch_total_runners if is_post else None,
             post_send_seconds_before_off=_post_send_seconds_before_off() if is_post else None,
             post_allow_after_scheduled_off_seconds=_post_allow_after_scheduled_off_seconds() if is_post else None,
             post_trigger_window_hit=(
@@ -4353,6 +5805,67 @@ class GrussExcelOrderProvider:
             post_write_attempted=post_write_attempted if is_post else None,
             post_write_status=status if is_post else "",
             post_write_reason=reason if is_post else "",
+            post_bet_ref_required=post_bet_ref_required_value if is_post else False,
+            post_bet_ref_wait_attempted=post_bet_ref_wait_attempted if is_post else False,
+            post_bet_ref_wait_ms=post_bet_ref_wait_ms if is_post else 0,
+            post_bet_ref_poll_ms=post_bet_ref_poll_ms if is_post else 0,
+            post_existing_bet_ref_before=post_existing_bet_ref_before if is_post else "",
+            post_existing_pre_bet_ref=(post_existing_pre_bet_ref or post_existing_bet_ref_before) if is_post else "",
+            post_existing_matched_before=post_existing_matched_before if is_post else None,
+            post_existing_pre_matched_stake=(
+                post_existing_pre_matched_stake
+                if post_existing_pre_matched_stake is not None
+                else post_existing_matched_before
+            ) if is_post else None,
+            post_existing_avg_odds_before=post_existing_avg_odds_before if is_post else None,
+            post_existing_pre_avg_odds=(
+                post_existing_pre_avg_odds
+                if post_existing_pre_avg_odds is not None
+                else post_existing_avg_odds_before
+            ) if is_post else None,
+            post_independent_mode_enabled=post_independent_mode_enabled if is_post else False,
+            post_row_prepared_for_new_order=post_row_prepared_for_new_order if is_post else False,
+            post_pre_bet_ref_cleared_for_write=post_pre_bet_ref_cleared_for_write if is_post else False,
+            post_pre_bet_ref_preserved_in_state=post_pre_bet_ref_preserved_in_state if is_post else False,
+            post_new_bet_ref_expected=post_new_bet_ref_expected if is_post else False,
+            post_new_bet_ref_found=post_new_bet_ref_found if is_post else False,
+            post_new_bet_ref=post_new_bet_ref if is_post else "",
+            post_added_stake_confirmed=post_added_stake_confirmed if is_post else False,
+            post_added_stake_amount=post_added_stake_amount if is_post else None,
+            post_total_matched_before=post_total_matched_before if is_post else None,
+            post_total_matched_after=post_total_matched_after if is_post else None,
+            post_total_matched_delta=post_total_matched_delta if is_post else None,
+            post_expected_market_id=post_expected_market_id if is_post else "",
+            post_expected_market_type=post_expected_market_type if is_post else "",
+            post_expected_runner=post_expected_runner if is_post else "",
+            post_expected_selection_id=post_expected_selection_id if is_post else "",
+            post_expected_side=post_expected_side if is_post else "",
+            post_expected_stake=post_expected_stake if is_post else None,
+            post_expected_price=post_expected_price if is_post else None,
+            post_write_timestamp=post_write_timestamp if is_post else "",
+            post_order_write_timestamp=(post_order_write_timestamp or post_write_timestamp) if is_post else "",
+            post_bet_ref_after=post_bet_ref_after if is_post else "",
+            post_bet_ref_changed=post_bet_ref_changed if is_post else False,
+            post_bet_ref_confirmed_new=post_bet_ref_confirmed_new if is_post else False,
+            post_bet_ref_poll_attempts=post_bet_ref_poll_attempts if is_post else 0,
+            post_bet_ref_poll_duration_ms=post_bet_ref_poll_duration_ms if is_post else 0,
+            post_order_confirmed=post_order_confirmed_value if is_post else False,
+            post_order_confirmation_source=post_order_confirmation_source if is_post else "",
+            post_confirmation_source=(post_confirmation_source or post_order_confirmation_source) if is_post else "",
+            post_selections_lookup_attempted=post_selections_lookup_attempted if is_post else False,
+            post_selections_match_found=post_selections_match_found if is_post else False,
+            post_selections_match_reason=post_selections_match_reason if is_post else "",
+            post_selections_reject_reason=post_selections_reject_reason if is_post else "",
+            post_clear_after_bet_ref=post_clear_after_bet_ref_value if is_post else False,
+            post_cells_clear_delay_ms=post_cells_clear_delay_ms_value if is_post else 0,
+            post_cells_cleared_after_confirmation=(
+                post_cells_cleared_after_confirmation_value if is_post else False
+            ),
+            post_cells_cleared_after_unconfirmed=post_cells_cleared_after_unconfirmed if is_post else False,
+            post_clear_reason=post_clear_reason if is_post else "",
+            post_write_unconfirmed_reason=post_write_unconfirmed_reason if is_post else "",
+            post_unconfirmed_reason=(post_unconfirmed_reason or post_write_unconfirmed_reason) if is_post else "",
+            post_reject_reason=(post_reject_reason or (reason if status != "GRUSS_REAL_WRITTEN" else "")) if is_post else "",
             countdown_seconds_at_post_write=post_countdown_at_write if is_post else None,
             market_status_at_post_write=post_market_status if is_post else "",
             excel_write_attempt=excel_write_attempt,
@@ -4415,6 +5928,14 @@ class GrussExcelOrderProvider:
             stake_capped=stake_capped,
             stake_cap_value=stake_cap_value,
             execution_phase=_execution_phase(intent),
+            market_type=str(intent.market_type or ""),
+            market_id=str(intent.market_id or ""),
+            runner_name=str(intent.runner_name or ""),
+            trap=intent.trap,
+            selection_id=intent.selection_id if intent.selection_id is not None else intent.trap,
+            side=str(intent.side or ""),
+            order_type=str(intent.order_type or ""),
+            strategy_id=str(intent.strategy_id or ""),
             processed_key=_processed_key(intent, context),
             post_processed_key=str(self._batch_log_context.get("post_processed_key", "")),
             post_processed_key_scope=str(self._batch_log_context.get("post_processed_key_scope", "")),
@@ -4446,6 +5967,19 @@ class GrussExcelOrderProvider:
             current_ladder_price_from_frozen_plan=bool(
                 getattr(intent, "current_ladder_price_from_frozen_plan", False)
             ),
+            computed_limit_price_raw=getattr(intent, "computed_limit_price_raw", None),
+            computed_limit_price_effective=_pre_value_target_effective_from_intent(intent),
+            min_price_floor_applied=bool(getattr(intent, "min_price_floor_applied", False)),
+            pre_value_target_price=_pre_value_target_effective_from_intent(intent),
+            ladder_planned_price=getattr(intent, "ladder_planned_price", None),
+            sent_price_before_value_clamp=getattr(intent, "sent_price_before_value_clamp", None),
+            sent_price_after_value_clamp=price_tick_rounded,
+            value_clamp_applied=bool(getattr(intent, "value_clamp_applied", False))
+            or _value_clamp_was_needed(intent),
+            value_limit_breached=bool(getattr(intent, "value_limit_breached", False))
+            or _value_clamp_was_needed(intent),
+            value_limit_skip_reason=getattr(intent, "value_limit_skip_reason", "") or "",
+            tick_rounding_direction=getattr(intent, "tick_rounding_direction", "") or price_tick_rounding_side,
             best_same_side_offer_at_creation=getattr(
                 intent,
                 "best_same_side_offer_at_creation",
@@ -4507,6 +6041,16 @@ class GrussExcelOrderProvider:
             matched_stake_at_cancel=matched_stake_at_cancel,
             countdown_seconds_at_cancel=countdown_seconds_at_cancel,
             post_provider_called=post_provider_called_value,
+            post_batch_id=post_batch_id if is_post else "",
+            post_batch_market_id=post_batch_market_id if is_post else "",
+            post_batch_market_name=post_batch_market_name if is_post else "",
+            post_batch_candidate_count=post_batch_candidate_count if is_post else None,
+            post_batch_written_count=post_batch_written_count if is_post else None,
+            post_batch_write_duration_ms=post_batch_write_duration_ms if is_post else None,
+            post_batch_confirmation_started=post_batch_confirmation_started if is_post else False,
+            post_batch_confirmation_duration_ms=post_batch_confirmation_duration_ms if is_post else None,
+            post_batch_runner_index=post_batch_runner_index if is_post else None,
+            post_batch_total_runners=post_batch_total_runners if is_post else None,
             post_send_seconds_before_off=_post_send_seconds_before_off() if is_post else None,
             post_allow_after_scheduled_off_seconds=_post_allow_after_scheduled_off_seconds() if is_post else None,
             post_trigger_window_hit=(
@@ -4517,6 +6061,67 @@ class GrussExcelOrderProvider:
             post_write_attempted=post_write_attempted if is_post else None,
             post_write_status=status if is_post else "",
             post_write_reason=reason if is_post else "",
+            post_bet_ref_required=post_bet_ref_required_value if is_post else False,
+            post_bet_ref_wait_attempted=post_bet_ref_wait_attempted if is_post else False,
+            post_bet_ref_wait_ms=post_bet_ref_wait_ms if is_post else 0,
+            post_bet_ref_poll_ms=post_bet_ref_poll_ms if is_post else 0,
+            post_existing_bet_ref_before=post_existing_bet_ref_before if is_post else "",
+            post_existing_pre_bet_ref=(post_existing_pre_bet_ref or post_existing_bet_ref_before) if is_post else "",
+            post_existing_matched_before=post_existing_matched_before if is_post else None,
+            post_existing_pre_matched_stake=(
+                post_existing_pre_matched_stake
+                if post_existing_pre_matched_stake is not None
+                else post_existing_matched_before
+            ) if is_post else None,
+            post_existing_avg_odds_before=post_existing_avg_odds_before if is_post else None,
+            post_existing_pre_avg_odds=(
+                post_existing_pre_avg_odds
+                if post_existing_pre_avg_odds is not None
+                else post_existing_avg_odds_before
+            ) if is_post else None,
+            post_independent_mode_enabled=post_independent_mode_enabled if is_post else False,
+            post_row_prepared_for_new_order=post_row_prepared_for_new_order if is_post else False,
+            post_pre_bet_ref_cleared_for_write=post_pre_bet_ref_cleared_for_write if is_post else False,
+            post_pre_bet_ref_preserved_in_state=post_pre_bet_ref_preserved_in_state if is_post else False,
+            post_new_bet_ref_expected=post_new_bet_ref_expected if is_post else False,
+            post_new_bet_ref_found=post_new_bet_ref_found if is_post else False,
+            post_new_bet_ref=post_new_bet_ref if is_post else "",
+            post_added_stake_confirmed=post_added_stake_confirmed if is_post else False,
+            post_added_stake_amount=post_added_stake_amount if is_post else None,
+            post_total_matched_before=post_total_matched_before if is_post else None,
+            post_total_matched_after=post_total_matched_after if is_post else None,
+            post_total_matched_delta=post_total_matched_delta if is_post else None,
+            post_expected_market_id=post_expected_market_id if is_post else "",
+            post_expected_market_type=post_expected_market_type if is_post else "",
+            post_expected_runner=post_expected_runner if is_post else "",
+            post_expected_selection_id=post_expected_selection_id if is_post else "",
+            post_expected_side=post_expected_side if is_post else "",
+            post_expected_stake=post_expected_stake if is_post else None,
+            post_expected_price=post_expected_price if is_post else None,
+            post_write_timestamp=post_write_timestamp if is_post else "",
+            post_order_write_timestamp=(post_order_write_timestamp or post_write_timestamp) if is_post else "",
+            post_bet_ref_after=post_bet_ref_after if is_post else "",
+            post_bet_ref_changed=post_bet_ref_changed if is_post else False,
+            post_bet_ref_confirmed_new=post_bet_ref_confirmed_new if is_post else False,
+            post_bet_ref_poll_attempts=post_bet_ref_poll_attempts if is_post else 0,
+            post_bet_ref_poll_duration_ms=post_bet_ref_poll_duration_ms if is_post else 0,
+            post_order_confirmed=post_order_confirmed_value if is_post else False,
+            post_order_confirmation_source=post_order_confirmation_source if is_post else "",
+            post_confirmation_source=(post_confirmation_source or post_order_confirmation_source) if is_post else "",
+            post_selections_lookup_attempted=post_selections_lookup_attempted if is_post else False,
+            post_selections_match_found=post_selections_match_found if is_post else False,
+            post_selections_match_reason=post_selections_match_reason if is_post else "",
+            post_selections_reject_reason=post_selections_reject_reason if is_post else "",
+            post_clear_after_bet_ref=post_clear_after_bet_ref_value if is_post else False,
+            post_cells_clear_delay_ms=post_cells_clear_delay_ms_value if is_post else 0,
+            post_cells_cleared_after_confirmation=(
+                post_cells_cleared_after_confirmation_value if is_post else False
+            ),
+            post_cells_cleared_after_unconfirmed=post_cells_cleared_after_unconfirmed if is_post else False,
+            post_clear_reason=post_clear_reason if is_post else "",
+            post_write_unconfirmed_reason=post_write_unconfirmed_reason if is_post else "",
+            post_unconfirmed_reason=(post_unconfirmed_reason or post_write_unconfirmed_reason) if is_post else "",
+            post_reject_reason=(post_reject_reason or (reason if status != "GRUSS_REAL_WRITTEN" else "")) if is_post else "",
             countdown_seconds_at_post_write=post_countdown_at_write if is_post else None,
             market_status_at_post_write=post_market_status if is_post else "",
             mapping_found=mapping_found,
@@ -4594,10 +6199,41 @@ class GrussExcelOrderProvider:
             trigger_cell_expected_empty=trigger_cell_expected_empty,
             trigger_mapping_name=trigger_mapping_name or intended_trigger,
             trigger_value_written=trigger_value_written,
+            action=action or status,
             bet_ref_before=bet_ref_before,
             bet_ref_after=bet_ref_after,
             bet_ref_poll_attempts=bet_ref_poll_attempts,
             bet_ref_poll_duration_ms=bet_ref_poll_duration_ms,
+            pre_write_attempt_id=_pre_write_attempt_id(intent, context, excel_write_attempt or 0),
+            pre_bet_ref_required=(
+                _is_pre_ladder_intent(intent)
+                and (_ladder_step_index(intent.ladder_step) == 0 or bool(pre_retry_allowed))
+                if pre_bet_ref_required is None
+                else bool(pre_bet_ref_required)
+            ),
+            pre_bet_ref_confirmed=bool(pre_bet_ref_confirmed),
+            pre_bet_ref_found=bool(pre_bet_ref_confirmed),
+            pre_bet_ref_missing=bool(pre_bet_ref_missing),
+            pre_bet_ref_poll_attempts=(
+                bet_ref_poll_attempts if pre_bet_ref_poll_attempts is None else pre_bet_ref_poll_attempts
+            ),
+            pre_bet_ref_poll_duration_ms=(
+                bet_ref_poll_duration_ms
+                if pre_bet_ref_poll_duration_ms is None
+                else pre_bet_ref_poll_duration_ms
+            ),
+            pre_bet_ref_missing_retryable=pre_bet_ref_missing_retryable,
+            pre_bet_ref_late_detected=pre_bet_ref_late_detected,
+            pre_bet_ref_late_value=pre_bet_ref_late_value,
+            pre_retry_count=(
+                _pre_retry_count_for_intent(self, intent)
+                if pre_retry_count is None
+                else int(pre_retry_count)
+            ),
+            pre_retry_allowed=pre_retry_allowed,
+            pre_retry_reason=pre_retry_reason,
+            pre_retry_block_reason=pre_retry_block_reason,
+            pre_unconfirmed_reason=pre_unconfirmed_reason,
             bet_ref_lookup_sources=str(self._batch_log_context.get("bet_ref_lookup_sources") or ""),
             bet_ref_lookup_source_used="",
             bet_ref_lookup_source=bet_ref_lookup_source,
@@ -4625,6 +6261,11 @@ class GrussExcelOrderProvider:
             workbook_sheet_names="",
             diagnostic_keep_triggers=False,
             active_ladder_bet_ref_stored=active_ladder_bet_ref_stored,
+            active_ladder_created=active_ladder_created,
+            pending_ladder_created=pending_ladder_created,
+            matched_evidence_found=matched_evidence_found,
+            selection_row_evidence_found=selection_row_evidence_found,
+            no_stacking_blocked_retry=no_stacking_blocked_retry,
             replace_allowed=replace_allowed,
             replace_trigger=replace_trigger,
             bet_ref_suffix_n_handled=bet_ref_suffix_n_handled,
@@ -4805,6 +6446,7 @@ class GrussExcelOrderProvider:
         trigger_cell_expected_empty: bool | None,
         trigger_mapping_name: str,
         trigger_value_written: str,
+        action: str,
         trigger_clear_attempted: bool,
         trigger_cleared: bool,
         trigger_clear_reason: str,
@@ -4833,6 +6475,20 @@ class GrussExcelOrderProvider:
         bet_ref_after: str,
         bet_ref_poll_attempts: int,
         bet_ref_poll_duration_ms: int,
+        pre_bet_ref_required: bool,
+        pre_bet_ref_confirmed: bool,
+        pre_bet_ref_missing: bool,
+        pre_bet_ref_poll_attempts: int,
+        pre_bet_ref_poll_duration_ms: int,
+        pre_write_attempt_id: str,
+        pre_bet_ref_missing_retryable: bool,
+        pre_bet_ref_late_detected: bool,
+        pre_bet_ref_late_value: str,
+        pre_retry_count: int,
+        pre_retry_allowed: bool,
+        pre_retry_reason: str,
+        pre_retry_block_reason: str,
+        pre_unconfirmed_reason: str,
         bet_ref_lookup_sources: str,
         bet_ref_lookup_source_used: str,
         bet_ref_lookup_source: str,
@@ -4860,6 +6516,11 @@ class GrussExcelOrderProvider:
         workbook_sheet_names: str,
         diagnostic_keep_triggers: bool,
         active_ladder_bet_ref_stored: bool,
+        active_ladder_created: bool,
+        pending_ladder_created: bool,
+        matched_evidence_found: bool,
+        selection_row_evidence_found: bool,
+        no_stacking_blocked_retry: bool,
         replace_allowed: bool,
         replace_trigger: str,
         bet_ref_suffix_n_handled: bool,
@@ -4896,12 +6557,73 @@ class GrussExcelOrderProvider:
         matched_stake_at_cancel: float | None,
         countdown_seconds_at_cancel: int | None,
         post_provider_called: bool | None,
+        post_batch_id: str,
+        post_batch_market_id: str,
+        post_batch_market_name: str,
+        post_batch_candidate_count: int | None,
+        post_batch_written_count: int | None,
+        post_batch_write_duration_ms: int | None,
+        post_batch_confirmation_started: bool,
+        post_batch_confirmation_duration_ms: int | None,
+        post_batch_runner_index: int | None,
+        post_batch_total_runners: int | None,
         post_send_seconds_before_off: int | None,
         post_allow_after_scheduled_off_seconds: int | None,
         post_trigger_window_hit: bool | None,
         post_write_attempted: bool | None,
         post_write_status: str,
         post_write_reason: str,
+        post_bet_ref_required: bool,
+        post_bet_ref_wait_attempted: bool,
+        post_bet_ref_wait_ms: int,
+        post_bet_ref_poll_ms: int,
+        post_existing_bet_ref_before: str,
+        post_existing_pre_bet_ref: str,
+        post_existing_matched_before: float | None,
+        post_existing_pre_matched_stake: float | None,
+        post_existing_avg_odds_before: float | None,
+        post_existing_pre_avg_odds: float | None,
+        post_independent_mode_enabled: bool,
+        post_row_prepared_for_new_order: bool,
+        post_pre_bet_ref_cleared_for_write: bool,
+        post_pre_bet_ref_preserved_in_state: bool,
+        post_new_bet_ref_expected: bool,
+        post_new_bet_ref_found: bool,
+        post_new_bet_ref: str,
+        post_added_stake_confirmed: bool,
+        post_added_stake_amount: float | None,
+        post_total_matched_before: float | None,
+        post_total_matched_after: float | None,
+        post_total_matched_delta: float | None,
+        post_expected_market_id: str,
+        post_expected_market_type: str,
+        post_expected_runner: str,
+        post_expected_selection_id: str,
+        post_expected_side: str,
+        post_expected_stake: float | None,
+        post_expected_price: float | None,
+        post_write_timestamp: str,
+        post_order_write_timestamp: str,
+        post_bet_ref_after: str,
+        post_bet_ref_changed: bool,
+        post_bet_ref_confirmed_new: bool,
+        post_bet_ref_poll_attempts: int,
+        post_bet_ref_poll_duration_ms: int,
+        post_order_confirmed: bool,
+        post_order_confirmation_source: str,
+        post_confirmation_source: str,
+        post_selections_lookup_attempted: bool,
+        post_selections_match_found: bool,
+        post_selections_match_reason: str,
+        post_selections_reject_reason: str,
+        post_clear_after_bet_ref: bool,
+        post_cells_clear_delay_ms: int,
+        post_cells_cleared_after_confirmation: bool,
+        post_cells_cleared_after_unconfirmed: bool,
+        post_clear_reason: str,
+        post_write_unconfirmed_reason: str,
+        post_unconfirmed_reason: str,
+        post_reject_reason: str,
         countdown_seconds_at_post_write: int | None,
         market_status_at_post_write: Any,
         no_stacking_check_passed: bool,
@@ -5009,6 +6731,23 @@ class GrussExcelOrderProvider:
             "current_ladder_price_from_frozen_plan": str(
                 bool(getattr(intent, "current_ladder_price_from_frozen_plan", False))
             ),
+            "computed_limit_price_raw": _blank_if_none(getattr(intent, "computed_limit_price_raw", None)),
+            "computed_limit_price_effective": _blank_if_none(_pre_value_target_effective_from_intent(intent)),
+            "min_price_floor_applied": str(bool(getattr(intent, "min_price_floor_applied", False))),
+            "pre_value_target_price": _blank_if_none(_pre_value_target_effective_from_intent(intent)),
+            "ladder_planned_price": _blank_if_none(getattr(intent, "ladder_planned_price", None)),
+            "sent_price_before_value_clamp": _blank_if_none(
+                getattr(intent, "sent_price_before_value_clamp", None)
+            ),
+            "sent_price_after_value_clamp": _blank_if_none(price_tick_rounded),
+            "value_clamp_applied": str(
+                bool(getattr(intent, "value_clamp_applied", False)) or _value_clamp_was_needed(intent)
+            ),
+            "value_limit_breached": str(
+                bool(getattr(intent, "value_limit_breached", False)) or _value_clamp_was_needed(intent)
+            ),
+            "value_limit_skip_reason": getattr(intent, "value_limit_skip_reason", "") or "",
+            "tick_rounding_direction": getattr(intent, "tick_rounding_direction", "") or price_tick_rounding_side,
             "best_same_side_offer_at_creation": (
                 ""
                 if getattr(intent, "best_same_side_offer_at_creation", None) is None
@@ -5209,22 +6948,38 @@ class GrussExcelOrderProvider:
             "trigger_mapping_name": trigger_mapping_name or intended_trigger,
             "trigger_written": str(bool(trigger_written)),
             "trigger_value_written": trigger_value_written,
+            "action": action or status,
             "bet_ref_before": bet_ref_before,
             "bet_ref_after": bet_ref_after,
             "bet_ref_poll_attempts": bet_ref_poll_attempts,
             "bet_ref_poll_duration_ms": bet_ref_poll_duration_ms,
+            "pre_write_attempt_id": pre_write_attempt_id,
+            "pre_bet_ref_required": str(bool(pre_bet_ref_required)),
+            "pre_bet_ref_confirmed": str(bool(pre_bet_ref_confirmed)),
+            "pre_bet_ref_found": str(bool(pre_bet_ref_confirmed)),
+            "pre_bet_ref_missing": str(bool(pre_bet_ref_missing)),
+            "pre_bet_ref_poll_attempts": pre_bet_ref_poll_attempts,
+            "pre_bet_ref_poll_duration_ms": pre_bet_ref_poll_duration_ms,
+            "pre_bet_ref_missing_retryable": str(bool(pre_bet_ref_missing_retryable)),
+            "pre_bet_ref_late_detected": str(bool(pre_bet_ref_late_detected)),
+            "pre_bet_ref_late_value": pre_bet_ref_late_value,
+            "pre_retry_count": _blank_if_none(pre_retry_count),
+            "pre_retry_allowed": str(bool(pre_retry_allowed)),
+            "pre_retry_reason": pre_retry_reason,
+            "pre_retry_block_reason": pre_retry_block_reason,
+            "pre_unconfirmed_reason": pre_unconfirmed_reason,
             "bet_ref_lookup_sources": self._batch_log_context.get("bet_ref_lookup_sources", ""),
             "bet_ref_lookup_source_used": "",
             "bet_ref_lookup_source": bet_ref_lookup_source,
             "bet_ref_lookup_matched_runner": bet_ref_lookup_matched_runner,
-            "row_t_value": "",
-            "selections_rows_scanned": "",
-            "selections_match_found": "",
-            "selections_match_reason": "",
-            "selections_runner": "",
-            "selections_side": "",
-            "selections_stake": "",
-            "selections_bet_ref": "",
+            "row_t_value": row_t_value,
+            "selections_rows_scanned": _blank_if_none(selections_rows_scanned),
+            "selections_match_found": str(bool(selections_match_found)),
+            "selections_match_reason": selections_match_reason,
+            "selections_runner": selections_runner,
+            "selections_side": selections_side,
+            "selections_stake": "" if selections_stake is None else selections_stake,
+            "selections_bet_ref": selections_bet_ref,
             "selections_req_odds": "" if selections_req_odds is None else selections_req_odds,
             "selections_market_name": selections_market_name,
             "selections_debug_recent_rows": selections_debug_recent_rows,
@@ -5240,6 +6995,11 @@ class GrussExcelOrderProvider:
             "workbook_sheet_names": workbook_sheet_names,
             "diagnostic_keep_triggers": str(bool(diagnostic_keep_triggers)),
             "active_ladder_bet_ref_stored": str(bool(active_ladder_bet_ref_stored)),
+            "active_ladder_created": str(bool(active_ladder_created)),
+            "pending_ladder_created": str(bool(pending_ladder_created)),
+            "matched_evidence_found": str(bool(matched_evidence_found)),
+            "selection_row_evidence_found": str(bool(selection_row_evidence_found)),
+            "no_stacking_blocked_retry": str(bool(no_stacking_blocked_retry)),
             "replace_allowed": str(bool(replace_allowed)),
             "replace_trigger": replace_trigger,
             "bet_ref_suffix_n_handled": str(bool(bet_ref_suffix_n_handled)),
@@ -5341,12 +7101,81 @@ class GrussExcelOrderProvider:
                 "" if post_write_verification is None else str(post_write_verification.verified)
             ),
             "post_provider_called": "" if post_provider_called is None else str(bool(post_provider_called)),
+            "post_batch_id": post_batch_id,
+            "post_batch_market_id": post_batch_market_id,
+            "post_batch_market_name": post_batch_market_name,
+            "post_batch_candidate_count": _blank_if_none(post_batch_candidate_count),
+            "post_batch_written_count": _blank_if_none(post_batch_written_count),
+            "post_batch_write_duration_ms": _blank_if_none(post_batch_write_duration_ms),
+            "post_batch_confirmation_started": str(bool(post_batch_confirmation_started)),
+            "post_batch_confirmation_duration_ms": _blank_if_none(post_batch_confirmation_duration_ms),
+            "post_batch_runner_index": _blank_if_none(post_batch_runner_index),
+            "post_batch_total_runners": _blank_if_none(post_batch_total_runners),
             "post_send_seconds_before_off": _blank_if_none(post_send_seconds_before_off),
             "post_allow_after_scheduled_off_seconds": _blank_if_none(post_allow_after_scheduled_off_seconds),
             "post_trigger_window_hit": "" if post_trigger_window_hit is None else str(bool(post_trigger_window_hit)),
             "post_write_attempted": "" if post_write_attempted is None else str(bool(post_write_attempted)),
             "post_write_status": post_write_status,
             "post_write_reason": post_write_reason,
+            "post_bet_ref_required": str(bool(post_bet_ref_required)),
+            "post_bet_ref_wait_attempted": str(bool(post_bet_ref_wait_attempted)),
+            "post_bet_ref_wait_ms": _blank_if_none(post_bet_ref_wait_ms),
+            "post_bet_ref_poll_ms": _blank_if_none(post_bet_ref_poll_ms),
+            "post_existing_bet_ref_before": post_existing_bet_ref_before,
+            "post_existing_pre_bet_ref": post_existing_pre_bet_ref or post_existing_bet_ref_before,
+            "post_existing_matched_before": _blank_if_none(post_existing_matched_before),
+            "post_existing_pre_matched_stake": _blank_if_none(
+                post_existing_pre_matched_stake
+                if post_existing_pre_matched_stake is not None
+                else post_existing_matched_before
+            ),
+            "post_existing_avg_odds_before": _blank_if_none(post_existing_avg_odds_before),
+            "post_existing_pre_avg_odds": _blank_if_none(
+                post_existing_pre_avg_odds
+                if post_existing_pre_avg_odds is not None
+                else post_existing_avg_odds_before
+            ),
+            "post_independent_mode_enabled": str(bool(post_independent_mode_enabled)),
+            "post_row_prepared_for_new_order": str(bool(post_row_prepared_for_new_order)),
+            "post_pre_bet_ref_cleared_for_write": str(bool(post_pre_bet_ref_cleared_for_write)),
+            "post_pre_bet_ref_preserved_in_state": str(bool(post_pre_bet_ref_preserved_in_state)),
+            "post_new_bet_ref_expected": str(bool(post_new_bet_ref_expected)),
+            "post_new_bet_ref_found": str(bool(post_new_bet_ref_found)),
+            "post_new_bet_ref": post_new_bet_ref,
+            "post_added_stake_confirmed": str(bool(post_added_stake_confirmed)),
+            "post_added_stake_amount": _blank_if_none(post_added_stake_amount),
+            "post_total_matched_before": _blank_if_none(post_total_matched_before),
+            "post_total_matched_after": _blank_if_none(post_total_matched_after),
+            "post_total_matched_delta": _blank_if_none(post_total_matched_delta),
+            "post_expected_market_id": post_expected_market_id,
+            "post_expected_market_type": post_expected_market_type,
+            "post_expected_runner": post_expected_runner,
+            "post_expected_selection_id": post_expected_selection_id,
+            "post_expected_side": post_expected_side,
+            "post_expected_stake": _blank_if_none(post_expected_stake),
+            "post_expected_price": _blank_if_none(post_expected_price),
+            "post_write_timestamp": post_write_timestamp,
+            "post_order_write_timestamp": post_order_write_timestamp or post_write_timestamp,
+            "post_bet_ref_after": post_bet_ref_after,
+            "post_bet_ref_changed": str(bool(post_bet_ref_changed)),
+            "post_bet_ref_confirmed_new": str(bool(post_bet_ref_confirmed_new)),
+            "post_bet_ref_poll_attempts": _blank_if_none(post_bet_ref_poll_attempts),
+            "post_bet_ref_poll_duration_ms": _blank_if_none(post_bet_ref_poll_duration_ms),
+            "post_order_confirmed": str(bool(post_order_confirmed)),
+            "post_order_confirmation_source": post_order_confirmation_source,
+            "post_confirmation_source": post_confirmation_source or post_order_confirmation_source,
+            "post_selections_lookup_attempted": str(bool(post_selections_lookup_attempted)),
+            "post_selections_match_found": str(bool(post_selections_match_found)),
+            "post_selections_match_reason": post_selections_match_reason,
+            "post_selections_reject_reason": post_selections_reject_reason,
+            "post_clear_after_bet_ref": str(bool(post_clear_after_bet_ref)),
+            "post_cells_clear_delay_ms": _blank_if_none(post_cells_clear_delay_ms),
+            "post_cells_cleared_after_confirmation": str(bool(post_cells_cleared_after_confirmation)),
+            "post_cells_cleared_after_unconfirmed": str(bool(post_cells_cleared_after_unconfirmed)),
+            "post_clear_reason": post_clear_reason,
+            "post_write_unconfirmed_reason": post_write_unconfirmed_reason,
+            "post_unconfirmed_reason": post_unconfirmed_reason or post_write_unconfirmed_reason,
+            "post_reject_reason": post_reject_reason,
             "countdown_seconds_at_post_write": _blank_if_none(countdown_seconds_at_post_write),
             "market_status_at_post_write": _blank_if_none(market_status_at_post_write),
             "hold_trigger_for_visual_test": str(bool(hold_trigger_for_visual_test)),
@@ -5482,6 +7311,65 @@ def _processed_key(intent: OrderIntent, context: GrussRealOrderContext) -> str:
             ]
         )
     return "|".join(str(part) for part in parts)
+
+
+def _pre_write_attempt_id(intent: OrderIntent, context: GrussRealOrderContext, attempt: int | None) -> str:
+    if not _is_pre_ladder_intent(intent):
+        return ""
+    return f"{_processed_key(intent, context)}|write_attempt={int(attempt or 0)}"
+
+
+def _pre_retry_key_for_intent(intent: OrderIntent) -> str:
+    selection_id = intent.selection_id if intent.selection_id is not None else intent.trap
+    return "|".join(
+        str(part or "")
+        for part in (
+            intent.market_id,
+            selection_id,
+            str(intent.side or "").upper(),
+            intent.strategy_id,
+        )
+    )
+
+
+def _pre_retry_key_for_result(result: GrussRealOrderResult) -> str:
+    selection_id = result.selection_id if result.selection_id is not None else result.trap
+    return "|".join(
+        str(part or "")
+        for part in (
+            result.market_id,
+            selection_id,
+            str(result.side or "").upper(),
+            result.strategy_id,
+        )
+    )
+
+
+def _pre_retry_count_for_intent(provider: Any, intent: OrderIntent) -> int:
+    counts = getattr(provider, "pre_bet_ref_missing_retry_counts", {})
+    return int(counts.get(_pre_retry_key_for_intent(intent), 0))
+
+
+def _active_pre_ladder_state_from_intent(
+    intent: OrderIntent,
+    course_key: str,
+    runner_row: int,
+    *,
+    bet_ref: str = "",
+    pending_confirmation: bool = False,
+) -> _ActivePreLadderState:
+    return _ActivePreLadderState(
+        course_key=course_key,
+        market_type=str(intent.market_type or "").upper(),
+        market_id=str(intent.market_id or ""),
+        selection_id=str(intent.selection_id if intent.selection_id is not None else intent.trap),
+        runner_name=normalize_runner_name(intent.runner_name),
+        trap=intent.trap,
+        side=str(intent.side or "").upper(),
+        row=runner_row,
+        bet_ref=normalise_gruss_bet_ref(bet_ref),
+        pending_confirmation=bool(pending_confirmation),
+    )
 
 
 def _cancel_intent_from_state(
@@ -5639,7 +7527,7 @@ def _expected_ladder_step_for_context(context: GrussRealOrderContext) -> str:
 
 
 def _pre_ladder_steps_from_env() -> tuple[int, ...]:
-    raw = os.getenv("DOGBOT_PRE_LADDER_STEPS", "45,32,20,14")
+    raw = os.getenv("DOGBOT_PRE_LADDER_STEPS", "52,38,26,16")
     steps: list[int] = []
     for chunk in raw.split(","):
         try:
@@ -5648,7 +7536,7 @@ def _pre_ladder_steps_from_env() -> tuple[int, ...]:
             continue
         if step >= 0:
             steps.append(step)
-    return tuple(steps or (45, 32, 20, 14))
+    return tuple(steps or (52, 38, 26, 16))
 
 
 def _post_send_seconds_before_off() -> int:
@@ -5657,6 +7545,36 @@ def _post_send_seconds_before_off() -> int:
 
 def _post_allow_after_scheduled_off_seconds() -> int:
     return _bounded_int_env("DOGBOT_POST_ALLOW_AFTER_SCHEDULED_OFF_SECONDS", 5, 0, 60)
+
+
+def _post_bet_ref_required() -> bool:
+    return _env_bool("DOGBOT_POST_BET_REF_REQUIRED", True)
+
+
+def _post_independent_mode_enabled(batch_context: dict[str, Any] | None = None) -> bool:
+    context = batch_context or {}
+    raw = context.get("pre_post_independent")
+    if raw not in (None, ""):
+        return str(raw).strip().casefold() in {"1", "true", "yes", "on", "y"}
+    return _env_bool("DOGBOT_PRE_POST_INDEPENDENT", False)
+
+
+def _post_bet_ref_wait_ms() -> int:
+    return _bounded_int_env("DOGBOT_POST_BET_REF_WAIT_MS", 8000, 0, 30000)
+
+
+def _post_bet_ref_poll_ms() -> int:
+    return _bounded_int_env("DOGBOT_POST_BET_REF_POLL_MS", 250, 10, 2000)
+
+
+def _post_clear_after_bet_ref() -> bool:
+    return _env_bool("DOGBOT_POST_CLEAR_AFTER_BET_REF", True)
+
+
+def _post_command_cells_clear_delay_ms() -> int:
+    if os.getenv("DOGBOT_POST_COMMAND_CELLS_CLEAR_DELAY_MS") in (None, ""):
+        return _command_cells_clear_delay_ms()
+    return _bounded_int_env("DOGBOT_POST_COMMAND_CELLS_CLEAR_DELAY_MS", 1000, 0, 30000)
 
 
 def _post_countdown_allowed(countdown: int | None) -> bool:
@@ -5806,13 +7724,14 @@ def _bet_ref_lookup_sources_from_env() -> tuple[str, ...]:
 
 def _detect_selection_columns(values: list[list[Any]]) -> tuple[int, dict[str, int]]:
     best_index = 0
-    best_columns: dict[str, int] = {
+    default_columns: dict[str, int] = {
         "runner": 0,
         "bet_ref": 1,
         "side": 2,
         "odds": 3,
         "stake": 4,
     }
+    best_columns: dict[str, int] = dict(default_columns)
     best_score = 0
     for row_index, row in enumerate(values[:10]):
         columns: dict[str, int] = {}
@@ -5820,8 +7739,10 @@ def _detect_selection_columns(values: list[list[Any]]) -> tuple[int, dict[str, i
             header = _normalise_header(value)
             if not header:
                 continue
-            if header in {"selection", "runner", "runner name", "dog", "greyhound"}:
+            if header in {"selection", "selection name", "runner", "runner name", "dog", "greyhound"}:
                 columns["runner"] = column_index
+            elif header in {"selection id", "selection_id", "selectionid", "runner id", "runner_id"}:
+                columns["selection_id"] = column_index
             elif header in {"bet ref", "bet_ref", "betref", "bet id", "bet_id", "reference"}:
                 columns["bet_ref"] = column_index
             elif header in {"bet type", "bet_type", "side", "back lay"}:
@@ -5838,6 +7759,10 @@ def _detect_selection_columns(values: list[list[Any]]) -> tuple[int, dict[str, i
                 columns["result"] = column_index
             elif header in {"market name", "market", "market title"}:
                 columns["market_name"] = column_index
+            elif header in {"market id", "market_id", "marketid"}:
+                columns["market_id"] = column_index
+            elif header in {"market type", "market_type", "markettype"}:
+                columns["market_type"] = column_index
             elif header in {"req odds", "requested odds", "request odds", "requested price", "req price"}:
                 columns["req_odds"] = column_index
             elif header in {"req stake", "requested stake", "request stake"}:
@@ -5851,8 +7776,10 @@ def _detect_selection_columns(values: list[list[Any]]) -> tuple[int, dict[str, i
         score = len(set(columns) & {"runner", "bet_ref", "side", "stake", "amount", "req_stake"})
         if score > best_score:
             best_index = row_index
-            best_columns = {**best_columns, **columns}
+            best_columns = dict(columns)
             best_score = score
+    if best_score <= 0:
+        return best_index, default_columns
     return best_index, best_columns
 
 
@@ -5873,6 +7800,133 @@ def _normalise_selection_side(value: Any) -> str:
     if text in {"L", "LAY"}:
         return "LAY"
     return text
+
+
+def _post_selection_reject_reason(
+    candidate: _SelectionsBetRefCandidate,
+    context: GrussRealOrderContext,
+    *,
+    post_write_timestamp: str,
+    existing_bet_ref_before: str,
+    expected_market_id: str,
+    expected_market_type: str,
+    expected_runner: str,
+    expected_trap: int | None,
+    expected_selection_id: str,
+    expected_side: str,
+    expected_stake: float | None,
+    expected_price: float | None,
+) -> str:
+    if not candidate.bet_ref:
+        return "missing_bet_ref"
+    if not is_valid_bet_ref(candidate.bet_ref):
+        return "invalid_bet_ref"
+    existing = normalise_gruss_bet_ref(existing_bet_ref_before)
+    if is_valid_bet_ref(existing) and strip_gruss_ref_suffix(candidate.bet_ref) == strip_gruss_ref_suffix(existing):
+        return "existing_pre_bet_ref"
+
+    placed_at = _parse_iso_timestamp(candidate.timestamp)
+    written_at = _parse_iso_timestamp(post_write_timestamp)
+    if placed_at is None:
+        return "timestamp_missing"
+    if written_at is None:
+        return "post_write_timestamp_missing"
+    if placed_at < written_at:
+        return "timestamp_before_post_write"
+
+    market_type = _normalise_post_market_type(expected_market_type)
+    candidate_market_type = _normalise_post_market_type(candidate.market_type)
+    if candidate_market_type and market_type and candidate_market_type != market_type:
+        return "market_type_mismatch"
+    if market_type == "PLACE" and _market_name_is_clear_non_place(candidate.market_name):
+        return "market_type_mismatch"
+    if market_type == "WIN" and _market_name_is_place(candidate.market_name):
+        return "market_type_mismatch"
+
+    if expected_market_id:
+        if candidate.market_id:
+            if candidate.market_id != expected_market_id:
+                return "market_id_mismatch"
+        elif not _post_market_name_matches_course(candidate.market_name, context.course):
+            return "market_id_missing"
+
+    if expected_selection_id and candidate.selection_id and candidate.selection_id != expected_selection_id:
+        return "selection_id_mismatch"
+
+    if expected_trap is not None and candidate.trap is not None:
+        if candidate.trap != expected_trap:
+            return "runner_mismatch"
+    else:
+        expected_runner_key = _selection_runner_key(expected_runner)
+        candidate_runner_key = _selection_runner_key(candidate.runner)
+        if not expected_runner_key or not candidate_runner_key:
+            return "runner_missing"
+        if expected_runner_key != candidate_runner_key and not _selection_runner_loose_match(
+            expected_runner_key,
+            candidate_runner_key,
+        ):
+            return "runner_mismatch"
+
+    if not expected_side:
+        return "expected_side_missing"
+    if not candidate.side:
+        return "side_missing"
+    if candidate.side != expected_side:
+        return "side_mismatch"
+
+    if expected_stake is None:
+        return "expected_stake_missing"
+    if candidate.stake is None:
+        return "stake_missing"
+    if not _stake_close(candidate.stake, expected_stake):
+        return "stake_mismatch"
+
+    if expected_price is None:
+        return "expected_price_missing"
+    candidate_prices = [
+        price
+        for price in (candidate.req_odds, candidate.matched_odds, candidate.average_odds)
+        if price is not None
+    ]
+    if not candidate_prices:
+        return "price_missing"
+    if not any(_odds_within_tick_tolerance(price, expected_price) for price in candidate_prices):
+        return "price_mismatch"
+    return ""
+
+
+def _normalise_post_market_type(value: Any) -> str:
+    text = _normalise_header(value).upper()
+    if not text:
+        return ""
+    if "PLACE" in text or "PLACED" in text:
+        return "PLACE"
+    if "WIN" in text:
+        return "WIN"
+    return text.replace(" ", "_")
+
+
+def _post_market_name_matches_course(market_name: Any, course: Any) -> bool:
+    market_text = _normalise_header(market_name)
+    course_text = _clean_text(course)
+    if not market_text or not course_text:
+        return False
+    course_parts = [part.strip() for part in re.split(r"[\\/]+", course_text) if part.strip()]
+    candidates = [_normalise_header(course_text)]
+    if course_parts:
+        candidates.append(_normalise_header(course_parts[-1]))
+    return any(candidate and candidate in market_text for candidate in candidates)
+
+
+def _summarise_post_selection_rejections(reasons: Iterable[str]) -> str:
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        key = reason or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "no_selection_candidates"
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ";".join(f"{reason}:{count}" for reason, count in ranked[:5])
 
 
 def _first_non_empty(*values: Any) -> Any:
@@ -5907,6 +7961,110 @@ def _match_selection_bet_ref_candidate(
     if len(reliable) > 1 and reliable[1][0] == score:
         return None, "ambiguous_selection_row", top_candidates
     return match, reason, top_candidates
+
+
+def _match_selection_activity_evidence_candidate(
+    state: _ActivePreLadderState,
+    result: GrussRealOrderResult,
+    candidates: Iterable[_SelectionsBetRefCandidate],
+) -> tuple[_SelectionsBetRefCandidate | None, str]:
+    scored: list[tuple[int, _SelectionsBetRefCandidate, str]] = []
+    for candidate in candidates:
+        score, reason = _score_selection_activity_evidence_candidate(state, result, candidate)
+        scored.append((score, candidate, reason))
+    scored.sort(key=lambda item: (item[0], item[1].row_number), reverse=True)
+    reliable = [(score, candidate, reason) for score, candidate, reason in scored if score >= 80]
+    if not reliable:
+        return None, _best_selection_rejection_reason(scored)
+    score, match, reason = reliable[0]
+    if len(reliable) > 1 and reliable[1][0] == score:
+        return None, "ambiguous_selection_activity_evidence"
+    return match, reason
+
+
+def _score_selection_activity_evidence_candidate(
+    state: _ActivePreLadderState,
+    result: GrussRealOrderResult,
+    candidate: _SelectionsBetRefCandidate,
+) -> tuple[int, str]:
+    score = 0
+    reasons: list[str] = []
+    if state.trap is not None and candidate.trap is not None:
+        if candidate.trap != state.trap:
+            return 0, "trap_mismatch"
+        score += 55
+        reasons.append("trap_match")
+    else:
+        state_runner = _selection_runner_key(state.runner_name)
+        candidate_runner = _selection_runner_key(candidate.runner)
+        if not state_runner or not candidate_runner:
+            return 0, "runner_missing"
+        if state_runner == candidate_runner:
+            score += 55
+            reasons.append("runner_match")
+        elif _selection_runner_loose_match(state_runner, candidate_runner):
+            score += 45
+            reasons.append("runner_loose_match")
+        else:
+            return 0, "runner_mismatch"
+
+    if state.side and candidate.side:
+        if candidate.side != state.side:
+            return 0, "side_mismatch"
+        score += 20
+        reasons.append("side_match")
+    elif state.side and not candidate.side:
+        reasons.append("side_missing")
+
+    requested_stake = _result_requested_stake(result)
+    if candidate.stake is None:
+        reasons.append("stake_missing")
+    elif requested_stake is None or _stake_close(candidate.stake, requested_stake):
+        score += 15
+        reasons.append("stake_match")
+    else:
+        return 0, "stake_mismatch"
+
+    if _market_name_is_place(candidate.market_name):
+        score += 10
+        reasons.append("place_market_match")
+    elif _market_name_is_clear_non_place(candidate.market_name):
+        return 0, "market_mismatch"
+    elif candidate.market_name:
+        reasons.append("market_unknown")
+    else:
+        reasons.append("market_missing")
+
+    requested_odds = _result_requested_odds(result)
+    if candidate.req_odds is None:
+        reasons.append("req_odds_missing")
+    elif requested_odds is None or _odds_within_tick_tolerance(candidate.req_odds, requested_odds):
+        score += 10
+        reasons.append("req_odds_match")
+    else:
+        return 0, "req_odds_mismatch"
+
+    activity_markers: list[str] = []
+    if is_valid_bet_ref(candidate.bet_ref):
+        activity_markers.append("valid_bet_ref")
+    if candidate.matched_stake is not None and candidate.matched_stake > 0:
+        activity_markers.append("matched_stake_positive")
+    if candidate.average_odds is not None:
+        activity_markers.append("average_odds_present")
+    if candidate.matched_odds is not None:
+        activity_markers.append("matched_odds_present")
+    if candidate.result:
+        activity_markers.append("result_present")
+    if candidate.timestamp:
+        activity_markers.append("timestamp_present")
+    if activity_markers:
+        score += 10
+        reasons.extend(activity_markers)
+    elif score < 90:
+        return 0, "no_activity_marker"
+    else:
+        reasons.append("selection_row_identity_match")
+    return score, "+".join(reasons)
 
 
 def _score_selection_bet_ref_candidate(
@@ -6011,6 +8169,16 @@ def _stake_close(left: float, right: float) -> bool:
     return math.isclose(left, right, rel_tol=0.0, abs_tol=0.05)
 
 
+def _matched_stake_delta(before: float | None, after: float | None) -> float | None:
+    if after is None:
+        return None
+    base = before if before is not None else 0.0
+    delta = after - base
+    if delta <= 0.05:
+        return 0.0
+    return round(delta, 6)
+
+
 def _result_requested_stake(result: GrussRealOrderResult) -> float | None:
     for value in (result.stake_used, result.post_write_stake_value, result.stake_original):
         number = _positive_float_or_none(value)
@@ -6029,6 +8197,19 @@ def _result_requested_odds(result: GrussRealOrderResult) -> float | None:
         if number is not None:
             return number
     return None
+
+
+def _result_matched_evidence_found(result: GrussRealOrderResult) -> bool:
+    for value in (
+        result.matched_after_step_stake,
+        _matched_stake_value(result.matched_stake_cell_value),
+    ):
+        if value is not None and value > 0:
+            return True
+    return bool(
+        result.matched_after_step_avg_odds is not None
+        or _positive_float_or_none(result.avg_matched_odds_cell_value) is not None
+    )
 
 
 def _market_name_is_place(value: Any) -> bool:
@@ -6227,6 +8408,31 @@ def _set_result_attr(result: GrussRealOrderResult, name: str, value: Any) -> Non
     object.__setattr__(result, name, value)
 
 
+def _intent_from_result(result: GrussRealOrderResult) -> OrderIntent:
+    return OrderIntent(
+        provider=ORDER_PROVIDER_GRUSS_EXCEL_REAL,
+        market_type=str(result.market_type or result.excel_sheet or ""),
+        market_id=str(result.market_id or result.post_expected_market_id or ""),
+        parent_id=str(result.parent_id or "") or None,
+        runner_name=str(result.runner_name or result.post_expected_runner or ""),
+        trap=result.trap,
+        side=str(result.side or result.post_expected_side or ""),
+        order_type=str(result.order_type or "LIMIT"),
+        price=(
+            result.post_expected_price
+            if result.post_expected_price is not None
+            else result.final_lim_price if result.final_lim_price is not None else result.requested_price
+        ),
+        stake=result.post_expected_stake if result.post_expected_stake is not None else result.stake_used,
+        strategy_id=str(result.strategy_id or result.triggered_systems or ""),
+        course_id=str(result.course_id or "") or None,
+        timestamp=str(result.signal_timestamp or result.write_timestamp or result.post_write_timestamp or ""),
+        dry_run=False,
+        selection_id=result.selection_id if result.selection_id is not None else result.post_expected_selection_id,
+        execution_phase="POST",
+    )
+
+
 def normalise_gruss_bet_ref(value: Any) -> str:
     if value in (None, ""):
         return ""
@@ -6396,7 +8602,7 @@ def _valid_order_price(value: Any) -> bool:
         number = float(value)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(number) and number > 1.01
+    return math.isfinite(number) and number >= 1.01
 
 
 def _price_to_write_for_gruss(intent: OrderIntent, trigger: str) -> float:
@@ -6404,9 +8610,51 @@ def _price_to_write_for_gruss(intent: OrderIntent, trigger: str) -> float:
     if not _should_tick_round_limit_price(intent, trigger):
         return price
     try:
-        return float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), price))
+        rounded = float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), max(price, 1.01)))
     except (TypeError, ValueError):
         return price
+    if not _is_pre_ladder_intent(intent):
+        return rounded
+    target = _pre_value_target_effective_from_intent(intent)
+    if target is None:
+        return rounded
+    target_tick = float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), target))
+    if str(intent.side or "").upper() == "BACK":
+        return max(rounded, target_tick)
+    return min(rounded, target_tick)
+
+
+def _pre_value_target_effective_from_intent(intent: OrderIntent) -> float | None:
+    for value in (
+        getattr(intent, "pre_value_target_price", None),
+        getattr(intent, "computed_limit_price_effective", None),
+        getattr(intent, "computed_limit_price_raw", None),
+        getattr(intent, "price", None),
+    ):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return max(number, 1.01)
+    return None
+
+
+def _value_clamp_was_needed(intent: OrderIntent) -> bool:
+    if not _is_pre_ladder_intent(intent):
+        return False
+    target = _pre_value_target_effective_from_intent(intent)
+    if target is None:
+        return False
+    try:
+        raw_price = float(getattr(intent, "price", None))
+        rounded = float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), max(raw_price, 1.01)))
+        target_tick = float(round_final_lim_to_ladder_tick(str(intent.side or "").upper(), target))
+    except (TypeError, ValueError):
+        return False
+    if str(intent.side or "").upper() == "BACK":
+        return rounded < target_tick
+    return rounded > target_tick
 
 
 def _should_tick_round_limit_price(intent: OrderIntent, trigger: str) -> bool:
@@ -6605,6 +8853,28 @@ def _real_max_stake(real_test_mode: bool) -> float | None:
         return 0.0
 
 
+def _variable_stake_cap_config_error(real_max_stake: float | None) -> str:
+    if real_max_stake is None or real_max_stake <= 0:
+        return "pre_ladder_real_variable_requires_positive_max_stake"
+    hard_cap = _variable_stake_hard_cap()
+    if hard_cap <= 0 or real_max_stake > hard_cap:
+        return "pre_ladder_real_variable_max_stake_exceeds_hard_cap"
+    if real_max_stake > 5.0 and not _env_bool("DOGBOT_GRUSS_REAL_ALLOW_VARIABLE_STAKE_OVER_5", False):
+        return "pre_ladder_real_variable_over_5_requires_explicit_allow"
+    return ""
+
+
+def _variable_stake_hard_cap() -> float:
+    raw = os.getenv("DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP")
+    if raw in (None, ""):
+        return 10.0
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
 def _trigger_clear_delay_ms() -> int:
     raw = os.getenv("DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS")
     if raw in (None, ""):
@@ -6749,6 +9019,10 @@ def _pre_ladder_real_max_ladders_config_error() -> str:
     if value <= 0:
         return "pre_ladder_real_max_ladders_invalid"
     return ""
+
+
+def _pre_bet_ref_missing_max_retries() -> int:
+    return _bounded_int_env("DOGBOT_PRE_LADDER_BET_REF_MISSING_MAX_RETRIES", 2, 0, 20)
 
 
 def _env_bool(name: str, default: bool) -> bool:

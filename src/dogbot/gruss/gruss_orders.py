@@ -83,6 +83,17 @@ class OrderIntent:
     ladder_plan_created_step: str | int | None = None
     ladder_prices_frozen: str | None = None
     current_ladder_price_from_frozen_plan: bool = False
+    computed_limit_price_raw: float | None = None
+    computed_limit_price_effective: float | None = None
+    min_price_floor_applied: bool = False
+    pre_value_target_price: float | None = None
+    ladder_planned_price: float | None = None
+    sent_price_before_value_clamp: float | None = None
+    sent_price_after_value_clamp: float | None = None
+    value_clamp_applied: bool = False
+    value_limit_breached: bool = False
+    value_limit_skip_reason: str | None = None
+    tick_rounding_direction: str | None = None
     best_same_side_offer_at_creation: float | None = None
     best_back_displayed: float | None = None
     best_lay_displayed: float | None = None
@@ -214,7 +225,7 @@ def validate_order_intent(intent: OrderIntent, *, minimum_stake: float = 2.0) ->
             price = float(intent.price) if intent.price is not None else 0.0
         except (TypeError, ValueError):
             price = 0.0
-        if price <= 1.01:
+        if price < 1.01:
             errors.append("invalid_limit_price")
     return errors
 
@@ -264,6 +275,17 @@ def make_order_intent(
     ladder_plan_created_step: str | int | None = None,
     ladder_prices_frozen: str | None = None,
     current_ladder_price_from_frozen_plan: bool = False,
+    computed_limit_price_raw: float | None = None,
+    computed_limit_price_effective: float | None = None,
+    min_price_floor_applied: bool = False,
+    pre_value_target_price: float | None = None,
+    ladder_planned_price: float | None = None,
+    sent_price_before_value_clamp: float | None = None,
+    sent_price_after_value_clamp: float | None = None,
+    value_clamp_applied: bool = False,
+    value_limit_breached: bool = False,
+    value_limit_skip_reason: str | None = None,
+    tick_rounding_direction: str | None = None,
     best_same_side_offer_at_creation: float | None = None,
     best_back_displayed: float | None = None,
     best_lay_displayed: float | None = None,
@@ -370,6 +392,17 @@ def make_order_intent(
         ladder_plan_created_step=ladder_plan_created_step,
         ladder_prices_frozen=ladder_prices_frozen,
         current_ladder_price_from_frozen_plan=bool(current_ladder_price_from_frozen_plan),
+        computed_limit_price_raw=computed_limit_price_raw,
+        computed_limit_price_effective=computed_limit_price_effective,
+        min_price_floor_applied=bool(min_price_floor_applied),
+        pre_value_target_price=pre_value_target_price,
+        ladder_planned_price=ladder_planned_price,
+        sent_price_before_value_clamp=sent_price_before_value_clamp,
+        sent_price_after_value_clamp=sent_price_after_value_clamp,
+        value_clamp_applied=bool(value_clamp_applied),
+        value_limit_breached=bool(value_limit_breached),
+        value_limit_skip_reason=value_limit_skip_reason,
+        tick_rounding_direction=tick_rounding_direction,
         best_same_side_offer_at_creation=best_same_side_offer_at_creation,
         best_back_displayed=best_back_displayed,
         best_lay_displayed=best_lay_displayed,

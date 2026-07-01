@@ -19,6 +19,11 @@ for path in (SRC, SCRIPT_DIR):
         sys.path.insert(0, str(path))
 
 from dogbot.config import DATA_PROVIDER_GRUSS_EXCEL, ORDER_PROVIDER_GRUSS_EXCEL_REAL, load_provider_config
+from dogbot.excel_strategy_loader import (
+    is_active_strategy_config_path,
+    load_excel_strategy_slots,
+    validate_strategy_workbook,
+)
 from dogbot.gruss.gruss_dryrun_engine import (
     GrussDryRunRunner,
     ProcessedRaceStore,
@@ -56,7 +61,7 @@ REAL_PRE_LADDER_ENV_DEFAULTS = {
     "DOGBOT_GRUSS_REPLACE_MIN_COUNTDOWN_SECONDS": "10",
 }
 REAL_PRE_LADDER_CONFIGURABLE_DEFAULTS = {
-    "DOGBOT_PRE_LADDER_STEPS": "47,30,21,14",
+    "DOGBOT_PRE_LADDER_STEPS": "52,38,26,16",
     "DOGBOT_PRE_LADDER_REAL_MAX_LADDERS": "50",
 }
 
@@ -92,7 +97,16 @@ def main(argv: list[str] | None = None) -> int:
         f"real_variable_stakes={os.getenv('DOGBOT_GRUSS_REAL_VARIABLE_STAKES', '') or '<unset>'} "
         f"real_max_orders={os.getenv('DOGBOT_GRUSS_REAL_MAX_ORDERS', '') or '<unset>'} "
         f"real_max_stake={os.getenv('DOGBOT_GRUSS_REAL_MAX_STAKE', '') or '<unset>'} "
+        f"allow_variable_stake_over_5={os.getenv('DOGBOT_GRUSS_REAL_ALLOW_VARIABLE_STAKE_OVER_5', '') or '<unset>'} "
+        f"variable_stake_hard_cap={os.getenv('DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP', '') or '10'} "
         f"pre_ladder_real_max_ladders={os.getenv('DOGBOT_PRE_LADDER_REAL_MAX_LADDERS', '') or '<unset>'}"
+    )
+    print(
+        "stake_security: "
+        f"VARIABLE_STAKES={str(os.getenv('DOGBOT_GRUSS_REAL_VARIABLE_STAKES', '')).lower() or '<unset>'} "
+        f"MAX_STAKE={os.getenv('DOGBOT_GRUSS_REAL_MAX_STAKE', '') or '<unset>'} "
+        f"ALLOW_VARIABLE_STAKE_OVER_5={str(os.getenv('DOGBOT_GRUSS_REAL_ALLOW_VARIABLE_STAKE_OVER_5', '')).lower() or '<unset>'} "
+        f"VARIABLE_STAKE_HARD_CAP={os.getenv('DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP', '') or '10'}"
     )
     print("Les vraies strategies du registry seront evaluees.")
     print(f"Des triggers Excel reels peuvent etre ecrits. Maximum session: {max_orders} ecritures.")
@@ -100,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         "PRE ladder reel arme: "
         + ", ".join(f"{name}={value}" for name, value in configured_pre_ladder_env.items())
     )
+    print_strategy_workbook_startup_summary()
     print_strategy_registry_diagnostics()
 
     feed = GrussFeed(DEFAULT_WORKBOOK_PATH)
@@ -426,6 +441,17 @@ def process_real_strategy_test_batch(
         for index, intent in enumerate(pre_batch_candidates, start=1)
     }
     pre_batch_context = context
+    post_batch_candidates = [
+        intent for intent in selected_to_process if _execution_phase_for_intent(intent) == "POST"
+    ]
+    post_bet_ref_required = _is_true(os.getenv("DOGBOT_POST_BET_REF_REQUIRED", "true"))
+    post_batch_candidate_keys = {
+        _direct_lim_candidate_key(intent): index
+        for index, intent in enumerate(post_batch_candidates, start=1)
+    }
+    post_batch_id = ""
+    if post_batch_candidates:
+        post_batch_id = f"{_course_id_from_context_or_intent(context, post_batch_candidates[0])}:{batch_write_start_timestamp}"
     pre_batch_milestone = context.milestone_seen if context.milestone_seen is not None else context.countdown_seconds
     pre_batch_authorized = bool(
         pre_batch_candidates
@@ -446,6 +472,7 @@ def process_real_strategy_test_batch(
         direct_lim_candidate = _is_direct_lim_candidate(intent)
         direct_lim_candidate_index = direct_lim_candidate_keys.get(_direct_lim_candidate_key(intent), "")
         pre_batch_candidate_index = pre_batch_candidate_keys.get(_direct_lim_candidate_key(intent), "")
+        post_batch_runner_index = post_batch_candidate_keys.get(_direct_lim_candidate_key(intent), "")
         if force_stake is None:
             real_intent = replace(
                 intent,
@@ -478,6 +505,16 @@ def process_real_strategy_test_batch(
                 pre_batch_candidate_index=pre_batch_candidate_index,
                 pre_batch_candidates_count=len(pre_batch_candidates),
                 post_provider_called=is_post_intent,
+                post_batch_defer_confirmation=(
+                    is_post_intent and post_bet_ref_required and hasattr(provider, "confirm_post_order_batch")
+                ),
+                post_batch_id=post_batch_id if is_post_intent else "",
+                post_batch_market_id=getattr(real_intent, "market_id", "") if is_post_intent else "",
+                post_batch_market_name=(context.course or key) if is_post_intent else "",
+                post_batch_candidate_count=len(post_batch_candidates) if is_post_intent else "",
+                post_batch_runner_index=post_batch_runner_index if is_post_intent else "",
+                post_batch_total_runners=len(post_batch_candidates) if is_post_intent else "",
+                post_batch_confirmation_started=False,
                 post_processed_key=phase_key if is_post_intent else "",
                 post_processed_key_scope="course_market" if is_post_intent else "",
                 parent_id=_parent_id_from_key(key),
@@ -506,20 +543,30 @@ def process_real_strategy_test_batch(
             if sleep_ms > 0:
                 time.sleep(sleep_ms / 1000.0)
 
+    post_pending_results = [
+        result
+        for result in selected_results
+        if str(getattr(result, "status", "") or "") == "POST_WRITE_PENDING_CONFIRMATION"
+    ]
     if selected_to_process and hasattr(provider, "update_batch_write_log"):
         direct_lim_results = [result for result in selected_results if _result_is_direct_lim_candidate(result)]
         direct_lim_written_count = sum(1 for result in direct_lim_results if bool(getattr(result, "direct_lim_order_written", False)))
         direct_lim_rejected_count = sum(1 for result in direct_lim_results if str(getattr(result, "status", "") or "").upper() != "GRUSS_PRE_LADDER_WRITTEN")
+        batch_write_duration_ms = int(round((time.perf_counter() - batch_write_start) * 1000))
         provider.update_batch_write_log(
             batch_processed_keys,
             batch_write_end_timestamp=_utc_now(),
-            batch_write_duration_ms=int(round((time.perf_counter() - batch_write_start) * 1000)),
+            batch_write_duration_ms=batch_write_duration_ms,
             extra_fields={
                 "direct_lim_batch_processed_count": len(direct_lim_results),
                 "direct_lim_written_count": direct_lim_written_count,
                 "direct_lim_rejected_count": direct_lim_rejected_count,
+                "post_batch_written_count": len(post_pending_results),
+                "post_batch_write_duration_ms": batch_write_duration_ms,
             },
         )
+    if post_pending_results and hasattr(provider, "confirm_post_order_batch"):
+        provider.confirm_post_order_batch(post_pending_results, context)
     if selected_results and hasattr(provider, "collect_pre_ladder_bet_refs"):
         provider.collect_pre_ladder_bet_refs(selected_results)
     if hasattr(provider, "clear_batch_log_context"):
@@ -787,6 +834,38 @@ def configure_real_pre_ladder_for_strategy_test(
     return applied
 
 
+def print_strategy_workbook_startup_summary(env: Mapping[str, str] | None = None) -> None:
+    values = env if env is not None else os.environ
+    enabled = _is_true(values.get("DOGBOT_STRATEGIES_EXCEL_ENABLED"))
+    excel_path = Path(str(values.get("DOGBOT_STRATEGIES_EXCEL_PATH") or "config/dogbot_strategies.xlsx"))
+    if not enabled:
+        print(
+            "strategy_workbook_startup "
+            f"enabled=false path={excel_path} status=not_loaded "
+            "reason=DOGBOT_STRATEGIES_EXCEL_ENABLED_not_true"
+        )
+        return
+
+    report_path = Path(
+        str(values.get("DOGBOT_STRATEGIES_EXCEL_REPORT_PATH") or "data/strategy_excel_load_report.csv")
+    )
+    result = load_excel_strategy_slots(excel_path, report_path=report_path)
+    print(
+        "strategy_workbook_startup "
+        f"enabled=true "
+        f"excel_path={result.excel_path} "
+        f"absolute_excel_path={result.absolute_excel_path} "
+        f"file_modified_time={result.file_modified_time or '-'} "
+        f"file_size={result.file_size} "
+        f"strategies_count={result.strategies_read} "
+        f"active_strategies={result.active_count} "
+        f"first_strategy_ids={','.join(result.first_strategy_ids or []) or '-'} "
+        f"LIMIT_THEO_FUNC_count={result.limit_theo_func_count} "
+        f"function_name_count={result.function_name_count} "
+        f"functional_strategy_ids={','.join(result.functional_strategy_ids or []) or '-'}"
+    )
+
+
 def load_strategy_test_env_file(
     env: dict[str, str] | None = None,
     env_path: Path | None = None,
@@ -983,9 +1062,9 @@ def _resolve_pre_back_lay_group(
         rejected_side = "BOTH"
         pre_reason = "pre_conflict_missing_reference_no_bet"
     elif math.isclose(back_distance, lay_distance, rel_tol=1e-9, abs_tol=1e-9):
-        chosen_side = "NONE"
-        rejected_side = "BOTH"
-        pre_reason = "pre_conflict_equal_distance_no_bet"
+        chosen_side = "BACK"
+        rejected_side = "LAY"
+        pre_reason = "equal_distance_tiebreak_back"
     elif back_distance < lay_distance:
         chosen_side = "BACK"
         rejected_side = "LAY"
@@ -1412,6 +1491,18 @@ def validate_real_strategy_test_environment(
         raise RuntimeError("DOGBOT_GRUSS_REAL_TEST_MODE=true est obligatoire")
     if not _is_explicit_true(values.get("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED")):
         raise RuntimeError("DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED=true est obligatoire")
+    if not _is_explicit_true(values.get("DOGBOT_STRATEGIES_EXCEL_ENABLED")):
+        raise RuntimeError(
+            "DOGBOT_STRATEGIES_EXCEL_ENABLED=true est obligatoire pour le test reel; "
+            "refus du fallback registry Python historique."
+        )
+    excel_path = Path(str(values.get("DOGBOT_STRATEGIES_EXCEL_PATH") or "config/dogbot_strategies.xlsx"))
+    validation = validate_strategy_workbook(excel_path, min_strategies=20)
+    if not validation.ok:
+        raise RuntimeError(
+            "Active strategy workbook invalid or incomplete. Refusing to run real orders. "
+            + "; ".join(validation.issues)
+        )
 
     forbidden = {
         "DOGBOT_GRUSS_FORCE_TEST_BACK_PLACE_LIMIT": values.get("DOGBOT_GRUSS_FORCE_TEST_BACK_PLACE_LIMIT"),
@@ -1443,8 +1534,14 @@ def validate_real_strategy_test_environment(
     if not math.isfinite(max_stake) or max_stake <= 0:
         raise RuntimeError("DOGBOT_GRUSS_REAL_MAX_STAKE doit etre positif")
     if variable_stakes:
-        if max_stake > 5:
-            raise RuntimeError("DOGBOT_GRUSS_REAL_MAX_STAKE doit etre <= 5 en mode variable")
+        hard_cap = _variable_stake_hard_cap(values)
+        if max_stake > hard_cap:
+            raise RuntimeError("DOGBOT_GRUSS_REAL_MAX_STAKE exceeds DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP")
+        if max_stake > 5 and not _is_explicit_true(values.get("DOGBOT_GRUSS_REAL_ALLOW_VARIABLE_STAKE_OVER_5")):
+            raise RuntimeError(
+                "DOGBOT_GRUSS_REAL_MAX_STAKE > 5 en mode variable. "
+                "Ajoutez DOGBOT_GRUSS_REAL_ALLOW_VARIABLE_STAKE_OVER_5=true pour autoriser explicitement."
+            )
         force_stake = None
     else:
         if max_stake != 2:
@@ -1457,6 +1554,19 @@ def validate_real_strategy_test_environment(
                 "DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE doit etre <= DOGBOT_GRUSS_REAL_MAX_STAKE"
             )
     return max_orders, max_stake, force_stake
+
+
+def _variable_stake_hard_cap(values: Mapping[str, str]) -> float:
+    raw = values.get("DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP")
+    if raw in (None, ""):
+        return 10.0
+    try:
+        cap = float(str(raw).strip())
+    except (TypeError, ValueError):
+        raise RuntimeError("DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP doit etre un nombre positif")
+    if not math.isfinite(cap) or cap <= 0:
+        raise RuntimeError("DOGBOT_GRUSS_REAL_VARIABLE_STAKE_HARD_CAP doit etre un nombre positif")
+    return cap
 
 
 def build_real_strategy_test_context(

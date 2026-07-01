@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import dogbot.excel_strategy_loader as excel_loader
 from dogbot.excel_strategy_loader import (
     CONDITIONS_COLUMNS,
     DEFAULT_STRATEGY_EXCEL_REPORT_PATH,
@@ -21,10 +22,12 @@ from dogbot.excel_strategy_loader import (
     _read_xlsx,
     _write_xlsx,
     create_strategy_excel_template,
+    default_strategy_excel_export_path,
     export_strategy_slots_to_excel,
     load_excel_strategy_slots,
+    validate_strategy_workbook,
 )
-from dogbot.strategies import EXECUTION_PHASE_PRE, RunnerCtx, build_registry, try_fire_slot
+from dogbot.strategies import EXECUTION_PHASE_PRE, FUNCTION_REGISTRY, RunnerCtx, build_registry, try_fire_slot
 
 
 def _rows(
@@ -42,6 +45,10 @@ def _rows(
             VARIABLES_COLUMNS,
             *(variables or [
                 ["is_row", "ROW flag", "bool", "LIVE", "derived", "TRUE", "TRUE"],
+                ["market_type", "Market type", "text", "LIVE", "ctx", "PLACE", "TRUE"],
+                ["region", "Region", "text", "LIVE", "ctx", "ROW", "TRUE"],
+                ["place_price_ref", "Place price", "number", "LIVE", "ctx", "2.5", "TRUE"],
+                ["place_theorique", "Place theo", "number", "LIVE", "ctx", "2.0", "TRUE"],
                 ["ev_place", "EV place", "number", "LIVE", "ctx", "0.1", "TRUE"],
                 ["trap", "Trap", "number", "LIVE", "ctx", "1", "TRUE"],
                 ["runner_name", "Runner", "text", "LIVE", "ctx", "Dog", "TRUE"],
@@ -54,7 +61,7 @@ def _rows(
         ],
         "GlobalSettings": [
             GLOBAL_SETTINGS_COLUMNS,
-            *(global_settings or [["PRE_LADDER_STEPS", "47,30,21,14", "Default PRE ladder"]]),
+            *(global_settings or [["PRE_LADDER_STEPS", "52,38,26,16", "Default PRE ladder"]]),
         ],
         "README": [["README"]],
     }
@@ -69,7 +76,10 @@ def _strategy(
     phase: str = "PRE",
     order_mode: str = "LIMIT",
     price_mode: str = "LIMIT_LTP",
+    price_limit_variable: str = "",
+    price_limit_factor: str = "",
     stake_profile: str = "BACK_STANDARD",
+    function_name: str = "",
 ) -> list[object]:
     return [
         enabled,
@@ -83,8 +93,8 @@ def _strategy(
         "",
         "",
         "",
-        "",
-        "",
+        price_limit_variable,
+        price_limit_factor,
         "AGGRESSIVE",
         "PLACE_BSP_THEN_LTP",
         "FALSE",
@@ -101,6 +111,7 @@ def _strategy(
         stake_profile,
         "10",
         "",
+        function_name,
     ]
 
 
@@ -148,9 +159,9 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             self.assertEqual(workbook["Variables"][0], VARIABLES_COLUMNS)
             self.assertEqual(workbook["StakeProfiles"][0], STAKE_PROFILES_COLUMNS)
             settings = {row[0]: row[1] for row in workbook["GlobalSettings"][1:]}
-            self.assertEqual(settings["PRE_LADDER_STEPS"], "47,30,21,14")
+            self.assertEqual(settings["PRE_LADDER_STEPS"], "52,38,26,16")
 
-    def test_template_script_creates_default_file(self) -> None:
+    def test_template_script_writes_to_exports_by_default(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script = root / "scripts" / "create_strategy_excel_template.py"
         result = subprocess.run(
@@ -161,12 +172,15 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             check=True,
         )
         self.assertIn("strategy Excel template created", result.stdout)
-        self.assertTrue((root / "config" / "dogbot_strategies.xlsx").exists())
+        output = Path(result.stdout.strip().split("strategy Excel template created:", 1)[1].strip())
+        self.assertIn("config", output.parts)
+        self.assertIn("exports", output.parts)
+        self.assertNotEqual(output.resolve(strict=False), (root / "config" / "dogbot_strategies.xlsx").resolve(strict=False))
+        self.assertTrue(output.exists())
 
-    def test_export_script_creates_excel_from_current_python_registry(self) -> None:
+    def test_export_script_creates_excel_from_current_python_registry_in_exports_by_default(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script = root / "scripts" / "export_current_strategies_to_excel.py"
-        output = root / "config" / "dogbot_strategies.xlsx"
         report = root / "data" / "strategy_excel_migration_report.csv"
         with patch.dict(os.environ, {"DOGBOT_STRATEGIES_EXCEL_ENABLED": "false"}, clear=False):
             python_count = len(build_registry())
@@ -180,6 +194,10 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
         )
 
         self.assertIn("strategy Excel exported", result.stdout)
+        output = Path(result.stdout.split("strategy Excel exported:", 1)[1].splitlines()[0].strip())
+        self.assertIn("config", output.parts)
+        self.assertIn("exports", output.parts)
+        self.assertNotEqual(output.resolve(strict=False), (root / "config" / "dogbot_strategies.xlsx").resolve(strict=False))
         workbook = _read_xlsx(output)
         strategy_rows = workbook["Strategies"][1:]
         self.assertEqual(len(strategy_rows), python_count)
@@ -199,24 +217,184 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
         compare_script = root / "scripts" / "compare_python_vs_excel_strategies.py"
         report = root / "data" / "strategy_excel_equivalence_report.csv"
 
-        subprocess.run(
-            [sys.executable, str(export_script)],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        result = subprocess.run(
-            [sys.executable, str(compare_script)],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+        with TemporaryDirectory() as tmp:
+            export_path = Path(tmp) / "dogbot_strategies_export.xlsx"
+            subprocess.run(
+                [sys.executable, str(export_script), "--output", str(export_path)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            env = dict(os.environ)
+            env["DOGBOT_STRATEGIES_EXCEL_PATH"] = str(export_path)
+            result = subprocess.run(
+                [sys.executable, str(compare_script)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
 
         self.assertIn("mismatches=0", result.stdout)
         self.assertIn("errors=0", result.stdout)
         self.assertTrue(report.exists())
+
+    def test_refuses_to_overwrite_active_strategy_config_without_flag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            active = Path(tmp) / "config" / "dogbot_strategies.xlsx"
+            with patch.object(excel_loader, "DEFAULT_STRATEGY_EXCEL_PATH", active):
+                with self.assertRaisesRegex(RuntimeError, "Refusing to overwrite config/dogbot_strategies.xlsx without --overwrite-config"):
+                    export_strategy_slots_to_excel([], active)
+
+    def test_authorized_active_overwrite_creates_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            active = Path(tmp) / "config" / "dogbot_strategies.xlsx"
+            active.parent.mkdir(parents=True)
+            create_strategy_excel_template(active, overwrite_config=True, allow_template=True, min_strategies=1)
+            with patch.object(excel_loader, "DEFAULT_STRATEGY_EXCEL_PATH", active):
+                with patch.dict(os.environ, {"DOGBOT_STRATEGIES_EXCEL_ENABLED": "false"}, clear=False):
+                    slots = build_registry()
+                export_strategy_slots_to_excel(slots, active, overwrite_config=True, min_strategies=20)
+
+            backups = list(active.parent.glob("dogbot_strategies_backup_*.xlsx"))
+            self.assertEqual(len(backups), 1)
+            validation = validate_strategy_workbook(active, min_strategies=20)
+            self.assertTrue(validation.ok, validation.issues)
+
+    def test_refuses_to_write_template_to_active_config(self) -> None:
+        with TemporaryDirectory() as tmp:
+            active = Path(tmp) / "config" / "dogbot_strategies.xlsx"
+            with patch.object(excel_loader, "DEFAULT_STRATEGY_EXCEL_PATH", active):
+                with self.assertRaisesRegex(RuntimeError, "Template strategy workbook detected"):
+                    create_strategy_excel_template(active, overwrite_config=True, min_strategies=20)
+
+    def test_validate_strategy_workbook_accepts_complete_export(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "complete.xlsx"
+            with patch.dict(os.environ, {"DOGBOT_STRATEGIES_EXCEL_ENABLED": "false"}, clear=False):
+                export_strategy_slots_to_excel(build_registry(), path, migration_report_path=Path(tmp) / "migration.csv")
+
+            validation = validate_strategy_workbook(path, min_strategies=20)
+
+            self.assertTrue(validation.ok, validation.issues)
+            self.assertGreaterEqual(validation.strategies_count, 20)
+            self.assertIn("BACK_PLACE_101", validation.strategy_ids)
+            self.assertIn("LAY_PLACE_351", validation.strategy_ids)
+            self.assertIn("LAY_WIN_401", validation.strategy_ids)
+            self.assertIn("BACK_WIN_413", validation.strategy_ids)
+
+    def test_validate_strategy_workbook_accepts_functional_replacements_without_old_required_ids(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "functional_replacements.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_901",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_UK_NON_T1_SMOOTH",
+                        ),
+                        _strategy(
+                            "BACK_PLACE_902",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_ROW_NON_T1_SMOOTH",
+                        ),
+                        _strategy(
+                            "BACK_PLACE_911",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_UK_T1_SMOOTH",
+                        ),
+                        _strategy(
+                            "BACK_PLACE_912",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_ROW_T1_SMOOTH",
+                        ),
+                    ],
+                    conditions=[
+                        _condition("BACK_PLACE_901", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_902", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_911", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_912", variable="market_type", operator="=", value="PLACE"),
+                    ],
+                ),
+            )
+
+            validation = validate_strategy_workbook(path, min_strategies=1)
+
+            self.assertTrue(validation.ok, validation.issues)
+            self.assertNotIn("BACK_PLACE_101", validation.strategy_ids)
+            self.assertFalse(any("missing known active strategy ids" in issue for issue in validation.issues))
+
+    def test_validate_strategy_workbook_rejects_invalid_functional_strategy_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_functional.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_912",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="1.10",
+                            function_name="MISSING_FUNCTION",
+                        )
+                    ],
+                    conditions=[
+                        _condition("BACK_PLACE_912", variable="market_type", operator="=", value="PLACE"),
+                    ],
+                ),
+            )
+
+            validation = validate_strategy_workbook(path, min_strategies=1)
+
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("not found in FUNCTION_REGISTRY" in issue for issue in validation.issues))
+            self.assertTrue(any("price_limit_factor=DYNAMIC" in issue for issue in validation.issues))
+
+    def test_validate_strategy_workbook_rejects_excel_only_template(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "template.xlsx"
+            create_strategy_excel_template(path)
+
+            validation = validate_strategy_workbook(path, min_strategies=1)
+
+            self.assertFalse(validation.ok)
+            self.assertTrue(validation.template_detected)
+            self.assertIn("Template strategy workbook detected; refusing to use as active config", validation.issues)
+
+    def test_real_strategy_watcher_refuses_incomplete_active_workbook(self) -> None:
+        from scripts.watch_gruss_real_strategy_test import validate_real_strategy_test_environment
+
+        with TemporaryDirectory() as tmp:
+            active = Path(tmp) / "config" / "dogbot_strategies.xlsx"
+            create_strategy_excel_template(active, overwrite_config=True, allow_template=True, min_strategies=1)
+            env = {
+                "DOGBOT_DATA_PROVIDER": "gruss_excel",
+                "DOGBOT_ORDER_PROVIDER": "gruss_excel_real",
+                "DOGBOT_GRUSS_ENABLE_REAL_ORDERS": "true",
+                "DOGBOT_GRUSS_REAL_TEST_MODE": "true",
+                "DOGBOT_GRUSS_TRIGGER_LAYOUT_CONFIRMED": "true",
+                "DOGBOT_GRUSS_REAL_MAX_ORDERS": "1",
+                "DOGBOT_GRUSS_REAL_MAX_STAKE": "2",
+                "DOGBOT_GRUSS_REAL_TEST_FORCE_STAKE": "2",
+                "DOGBOT_STRATEGIES_EXCEL_ENABLED": "true",
+                "DOGBOT_STRATEGIES_EXCEL_PATH": str(active),
+            }
+            with patch.object(excel_loader, "DEFAULT_STRATEGY_EXCEL_PATH", active):
+                with self.assertRaisesRegex(RuntimeError, "Active strategy workbook invalid or incomplete"):
+                    validate_real_strategy_test_environment(env)
 
     def test_export_current_registry_converts_simple_conditions_and_hybrid(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -339,6 +517,199 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             self.assertEqual(loaded.price_limit_variable, "place_theorique")
             self.assertEqual(float(loaded.price_limit_factor), 1.2)
 
+    def test_limit_theo_func_back_row_t1_accepts_and_prices_from_function(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "functional.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_912",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_ROW_T1_SMOOTH",
+                        )
+                    ],
+                    conditions=[
+                        _condition("BACK_PLACE_912", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_912", variable="region", operator="=", value="ROW"),
+                        _condition("BACK_PLACE_912", variable="trap", operator="=", value="1"),
+                        _condition("BACK_PLACE_912", variable="place_theorique", operator=">", value="1"),
+                    ],
+                ),
+            )
+            slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "load.csv").slots[0]
+            ctx = _ctx(trap=1, ltp=2.5, place_theo=2.0, ev_place=0.12, region="ROW")
+
+            result = try_fire_slot(None, slot, ctx)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertAlmostEqual(result.price, 2.2)
+            self.assertEqual(slot.function_name, "BACK_PLACE_ROW_T1_SMOOTH")
+            self.assertEqual(slot.price_limit_factor, "DYNAMIC")
+            functional = getattr(slot, "_last_functional_limit_eval")
+            self.assertEqual(functional["decision"], "accepted")
+            self.assertIsNone(functional["ev_threshold"])
+            self.assertAlmostEqual(functional["coeff_limit"], 1.1)
+            self.assertAlmostEqual(functional["computed_coefficient"], 1.1)
+            self.assertAlmostEqual(functional["computed_limit_price"], 2.2)
+
+    def test_limit_theo_func_back_row_t1_uses_function_as_limit_not_ev_filter(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "functional.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_912",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_ROW_T1_SMOOTH",
+                        )
+                    ],
+                    conditions=[
+                        _condition("BACK_PLACE_912", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_912", variable="region", operator="=", value="ROW"),
+                        _condition("BACK_PLACE_912", variable="trap", operator="=", value="1"),
+                        _condition("BACK_PLACE_912", variable="place_theorique", operator=">", value="1"),
+                    ],
+                ),
+            )
+            slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "load.csv").slots[0]
+
+            result = try_fire_slot(None, slot, _ctx(trap=1, ltp=2.5, place_theo=2.0, ev_place=0.05, region="ROW"))
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertAlmostEqual(result.price, 2.2)
+            functional = getattr(slot, "_last_functional_limit_eval")
+            self.assertEqual(functional["decision"], "accepted")
+            self.assertEqual(functional["reason"], "functional_limit_accepted")
+            self.assertIsNone(functional["ev_threshold"])
+            self.assertAlmostEqual(functional["coeff_limit"], 1.1)
+
+    def test_limit_theo_func_crystal_henry_case_does_not_reject_on_ev_below_target(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "functional_crystal.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_901",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_UK_NON_T1_SMOOTH",
+                        )
+                    ],
+                    conditions=[
+                        _condition("BACK_PLACE_901", variable="market_type", operator="=", value="PLACE"),
+                        _condition("BACK_PLACE_901", variable="region", operator="=", value="UK"),
+                        _condition("BACK_PLACE_901", variable="trap", operator="!=", value="1"),
+                        _condition("BACK_PLACE_901", variable="place_theorique", operator=">", value="1"),
+                    ],
+                ),
+            )
+            slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "load.csv").slots[0]
+            ctx = _ctx(
+                trap=2,
+                ltp=2.82,
+                place_theo=2.44065,
+                ev_place=0.15543,
+                region="UK",
+            )
+
+            result = try_fire_slot(None, slot, ctx)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            expected_coefficient = 1.10 + 0.10 * (4.8 - 2.82) / (4.8 - 1.3)
+            self.assertAlmostEqual(result.price, 2.44065 * expected_coefficient, places=6)
+            functional = getattr(slot, "_last_functional_limit_eval")
+            self.assertEqual(functional["decision"], "accepted")
+            self.assertEqual(functional["reason"], "functional_limit_accepted")
+            self.assertIsNone(functional["ev_threshold"])
+            self.assertAlmostEqual(functional["coeff_limit"], expected_coefficient, places=6)
+
+    def test_limit_theo_func_lay_row_t1_accepts_and_rejects_positive_ev(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "functional_lay.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "LAY_PLACE_921",
+                            side="LAY",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="LAY_PLACE_ROW_T1_SMOOTH",
+                        )
+                    ],
+                    conditions=[
+                        _condition("LAY_PLACE_921", variable="market_type", operator="=", value="PLACE"),
+                        _condition("LAY_PLACE_921", variable="region", operator="=", value="ROW"),
+                        _condition("LAY_PLACE_921", variable="trap", operator="=", value="1"),
+                        _condition("LAY_PLACE_921", variable="place_theorique", operator=">", value="1"),
+                    ],
+                ),
+            )
+            slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "load.csv").slots[0]
+
+            accepted = try_fire_slot(None, slot, _ctx(trap=1, ltp=3.0, place_theo=2.0, ev_place=-0.45, region="ROW"))
+
+            self.assertIsNotNone(accepted)
+            assert accepted is not None
+            self.assertAlmostEqual(accepted.price, 1.1491, places=3)
+            functional = getattr(slot, "_last_functional_limit_eval")
+            self.assertEqual(functional["decision"], "accepted")
+            self.assertIsNone(functional["ev_threshold"])
+            self.assertAlmostEqual(functional["coeff_limit"], 0.5748, places=3)
+
+            accepted_even_with_positive_ev = try_fire_slot(
+                None,
+                slot,
+                _ctx(trap=1, ltp=15.0, place_theo=4.0, ev_place=0.078, region="ROW"),
+            )
+
+            self.assertIsNotNone(accepted_even_with_positive_ev)
+            assert accepted_even_with_positive_ev is not None
+            functional = getattr(slot, "_last_functional_limit_eval")
+            self.assertEqual(functional["decision"], "accepted")
+            self.assertEqual(functional["reason"], "functional_limit_accepted")
+            self.assertAlmostEqual(accepted_even_with_positive_ev.price, 4.0 * 0.85)
+
+    def test_post_function_registry_uses_configured_open_thresholds(self) -> None:
+        cases = [
+            ("BACK_PLACE_POST_UK_NON_T1_OPEN", 2.0, 1.15 + 0.25 * (3.0 - 2.0) / (3.0 - 1.3)),
+            ("BACK_PLACE_POST_ROW_NON_T1_OPEN", 2.0, 1.30 + 0.15 * (3.0 - 2.0) / (3.0 - 1.3)),
+            ("BACK_PLACE_POST_UK_T1_OPEN", 3.0, 1.05 + 0.20 * (4.8 - 3.0) / (4.8 - 2.0)),
+            ("BACK_PLACE_POST_ROW_T1_OPEN", 3.0, 1.30),
+        ]
+        for function_name, place_odds, expected in cases:
+            with self.subTest(function_name=function_name):
+                value = FUNCTION_REGISTRY[function_name]["fn"](place_odds)
+                self.assertIsNotNone(value)
+                self.assertAlmostEqual(value, expected)
+
+    def test_function_coeff_registry_returns_limit_coefficients(self) -> None:
+        back_fn = FUNCTION_REGISTRY["BACK_PLACE_UK_NON_T1_SMOOTH"]["fn"]
+        lay_fn = FUNCTION_REGISTRY["LAY_PLACE_ROW_T1_SMOOTH"]["fn"]
+
+        self.assertAlmostEqual(back_fn(1.30), 1.20)
+        self.assertAlmostEqual(back_fn(2.80), 1.10 + 0.10 * (4.8 - 2.8) / (4.8 - 1.3), places=6)
+        self.assertAlmostEqual(back_fn(4.80), 1.10)
+        self.assertAlmostEqual(lay_fn(1.05), 0.53)
+        self.assertAlmostEqual(lay_fn(7.0), 0.85 - 0.32 * (15.0 - 7.0) / (15.0 - 1.05), places=6)
+        self.assertAlmostEqual(lay_fn(15.0), 0.85)
+
     def test_excel_lay_place_pre_with_true_condition_returns_fire_result(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "dogbot_strategies.xlsx"
@@ -372,7 +743,8 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             result = try_fire_slot(None, slot, ctx)
 
             self.assertIsNotNone(result)
-            self.assertEqual(result.price, 1.94)
+            self.assertEqual(result.price, 1.01)
+            self.assertLess(float(result.sp_limit), 1.0)
             self.assertGreater(result.size, 0.0)
 
     def test_excel_back_and_lay_pre_candidates_both_reach_conflict_resolution(self) -> None:
@@ -438,9 +810,9 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             self.assertEqual({candidate.side for candidate in raw_candidates}, {"BACK", "LAY"})
             self.assertEqual(len(selected), 1)
             self.assertEqual(len(rejected), 1)
-            self.assertEqual(selected[0].side, "LAY")
+            self.assertEqual(selected[0].side, "BACK")
             self.assertEqual(rejected[0].reason, "conflicting_back_lay_lost_priority")
-            self.assertEqual(selected[0].pre_conflict_reason, "pre_conflict_lay_nearer")
+            self.assertEqual(selected[0].pre_conflict_reason, "pre_conflict_back_nearer")
 
     def test_export_supports_declarative_excel_conditions_when_available(self) -> None:
         from dogbot.staking import Side
@@ -503,6 +875,55 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
             self.assertTrue(report.exists())
             self.assertIn("active_strategies=1", report.read_text(encoding="utf-8"))
 
+    def test_loader_report_includes_loaded_workbook_identity_and_functional_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "strategies.xlsx"
+            report = Path(tmp) / "strategy_excel_load_report.csv"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[
+                        _strategy(
+                            "BACK_PLACE_901",
+                            price_mode="LIMIT_THEO_FUNC",
+                            price_limit_variable="place_theorique",
+                            price_limit_factor="DYNAMIC",
+                            function_name="BACK_PLACE_UK_T1_SMOOTH",
+                        )
+                    ],
+                    conditions=[_condition("BACK_PLACE_901", variable="market_type", operator="=", value="PLACE")],
+                ),
+            )
+
+            result = load_excel_strategy_slots(path, report_path=report)
+
+            self.assertEqual(result.first_strategy_ids, ["BACK_PLACE_901"])
+            self.assertEqual(result.limit_theo_func_count, 1)
+            self.assertEqual(result.function_name_count, 1)
+            self.assertEqual(result.functional_strategy_ids, ["BACK_PLACE_901"])
+            with report.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["absolute_excel_path"], str(path.resolve(strict=False)))
+            self.assertEqual(rows[0]["strategies_count"], "1")
+            self.assertEqual(rows[0]["active_strategies"], "1")
+            self.assertEqual(rows[0]["first_strategy_ids"], "BACK_PLACE_901")
+            self.assertEqual(rows[0]["contains_LIMIT_THEO_FUNC_count"], "1")
+            self.assertEqual(rows[0]["contains_function_name_count"], "1")
+            self.assertEqual(rows[0]["functional_strategy_ids"], "BACK_PLACE_901")
+
+    def test_loader_rejects_strategy_editor_and_strategies_id_mismatch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "strategies.xlsx"
+            rows = _rows(strategies=[_strategy("BACK_PLACE_901")], conditions=[_condition("BACK_PLACE_901")])
+            rows["Strategy_Editor"] = [
+                ["strategy_id", "enabled"],
+                ["BACK_PLACE_902", "TRUE"],
+            ]
+            _write_xlsx(path, rows)
+
+            with self.assertRaisesRegex(StrategyExcelConfigError, "Strategy_Editor and Strategies strategy_id sets differ"):
+                load_excel_strategy_slots(path, report_path=Path(tmp) / "report.csv")
+
     def test_loader_rejects_invalid_strategy_fields(self) -> None:
         cases = [
             ("bad-side", _strategy(side="BID"), [_condition()], "side"),
@@ -525,6 +946,7 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
     def test_condition_operators(self) -> None:
         cases = [
             ("=", "runner_name", "=", "dog one", True, {"runner_name": " Dog One "}),
+            ("==", "runner_name", "==", "dog one", True, {"runner_name": " Dog One "}),
             ("!=", "runner_name", "!=", "other", True, {"runner_name": "Dog One"}),
             (">", "ev_place", ">", "0.05", True, {"ev_place": 0.1}),
             (">=", "ev_place", ">=", "0.1", True, {"ev_place": 0.1}),
@@ -545,6 +967,27 @@ class ExcelStrategyLoaderTests(unittest.TestCase):
                 )
                 slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "report.csv").slots[0]
                 self.assertEqual(slot.condition(_ctx(**ctx_values)), expected)
+
+    def test_trap_not_equal_conditions_exclude_only_configured_traps(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "strategies.xlsx"
+            _write_xlsx(
+                path,
+                _rows(
+                    strategies=[_strategy("LAY_PLACE_302", side="LAY")],
+                    conditions=[
+                        _condition("LAY_PLACE_302", variable="trap", operator="!=", value="1"),
+                        _condition("LAY_PLACE_302", variable="trap", operator="!=", value="8"),
+                    ],
+                ),
+            )
+            slot = load_excel_strategy_slots(path, report_path=Path(tmp) / "report.csv").slots[0]
+
+            self.assertFalse(slot.condition(_ctx(trap=1)))
+            self.assertFalse(slot.condition(_ctx(trap=8)))
+            for trap in (2, 3, 4, 5, 6, 7):
+                with self.subTest(trap=trap):
+                    self.assertTrue(slot.condition(_ctx(trap=trap)))
 
     def test_condition_groups_are_and_inside_group_or_between_groups(self) -> None:
         with TemporaryDirectory() as tmp:

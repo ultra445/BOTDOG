@@ -30,6 +30,9 @@ class FakeBridge:
         trigger_value_after_write=_SAME_AS_WRITTEN,
         trigger_value_before_clear=_SAME_AS_WRITTEN,
         readback_overrides=None,
+        write_bet_ref_after_post: bool = True,
+        bet_refs_after_write=None,
+        selection_rows_by_sheet=None,
     ) -> None:
         self.runner_values = runner_values or [["1. Test Runner"], ["2. Other Runner"]]
         self.visible = visible
@@ -39,6 +42,9 @@ class FakeBridge:
         self.trigger_value_after_write = trigger_value_after_write
         self.trigger_value_before_clear = trigger_value_before_clear
         self.readback_overrides = readback_overrides or {}
+        self.write_bet_ref_after_post = write_bet_ref_after_post
+        self.bet_refs_after_write = list(bet_refs_after_write or [])
+        self.selection_rows_by_sheet = selection_rows_by_sheet or {}
         self.cells = dict(self.trigger_values)
         self.write_happened = False
         self.post_write_trigger_reads = 0
@@ -54,10 +60,13 @@ class FakeBridge:
         return self.visible
 
     def has_sheet(self, sheet_name: str) -> bool:
-        return sheet_name in self.sheets
+        return sheet_name in self.sheets or sheet_name in self.selection_rows_by_sheet
 
     def read_range(self, sheet_name: str, address: str):
         return self.runner_values
+
+    def read_sheet(self, sheet_name: str, rows: int = 80, columns: int = 80):
+        return self.selection_rows_by_sheet.get(sheet_name, [])
 
     def read_cell(self, sheet_name: str, address: str):
         if address == "N3":
@@ -87,6 +96,13 @@ class FakeBridge:
                     if self.trigger_value_after_write is _SAME_AS_WRITTEN
                     else self.trigger_value_after_write
                 )
+                if self.write_bet_ref_after_post and str(value).upper() in {"BACK", "LAY", "BACKSP", "LAYSP"}:
+                    row = "".join(ch for ch in str(address) if ch.isdigit())
+                    if self.bet_refs_after_write:
+                        bet_ref = self.bet_refs_after_write.pop(0)
+                    else:
+                        bet_ref = f"4325000000{int(row):02d}"
+                    self.cells[(sheet_name, f"T{row}")] = bet_ref
             else:
                 self.cells[(sheet_name, address)] = value
         self.write_happened = any(address.startswith("Q") for address, _ in plan)
@@ -179,6 +195,54 @@ def _context(**overrides):
     }
     data.update(overrides)
     return GrussRealOrderContext(**data)
+
+
+def _post_selection_rows(**overrides):
+    row = {
+        "timestamp": "2099-01-01T00:00:00Z",
+        "market_id": "258836708",
+        "market_type": "PLACE",
+        "selection_id": "sel-1",
+        "selection": "1. Test Runner",
+        "bet_ref": "432500000006",
+        "side": "BACK",
+        "req_odds": 3.2,
+        "req_stake": 2.0,
+        "matched_odds": "",
+        "matched_stake": "",
+        "market_name": "Romford 4th Jun To Be Placed",
+    }
+    row.update(overrides)
+    return [
+        [
+            "Timestamp",
+            "Market ID",
+            "Market Type",
+            "Selection ID",
+            "Selection",
+            "Bet Ref",
+            "Bet type",
+            "Req Odds",
+            "Req Stake",
+            "Matched Odds",
+            "Matched Stake",
+            "Market Name",
+        ],
+        [
+            row["timestamp"],
+            row["market_id"],
+            row["market_type"],
+            row["selection_id"],
+            row["selection"],
+            row["bet_ref"],
+            row["side"],
+            row["req_odds"],
+            row["req_stake"],
+            row["matched_odds"],
+            row["matched_stake"],
+            row["market_name"],
+        ],
+    ]
 
 
 class GrussRealOrdersTests(unittest.TestCase):
@@ -612,7 +676,7 @@ class GrussRealOrdersTests(unittest.TestCase):
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _write_no_trigger_env(enabled=False):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge, write_no_trigger_guard=True)
-            result = provider.place_order(_intent(price=1.01, stake=0), _context())
+            result = provider.place_order(_intent(price=1.0, stake=0), _context())
 
         self.assertEqual(result.status, "REJECTED_REAL")
         self.assertIn("invalid_price", result.reason)
@@ -644,7 +708,7 @@ class GrussRealOrdersTests(unittest.TestCase):
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
             provider = GrussExcelOrderProvider(tmp, bridge=bridge)
-            result = provider.place_order(_intent(price=1.01), _context())
+            result = provider.place_order(_intent(price=1.0), _context())
 
         self.assertEqual(result.status, "REJECTED_REAL")
         self.assertIn("invalid_price", result.reason)
@@ -885,6 +949,58 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["price_tick_rounding_side"], "LAY_FLOOR")
         self.assertEqual(rows[0]["price_is_valid_betfair_tick"], "true")
 
+    def test_real_pre_ladder_clamps_back_price_to_value_target_before_excel_write(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _real_test_env(preview=False, max_stake=2.0), patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_PRE_LADDER_ENABLED": "true",
+                "DOGBOT_PRE_LADDER_PREVIEW": "false",
+                "DOGBOT_PRE_LADDER_STEPS": "52,38,26,16",
+                "DOGBOT_PRE_LADDER_REAL_REQUIRE_BET_REF_FOR_REPLACE": "true",
+                "DOGBOT_PRE_LADDER_REAL_STOP_IF_NO_BET_REF": "true",
+                "DOGBOT_PRE_LADDER_REAL_NO_STACKING": "true",
+                "DOGBOT_PRE_LADDER_REAL_MAX_LADDERS": "1",
+            },
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(
+                _intent(
+                    price=2.92,
+                    pre_ladder=True,
+                    ladder_id="BACK_PLACE_902:market:1:PLACE:BACK:PRE",
+                    ladder_step="1/4",
+                    execution_phase="PRE",
+                    strategy_id="BACK_PLACE_902",
+                    stake_forced=True,
+                    computed_limit_price_raw=3.088524,
+                    computed_limit_price_effective=3.088524,
+                    pre_value_target_price=3.088524,
+                    ladder_planned_price=2.92,
+                    sent_price_before_value_clamp=2.92,
+                    value_clamp_applied=True,
+                    value_limit_breached=True,
+                    tick_rounding_direction="BACK_CEIL",
+                    signal_countdown_seconds=52,
+                ),
+                _context(countdown_seconds=52, milestone_seen=52),
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_PRE_LADDER_WRITTEN")
+        self.assertEqual(result.price_tick_rounded, 3.1)
+        self.assertEqual(result.sent_price_after_value_clamp, 3.1)
+        self.assertEqual(bridge.write_calls[0][1][0], ("R5", 3.1))
+        self.assertEqual(rows[0]["computed_limit_price_raw"], "3.088524")
+        self.assertEqual(rows[0]["computed_limit_price_effective"], "3.088524")
+        self.assertEqual(rows[0]["pre_value_target_price"], "3.088524")
+        self.assertEqual(rows[0]["sent_price_before_value_clamp"], "2.92")
+        self.assertEqual(rows[0]["sent_price_after_value_clamp"], "3.1")
+        self.assertEqual(rows[0]["value_clamp_applied"], "True")
+        self.assertEqual(rows[0]["value_limit_breached"], "True")
+        self.assertEqual(rows[0]["tick_rounding_direction"], "BACK_CEIL")
+
     def test_real_order_below_stake_cap_keeps_original_stake(self) -> None:
         bridge = FakeBridge()
         with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
@@ -978,6 +1094,11 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertTrue(result.post_write_attempted)
         self.assertEqual(result.post_write_status, "GRUSS_REAL_WRITTEN")
         self.assertEqual(result.post_write_reason, "excel_trigger_written")
+        self.assertTrue(result.post_bet_ref_required)
+        self.assertTrue(result.post_bet_ref_wait_attempted)
+        self.assertEqual(result.post_bet_ref_after, "432500000005")
+        self.assertTrue(result.post_order_confirmed)
+        self.assertEqual(result.post_order_confirmation_source, "post_excel_row_poll:T5")
         self.assertEqual(result.countdown_seconds_at_post_write, 1)
         self.assertEqual(result.market_status_at_post_write, "Active")
         self.assertEqual(rows[0]["post_write_verified"], "True")
@@ -986,8 +1107,296 @@ class GrussRealOrdersTests(unittest.TestCase):
         self.assertEqual(rows[0]["post_write_attempted"], "True")
         self.assertEqual(rows[0]["post_write_status"], "GRUSS_REAL_WRITTEN")
         self.assertEqual(rows[0]["post_write_reason"], "excel_trigger_written")
+        self.assertEqual(rows[0]["post_bet_ref_required"], "True")
+        self.assertEqual(rows[0]["post_bet_ref_wait_attempted"], "True")
+        self.assertEqual(rows[0]["post_bet_ref_after"], "432500000005")
+        self.assertEqual(rows[0]["post_order_confirmed"], "True")
         self.assertEqual(rows[0]["countdown_seconds_at_post_write"], "1")
         self.assertEqual(rows[0]["market_status_at_post_write"], "Active")
+
+    def test_post_without_bet_ref_is_unconfirmed_and_logged(self) -> None:
+        bridge = FakeBridge(write_bet_ref_after_post=False)
+        counts = {}
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, real_order_counts=counts)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "POST_WRITE_UNCONFIRMED")
+        self.assertEqual(result.reason, "POST_WRITE_ATTEMPTED_BUT_NO_NEW_ORDER_EVIDENCE")
+        self.assertTrue(result.trigger_written)
+        self.assertTrue(result.post_write_verified)
+        self.assertTrue(result.post_bet_ref_wait_attempted)
+        self.assertFalse(result.post_order_confirmed)
+        self.assertEqual(result.post_write_unconfirmed_reason, "POST_WRITE_ATTEMPTED_BUT_NO_NEW_ORDER_EVIDENCE")
+        self.assertEqual(result.post_bet_ref_poll_attempts, 1)
+        self.assertEqual(result.post_bet_ref_after, "")
+        self.assertEqual(counts, {})
+        self.assertEqual(rows[0]["status"], "POST_WRITE_UNCONFIRMED")
+        self.assertEqual(rows[0]["post_write_status"], "POST_WRITE_UNCONFIRMED")
+        self.assertEqual(rows[0]["post_write_unconfirmed_reason"], "POST_WRITE_ATTEMPTED_BUT_NO_NEW_ORDER_EVIDENCE")
+        self.assertEqual(rows[0]["post_order_confirmed"], "False")
+
+    def test_post_existing_pre_bet_ref_is_not_accepted_as_new_confirmation(self) -> None:
+        bridge = FakeBridge(write_bet_ref_after_post=True)
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        counts = {}
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, real_order_counts=counts)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+        self.assertEqual(result.reason, "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA")
+        self.assertEqual(result.post_existing_bet_ref_before, "432500000005")
+        self.assertEqual(result.post_bet_ref_after, "432500000005")
+        self.assertFalse(result.post_bet_ref_changed)
+        self.assertFalse(result.post_bet_ref_confirmed_new)
+        self.assertFalse(result.post_order_confirmed)
+        self.assertTrue(result.post_selections_lookup_attempted)
+        self.assertFalse(result.post_selections_match_found)
+        self.assertEqual(result.post_unconfirmed_reason, "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA")
+        self.assertEqual(counts, {})
+        self.assertEqual(rows[0]["post_existing_bet_ref_before"], "432500000005")
+        self.assertEqual(rows[0]["post_bet_ref_changed"], "False")
+        self.assertEqual(rows[0]["post_bet_ref_confirmed_new"], "False")
+        self.assertEqual(rows[0]["post_selections_lookup_attempted"], "True")
+        self.assertEqual(rows[0]["post_selections_match_found"], "False")
+        self.assertEqual(rows[0]["post_unconfirmed_reason"], "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA")
+
+    def test_post_independent_clears_pre_bet_ref_before_write_and_confirms_new_ref(self) -> None:
+        bridge = FakeBridge(
+            write_bet_ref_after_post=True,
+            bet_refs_after_write=["432500000006"],
+        )
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_PRE_POST_INDEPENDENT": "true", "DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(bridge.write_calls[0][1], (("T5", ""), ("R5", 3.2), ("S5", 2.0), ("Q5", "BACK")))
+        self.assertEqual(result.post_existing_pre_bet_ref, "432500000005")
+        self.assertTrue(result.post_independent_mode_enabled)
+        self.assertTrue(result.post_row_prepared_for_new_order)
+        self.assertTrue(result.post_pre_bet_ref_preserved_in_state)
+        self.assertTrue(result.post_pre_bet_ref_cleared_for_write)
+        self.assertTrue(result.post_new_bet_ref_expected)
+        self.assertTrue(result.post_new_bet_ref_found)
+        self.assertEqual(result.post_new_bet_ref, "432500000006")
+        self.assertEqual(result.post_bet_ref_after, "432500000006")
+        self.assertTrue(result.post_order_confirmed)
+        self.assertEqual(rows[0]["post_existing_pre_bet_ref"], "432500000005")
+        self.assertEqual(rows[0]["post_pre_bet_ref_cleared_for_write"], "True")
+        self.assertEqual(rows[0]["post_new_bet_ref"], "432500000006")
+
+    def test_post_matched_stake_delta_confirms_without_reusing_pre_bet_ref(self) -> None:
+        class MatchedDeltaBridge(FakeBridge):
+            def write_cells(self, sheet_name: str, cells, *, allow_write: bool = False):
+                written = super().write_cells(sheet_name, cells, allow_write=allow_write)
+                if any(address.startswith("Q") for address, value in cells if str(value).upper() in {"BACK", "LAY"}):
+                    self.cells[(sheet_name, "T5")] = "432500000005"
+                    self.cells[(sheet_name, "W5")] = 4.0
+                return written
+
+        bridge = MatchedDeltaBridge(write_bet_ref_after_post=False)
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        bridge.cells[("PLACE", "W5")] = 2.0
+        counts = {}
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, real_order_counts=counts)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(result.post_bet_ref_after, "432500000005")
+        self.assertFalse(result.post_bet_ref_changed)
+        self.assertFalse(result.post_bet_ref_confirmed_new)
+        self.assertTrue(result.post_added_stake_confirmed)
+        self.assertEqual(result.post_added_stake_amount, 2.0)
+        self.assertEqual(result.post_total_matched_before, 2.0)
+        self.assertEqual(result.post_total_matched_after, 4.0)
+        self.assertEqual(result.post_total_matched_delta, 2.0)
+        self.assertTrue(result.post_order_confirmed)
+        self.assertEqual(result.post_confirmation_source, "post_matched_stake_delta")
+        self.assertEqual(sum(counts.values()), 2)
+        self.assertEqual(rows[0]["post_added_stake_confirmed"], "True")
+        self.assertEqual(rows[0]["post_total_matched_delta"], "2.0")
+        self.assertEqual(rows[0]["post_confirmation_source"], "post_matched_stake_delta")
+
+    def test_post_after_pre_confirms_when_row_bet_ref_changes(self) -> None:
+        for strategy_id in ("BACK_PLACE_903", "BACK_PLACE_913"):
+            with self.subTest(strategy_id=strategy_id):
+                bridge = FakeBridge(bet_refs_after_write=["432500000005", "432500000006"])
+                with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True):
+                    provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+                    pre = provider.place_order(
+                        _intent(strategy_id=strategy_id, execution_phase="PRE", selection_id="sel-1"),
+                        _context(countdown_seconds=1),
+                    )
+                    post = provider.place_order(
+                        _intent(strategy_id=strategy_id, execution_phase="POST", selection_id="sel-1"),
+                        _context(countdown_seconds=1),
+                    )
+                    rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+                self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
+                self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+                self.assertEqual(post.post_existing_bet_ref_before, "432500000005")
+                self.assertEqual(post.post_bet_ref_after, "432500000006")
+                self.assertTrue(post.post_bet_ref_changed)
+                self.assertTrue(post.post_order_confirmed)
+                self.assertEqual(post.post_confirmation_source, "post_excel_row_poll:T5")
+                self.assertEqual(rows[-1]["post_existing_bet_ref_before"], "432500000005")
+                self.assertEqual(rows[-1]["post_bet_ref_after"], "432500000006")
+                self.assertEqual(rows[-1]["post_order_confirmed"], "True")
+
+    def test_post_strict_selections_match_confirms_new_bet_ref(self) -> None:
+        bridge = FakeBridge(
+            write_bet_ref_after_post=False,
+            selection_rows_by_sheet={"PLACE_Selections": _post_selection_rows()},
+        )
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        counts = {}
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge, real_order_counts=counts)
+            result = provider.place_order(
+                _intent(strategy_id="BACK_PLACE_903", selection_id="sel-1"),
+                _context(countdown_seconds=1),
+            )
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(result.post_bet_ref_after, "432500000006")
+        self.assertTrue(result.post_bet_ref_changed)
+        self.assertTrue(result.post_order_confirmed)
+        self.assertTrue(result.post_selections_lookup_attempted)
+        self.assertTrue(result.post_selections_match_found)
+        self.assertEqual(result.post_selections_match_reason, "post_selections_strict_match")
+        self.assertEqual(result.post_confirmation_source, "post_selections_sheet:PLACE_Selections!row2")
+        self.assertEqual(sum(counts.values()), 2)
+        self.assertEqual(rows[0]["post_bet_ref_after"], "432500000006")
+        self.assertEqual(rows[0]["post_selections_match_found"], "True")
+        self.assertEqual(rows[0]["post_confirmation_source"], "post_selections_sheet:PLACE_Selections!row2")
+
+    def test_post_strict_selections_rejects_wrong_market_runner_or_course(self) -> None:
+        cases = [
+            ("other_market_id", _post_selection_rows(market_id="999999999"), "market_id_mismatch"),
+            (
+                "other_runner",
+                _post_selection_rows(selection_id="", selection="2. Other Runner"),
+                "runner_mismatch",
+            ),
+            (
+                "old_course_without_market_id",
+                _post_selection_rows(market_id="", market_name="Harlow 4th Jun To Be Placed"),
+                "market_id_missing",
+            ),
+        ]
+        for name, selection_rows, expected_reason in cases:
+            with self.subTest(name=name):
+                bridge = FakeBridge(
+                    write_bet_ref_after_post=False,
+                    selection_rows_by_sheet={"PLACE_Selections": selection_rows},
+                )
+                bridge.cells[("PLACE", "T5")] = "432500000005"
+                counts = {}
+                with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+                    "os.environ",
+                    {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+                    clear=False,
+                ):
+                    provider = GrussExcelOrderProvider(tmp, bridge=bridge, real_order_counts=counts)
+                    result = provider.place_order(
+                        _intent(strategy_id="BACK_PLACE_903", selection_id="sel-1"),
+                        _context(countdown_seconds=1),
+                    )
+
+                self.assertEqual(result.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+                self.assertFalse(result.post_order_confirmed)
+                self.assertTrue(result.post_selections_lookup_attempted)
+                self.assertFalse(result.post_selections_match_found)
+                self.assertIn(expected_reason, result.post_selections_reject_reason)
+                self.assertEqual(counts, {})
+
+    def test_post_bet_ref_poll_waits_for_changed_value(self) -> None:
+        bridge = FakeBridge(write_bet_ref_after_post=True)
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {
+                "DOGBOT_POST_BET_REF_WAIT_MS": "35",
+                "DOGBOT_POST_BET_REF_POLL_MS": "10",
+            },
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+
+        self.assertEqual(result.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+        self.assertGreaterEqual(result.post_bet_ref_poll_attempts, 2)
+        self.assertGreaterEqual(result.post_bet_ref_poll_duration_ms, 20)
+
+    def test_post_unconfirmed_cleanup_is_logged_separately(self) -> None:
+        bridge = FakeBridge(write_bet_ref_after_post=True)
+        bridge.cells[("PLACE", "T5")] = "432500000005"
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_BET_REF_WAIT_MS": "0"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+        self.assertFalse(result.post_cells_cleared_after_confirmation)
+        self.assertTrue(result.post_cells_cleared_after_unconfirmed)
+        self.assertEqual(result.post_clear_reason, "unconfirmed_post_cleanup")
+        self.assertEqual(rows[0]["post_cells_cleared_after_confirmation"], "False")
+        self.assertEqual(rows[0]["post_cells_cleared_after_unconfirmed"], "True")
+        self.assertEqual(rows[0]["post_clear_reason"], "unconfirmed_post_cleanup")
+
+    def test_post_clear_after_bet_ref_uses_post_delay(self) -> None:
+        bridge = FakeBridge()
+        with TemporaryDirectory() as tmp, _provider_env(preview=False, layout_confirmed=True), patch.dict(
+            "os.environ",
+            {"DOGBOT_POST_COMMAND_CELLS_CLEAR_DELAY_MS": "1234"},
+            clear=False,
+        ):
+            provider = GrussExcelOrderProvider(tmp, bridge=bridge)
+            result = provider.place_order(_intent(), _context(countdown_seconds=1))
+            rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
+
+        self.assertEqual(result.status, "GRUSS_REAL_WRITTEN")
+        self.assertTrue(result.post_order_confirmed)
+        self.assertTrue(result.post_clear_after_bet_ref)
+        self.assertEqual(result.post_cells_clear_delay_ms, 1234)
+        self.assertTrue(result.post_cells_cleared_after_confirmation)
+        self.assertEqual(result.command_cells_clear_delay_ms, 1234)
+        self.assertEqual(rows[0]["post_cells_clear_delay_ms"], "1234")
+        self.assertEqual(rows[0]["post_cells_cleared_after_confirmation"], "True")
 
     def test_post_write_readback_mismatch_fails_and_does_not_count_order(self) -> None:
         bridge = FakeBridge(readback_overrides={("PLACE", "R5"): 99.0})
@@ -1220,12 +1629,16 @@ class GrussRealOrdersTests(unittest.TestCase):
             rows = _read_rows(Path(tmp) / "gruss_real_order_attempts.csv")
 
         self.assertEqual(pre.status, "GRUSS_REAL_WRITTEN")
-        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(post.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+        self.assertEqual(post.reason, "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA")
         self.assertIn("|PRE", pre.processed_key)
         self.assertIn("|POST", post.processed_key)
         self.assertNotEqual(pre.processed_key, post.processed_key)
         self.assertEqual([row["execution_phase"] for row in rows], ["PRE", "POST"])
-        self.assertEqual([row["status"] for row in rows], ["GRUSS_REAL_WRITTEN", "GRUSS_REAL_WRITTEN"])
+        self.assertEqual(
+            [row["status"] for row in rows],
+            ["GRUSS_REAL_WRITTEN", "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF"],
+        )
 
     def test_processed_post_does_not_block_processed_pre(self) -> None:
         bridge = FakeBridge()
@@ -1263,7 +1676,8 @@ class GrussRealOrdersTests(unittest.TestCase):
 
         self.assertEqual(first.status, "GRUSS_REAL_WRITTEN")
         self.assertEqual(duplicate.reason, "market_already_processed")
-        self.assertEqual(post.status, "GRUSS_REAL_WRITTEN")
+        self.assertEqual(post.status, "POST_WRITE_UNCONFIRMED_EXISTING_PRE_BETREF")
+        self.assertEqual(post.reason, "POST_BET_REF_NOT_NEW_AND_NO_STAKE_DELTA")
 
     def test_max_orders_pre_does_not_block_post(self) -> None:
         bridge = FakeBridge()
@@ -1667,6 +2081,8 @@ def _provider_env(*, preview: bool, layout_confirmed: bool = False):
             "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
             "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
             "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
+            "DOGBOT_PRE_POST_INDEPENDENT": "false",
+            "DOGBOT_POST_BET_REF_WAIT_MS": "0",
         },
         clear=False,
     )
@@ -1718,6 +2134,8 @@ def _real_test_env(
             "DOGBOT_GRUSS_TRIGGER_CLEAR_DELAY_MS": "0",
             "DOGBOT_GRUSS_CLEAR_COMMAND_CELLS_DELAY_MS": "0",
             "DOGBOT_GRUSS_HOLD_TRIGGER_FOR_VISUAL_TEST": "false",
+            "DOGBOT_PRE_POST_INDEPENDENT": "false",
+            "DOGBOT_POST_BET_REF_WAIT_MS": "0",
         },
         clear=False,
     )

@@ -66,7 +66,7 @@ class GrussOrdersTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             provider = GrussOrderProvider(tmp)
 
-            result = provider.place_order(_intent(price=1.01))
+            result = provider.place_order(_intent(price=1.0))
 
             self.assertEqual(result.status, "REJECTED_DRYRUN")
             self.assertIn("invalid_limit_price", result.reason)

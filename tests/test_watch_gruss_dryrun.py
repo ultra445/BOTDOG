@@ -117,7 +117,7 @@ def _run_main_with_countdowns(countdowns: list[int]) -> tuple[int, str, FakeRunn
 
 class WatchGrussDryRunTests(unittest.TestCase):
     def test_pre_ladder_milestones_do_not_wait_on_legacy_trigger(self) -> None:
-        for seconds in (45, 32, 20, 14):
+        for seconds in (52, 38, 26, 16):
             with self.subTest(seconds=seconds):
                 result, output, runner = _run_main_with_countdowns([seconds])
 
@@ -136,30 +136,30 @@ class WatchGrussDryRunTests(unittest.TestCase):
         self.assertEqual(runner.evaluate_calls, [(1, 1, True)])
 
     def test_processed_key_includes_execution_phase_and_milestone(self) -> None:
-        result, output, runner = _run_main_with_countdowns([45, 32])
+        result, output, runner = _run_main_with_countdowns([52, 38])
 
         self.assertEqual(result, 0)
-        self.assertIn("active_milestones=[45, 32, 20, 14, 1]", output)
-        self.assertEqual(runner.evaluate_calls, [(45, 45, True), (32, 32, True)])
+        self.assertIn("active_milestones=[52, 38, 26, 16, 1]", output)
+        self.assertEqual(runner.evaluate_calls, [(52, 52, True), (38, 38, True)])
         self.assertEqual(
             [call[0] for call in runner.processed_store.mark_calls],
             [
-                "parent:race-1|milestone=45|phase=PRE",
-                "parent:race-1|milestone=32|phase=PRE",
+                "parent:race-1|milestone=52|phase=PRE",
+                "parent:race-1|milestone=38|phase=PRE",
             ],
         )
 
-    def test_pre_fourteen_does_not_block_post(self) -> None:
-        result, output, runner = _run_main_with_countdowns([14, 1])
+    def test_pre_sixteen_does_not_block_post(self) -> None:
+        result, output, runner = _run_main_with_countdowns([16, 1])
 
         self.assertEqual(result, 0)
-        self.assertIn("milestone=14 execution_phase=PRE", output)
+        self.assertIn("milestone=16 execution_phase=PRE", output)
         self.assertIn("milestone=1 execution_phase=POST", output)
-        self.assertEqual(runner.evaluate_calls, [(14, 14, True), (1, 1, True)])
+        self.assertEqual(runner.evaluate_calls, [(16, 16, True), (1, 1, True)])
         self.assertEqual(
             [call[0] for call in runner.processed_store.mark_calls],
             [
-                "parent:race-1|milestone=14|phase=PRE",
+                "parent:race-1|milestone=16|phase=PRE",
                 "parent:race-1|milestone=1|phase=POST",
             ],
         )

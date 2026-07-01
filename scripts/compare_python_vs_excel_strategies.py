@@ -50,7 +50,8 @@ class CompareSummary:
 
 def main() -> int:
     python_slots = _load_python_slots()
-    excel_slots = load_excel_strategy_slots(ROOT / DEFAULT_STRATEGY_EXCEL_PATH, write_report=False).slots
+    excel_path = Path(os.getenv("DOGBOT_STRATEGIES_EXCEL_PATH", str(ROOT / DEFAULT_STRATEGY_EXCEL_PATH)))
+    excel_slots = load_excel_strategy_slots(excel_path, write_report=False).slots
     rows: list[dict[str, Any]] = []
     summary = CompareSummary()
     python_by_id = {str(slot.tag): slot for slot in python_slots}
@@ -283,8 +284,9 @@ def _metadata(slot: Any) -> dict[str, Any]:
         "price_mode": price_mode,
         "limit_style": str(getattr(getattr(slot, "limit_style", None), "value", getattr(slot, "limit_style", "")) or ""),
         "price_for_bounds": str(getattr(slot, "price_for_bounds", "") or ""),
-        "price_limit_factor": "" if price_limit_factor is None else str(float(price_limit_factor)),
+        "price_limit_factor": "" if price_limit_factor is None else str(price_limit_factor),
         "price_limit_variable": price_limit_variable,
+        "function_name": str(getattr(slot, "function_name", "") or ""),
         "edge_env": str(getattr(slot, "edge_env", "") or ""),
         "max_runner_stake_env": str(getattr(slot, "max_runner_stake_env", "") or ""),
         "requires_mom45": str(bool(getattr(slot, "requires_mom45", False))),

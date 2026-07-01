@@ -740,6 +740,17 @@ def build_order_intents_from_trade_rows(
                     row.get("current_ladder_price_from_frozen_plan"),
                     default=False,
                 ),
+                computed_limit_price_raw=_as_float_or_none(row.get("computed_limit_price_raw")),
+                computed_limit_price_effective=_as_float_or_none(row.get("computed_limit_price_effective")),
+                min_price_floor_applied=_env_true(row.get("min_price_floor_applied"), default=False),
+                pre_value_target_price=_as_float_or_none(row.get("pre_value_target_price")),
+                ladder_planned_price=_as_float_or_none(row.get("ladder_planned_price")),
+                sent_price_before_value_clamp=_as_float_or_none(row.get("sent_price_before_value_clamp")),
+                sent_price_after_value_clamp=_as_float_or_none(row.get("sent_price_after_value_clamp")),
+                value_clamp_applied=_env_true(row.get("value_clamp_applied"), default=False),
+                value_limit_breached=_env_true(row.get("value_limit_breached"), default=False),
+                value_limit_skip_reason=row.get("value_limit_skip_reason") or None,
+                tick_rounding_direction=row.get("tick_rounding_direction") or None,
                 best_same_side_offer_at_creation=_as_float_or_none(
                     row.get("best_same_side_offer_at_creation")
                 ),
